@@ -14,6 +14,7 @@ import { Integration } from "../../integration"
 import { ModelV2 } from "../../model"
 import { ProviderV2 } from "../../provider"
 import { SessionSchema } from "../schema"
+import { model as ranexNoopModel } from "./ranex-noop"
 
 export class ModelNotSelectedError extends Schema.TaggedErrorClass<ModelNotSelectedError>()(
   "SessionRunnerModel.ModelNotSelectedError",
@@ -132,6 +133,9 @@ export const fromCatalogModel = (
   model: ModelV2.Info,
   credential?: Credential.Value,
 ): Effect.Effect<Model, UnsupportedApiError> => {
+  if (model.providerID === ProviderV2.ID.make("ranex-noop") && model.id === ModelV2.ID.make("noop")) {
+    return Effect.succeed(ranexNoopModel())
+  }
   const resolved =
     credential?.type !== "key" || credential.metadata === undefined
       ? model
@@ -173,6 +177,7 @@ export const resolve = (session: SessionSchema.Info, model: ModelV2.Info, creden
   withVariant(model, session.model?.variant).pipe(Effect.flatMap((model) => fromCatalogModel(model, credential)))
 
 export const supported = (model: ModelV2.Info) =>
+  (model.providerID === ProviderV2.ID.make("ranex-noop") && model.id === ModelV2.ID.make("noop")) ||
   model.api.type === "aisdk" &&
   (model.api.package === "@ai-sdk/openai" ||
     model.api.package === "@ai-sdk/anthropic" ||

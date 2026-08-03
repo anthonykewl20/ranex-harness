@@ -31,6 +31,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
+import * as RanexNoop from "./ranex-noop"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
@@ -1345,10 +1346,12 @@ const layer = Layer.effect(
         const bridge = yield* EffectBridge.make()
         const cfg = yield* config.get()
         const modelsDev = yield* modelsDevSvc.get()
-        const catalog = mapValues(modelsDev, fromModelsDevProvider)
+        const catalog: Record<string, Info> = mapValues(modelsDev, fromModelsDevProvider)
+        catalog["ranex-noop"] = RanexNoop.provider()
         const database = mapValues(catalog, toPublicInfo)
 
         const providers: Record<ProviderV2.ID, Info> = {} as Record<ProviderV2.ID, Info>
+        providers[ProviderV2.ID.make("ranex-noop")] = RanexNoop.provider()
         const languages = new Map<string, LanguageModelV3>()
         const modelLoaders: {
           [providerID: string]: CustomModelLoader
@@ -1837,6 +1840,7 @@ const layer = Layer.effect(
       const envs = yield* env.all()
       const key = `${model.providerID}/${model.id}`
       if (s.models.has(key)) return s.models.get(key)!
+      if (model.providerID === "ranex-noop" && model.id === "noop") return RanexNoop.language
 
       const provider = s.providers[model.providerID]
       return yield* EffectPromise.refineRejection(
