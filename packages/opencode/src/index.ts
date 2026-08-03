@@ -1,3 +1,10 @@
+const ranexTaskID = process.env.RANEX_TASK_ID?.trim()
+const ranexEmit = process.env.RANEX_EMIT
+if (!ranexTaskID || !ranexEmit?.startsWith("/")) {
+  process.stderr.write("RANEX bridge: refusing to start unbridged — set RANEX_TASK_ID and RANEX_EMIT\n")
+  process.exit(1)
+}
+
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
 import { RunCommand } from "./cli/cmd/run"
