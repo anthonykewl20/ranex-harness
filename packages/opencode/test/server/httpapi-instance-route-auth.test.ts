@@ -15,8 +15,8 @@ function app(input: { password?: string; username?: string }) {
       Layer.provide(
         ConfigProvider.layer(
           ConfigProvider.fromUnknown({
-            OPENCODE_SERVER_PASSWORD: input.password,
-            OPENCODE_SERVER_USERNAME: input.username,
+            RANEX_SERVER_PASSWORD: input.password,
+            RANEX_SERVER_USERNAME: input.username,
           }),
         ),
       ),
@@ -56,7 +56,7 @@ describe("HttpApi instance route authorization", () => {
     expect(missing.status).toBe(401)
 
     const authed = await server.request(EventPaths.event, {
-      headers: { ...headers, authorization: basic("opencode", "secret") },
+      headers: { ...headers, authorization: basic("ranex", "secret") },
     })
     await cancelBody(authed)
     expect(authed.status).toBe(200)
@@ -73,7 +73,7 @@ describe("HttpApi instance route authorization", () => {
     expect(missing.status).toBe(401)
 
     const authed = await server.request(route, {
-      headers: { ...headers, authorization: basic("opencode", "secret") },
+      headers: { ...headers, authorization: basic("ranex", "secret") },
     })
     await cancelBody(authed)
     expect(authed.status).toBe(404)

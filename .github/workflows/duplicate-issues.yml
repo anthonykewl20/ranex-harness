@@ -43,9 +43,9 @@ jobs:
       - name: Check duplicates and compliance
         if: steps.author.outputs.skip != 'true'
         env:
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          RANEX_API_KEY: ${{ secrets.RANEX_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENCODE_PERMISSION: |
+          RANEX_PERMISSION: |
             {
               "bash": {
                 "*": "deny",
@@ -177,9 +177,9 @@ jobs:
       - name: Recheck compliance
         if: steps.author.outputs.skip != 'true'
         env:
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          RANEX_API_KEY: ${{ secrets.RANEX_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENCODE_PERMISSION: |
+          RANEX_PERMISSION: |
             {
               "bash": {
                 "*": "deny",

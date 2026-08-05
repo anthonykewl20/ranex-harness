@@ -110,7 +110,7 @@ You should never "publish" a sync event however: `Bus.publish(Created, ...)`. I 
 
 The system install projectors in `server/projectors.js`. It calls `SyncEvent.init` to do this. It also installs a hook for dynamically converting an event at runtime (`convertEvent`).
 
-This allows you to "reshape" an event from the sync system before it's published to the bus. This should be avoided, but might be necessary for temporary backwards compat.
+This allows you to "reshape" an event from the sync system before it's published to the bus. This should be avoided, but might be necessary for transitional backwards compat.
 
 The only time we use this is the `session.updated` event. Previously this event contained the entire session object. The sync event only contains the fields updated. We convert the event to contain the full object for backwards compatibility (but ideally we'd remove this).
 
