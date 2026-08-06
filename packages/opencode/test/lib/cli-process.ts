@@ -74,6 +74,8 @@ function isolatedEnv(home: string, configJson: string): Record<string, string> {
     RANEX_DISABLE_AUTOCOMPACT: "1",
     RANEX_DISABLE_MODELS_FETCH: "1",
     RANEX_AUTH_CONTENT: "{}",
+    RANEX_TASK_ID: "T-test",
+    RANEX_EMIT: path.join(home, "emit.jsonl"),
   }
 }
 
