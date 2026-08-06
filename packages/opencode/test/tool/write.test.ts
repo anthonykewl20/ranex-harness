@@ -173,15 +173,21 @@ describe("tool.write", () => {
   })
 
   describe("file permissions", () => {
-    it.instance("sets file permissions when writing sensitive data", () =>
+    it.instance("writes files with umask-derived permissions", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "sensitive.json")
-        yield* run({ filePath: filepath, content: JSON.stringify({ secret: "data" }) })
+        const previous = process.umask()
+        process.umask(0o022)
+        try {
+          yield* run({ filePath: filepath, content: JSON.stringify({ secret: "data" }) })
 
-        if (process.platform !== "win32") {
-          const stats = yield* Effect.promise(() => fs.stat(filepath))
-          expect(stats.mode & 0o777).toBe(0o644)
+          if (process.platform !== "win32") {
+            const stats = yield* Effect.promise(() => fs.stat(filepath))
+            expect(stats.mode & 0o777).toBe(0o644)
+          }
+        } finally {
+          process.umask(previous)
         }
       }),
     )

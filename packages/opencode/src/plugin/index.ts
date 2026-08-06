@@ -35,6 +35,20 @@ type TriggerName = {
   [K in keyof Hooks]-?: NonNullable<Hooks[K]> extends (input: any, output: any) => Promise<void> ? K : never
 }[keyof Hooks]
 
+export async function dispatchTrigger<Name extends TriggerName>(
+  hooks: Hooks[],
+  name: Name,
+  input: unknown,
+  output: unknown,
+): Promise<void> {
+  if (!name) return
+  for (const hook of hooks) {
+    const fn = hook[name] as any
+    if (!fn) continue
+    await fn(input, output)
+  }
+}
+
 export interface Interface {
   readonly trigger: <
     Name extends TriggerName,
@@ -169,13 +183,8 @@ const layer = Layer.effect(
       Input = Parameters<Required<Hooks>[Name]>[0],
       Output = Parameters<Required<Hooks>[Name]>[1],
     >(name: Name, input: Input, output: Output) {
-      if (!name) return output
       const s = yield* InstanceState.get(state)
-      for (const hook of s.hooks) {
-        const fn = hook[name] as any
-        if (!fn) continue
-        yield* Effect.promise(async () => fn(input, output))
-      }
+      yield* Effect.promise(() => dispatchTrigger(s.hooks, name, input, output))
       return output
     })
 
