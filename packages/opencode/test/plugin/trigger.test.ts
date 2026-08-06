@@ -40,10 +40,10 @@ describe("plugin.trigger", () => {
     const output = { system: [] as string[] }
     const hooks: Hooks[] = [
       {
-        [systemHook]: (_input, current) => {
+        [systemHook]: (_input: unknown, current: typeof output) => {
           current.system.push("first")
         },
-      },
+      } as unknown as Hooks,
       {
         [systemHook]: async (_input, current) => {
           await Bun.sleep(1)
@@ -62,10 +62,10 @@ describe("plugin.trigger", () => {
     const hooks: Hooks[] = [
       { "chat.headers": () => {} } as unknown as Hooks,
       {
-        [systemHook]: (_input, current) => {
+        [systemHook]: (_input: unknown, current: typeof output) => {
           current.system.push("ran")
         },
-      },
+      } as unknown as Hooks,
     ]
 
     await dispatchTrigger(hooks, systemHook, {}, output)
