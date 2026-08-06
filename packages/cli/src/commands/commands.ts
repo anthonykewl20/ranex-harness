@@ -4,7 +4,7 @@ import { Spec } from "../framework/spec"
 declare const RANEX_CLI_NAME: string | undefined
 
 export const Commands = Spec.make(typeof RANEX_CLI_NAME === "string" ? RANEX_CLI_NAME : "ranex", {
-  description: "OpenCode 2.0 preview command line interface",
+  description: "Ranex command line interface",
   commands: [
     Spec.make("api", {
       description: "Make a request to the running server",

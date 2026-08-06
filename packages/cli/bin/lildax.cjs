@@ -7,8 +7,8 @@ const os = require("os")
 
 const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"]
 
-function run(target) {
-  const child = childProcess.spawn(target, process.argv.slice(2), { stdio: "inherit" })
+function run(command, args = process.argv.slice(2), options = {}) {
+  const child = childProcess.spawn(command, args, { stdio: "inherit", ...options })
   child.on("error", (error) => {
     console.error(error.message)
     process.exit(1)
@@ -119,12 +119,13 @@ function findBinary(startDir) {
 }
 
 const resolved = envPath || (fs.existsSync(cached) ? cached : findBinary(scriptDir))
-if (!resolved) {
-  console.error(
-    "It seems that your package manager failed to install the right lildax CLI package. Try manually installing " +
-      names.map((name) => `"${name}"`).join(" or ") +
-      " package",
-  )
-  process.exit(1)
+if (resolved) {
+  run(resolved)
+} else {
+  // The trimmed fork ships no compiled native binary; run the CLI via bun
+  // (the same runtime bin/ranex uses), so the daemon/service surface stays
+  // reachable without a build step.
+  const cliIndex = path.resolve(scriptDir, "..", "src", "index.ts")
+  const packageRoot = path.resolve(scriptDir, "..")
+  run("bun", ["run", cliIndex, ...process.argv.slice(2)], { cwd: packageRoot })
 }
-run(resolved)
