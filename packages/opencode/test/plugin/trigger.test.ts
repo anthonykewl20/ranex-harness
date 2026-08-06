@@ -35,4 +35,41 @@ describe("plugin.trigger", () => {
 
     expect(output.system).toEqual(["async"])
   })
+
+  test("runs multiple hooks in registration order", async () => {
+    const output = { system: [] as string[] }
+    const hooks: Hooks[] = [
+      {
+        [systemHook]: (_input, current) => {
+          current.system.push("first")
+        },
+      },
+      {
+        [systemHook]: async (_input, current) => {
+          await Bun.sleep(1)
+          current.system.push("second")
+        },
+      },
+    ]
+
+    await dispatchTrigger(hooks, systemHook, {}, output)
+
+    expect(output.system).toEqual(["first", "second"])
+  })
+
+  test("skips hooks that do not register the dispatched name", async () => {
+    const output = { system: [] as string[] }
+    const hooks: Hooks[] = [
+      { "chat.headers": () => {} } as unknown as Hooks,
+      {
+        [systemHook]: (_input, current) => {
+          current.system.push("ran")
+        },
+      },
+    ]
+
+    await dispatchTrigger(hooks, systemHook, {}, output)
+
+    expect(output.system).toEqual(["ran"])
+  })
 })

@@ -122,10 +122,18 @@ const resolved = envPath || (fs.existsSync(cached) ? cached : findBinary(scriptD
 if (resolved) {
   run(resolved)
 } else {
-  // The trimmed fork ships no compiled native binary; run the CLI via bun
-  // (the same runtime bin/ranex uses), so the daemon/service surface stays
-  // reachable without a build step.
+  // The trimmed fork ships no compiled native binary, so run the CLI via bun
+  // (the same runtime bin/ranex uses). cwd is the package root because bun
+  // reads packages/cli/bunfig.toml (the @opentui/solid preload) from cwd.
   const cliIndex = path.resolve(scriptDir, "..", "src", "index.ts")
+  if (!fs.existsSync(cliIndex)) {
+    console.error(
+      "It seems that your package manager failed to install the right lildax CLI package. Try manually installing " +
+        names.map((name) => `"${name}"`).join(" or ") +
+        " package",
+    )
+    process.exit(1)
+  }
   const packageRoot = path.resolve(scriptDir, "..")
   run("bun", ["run", cliIndex, ...process.argv.slice(2)], { cwd: packageRoot })
 }
