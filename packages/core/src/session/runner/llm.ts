@@ -9,7 +9,7 @@ import {
   isContextOverflowFailure,
   type ProviderErrorEvent,
 } from "@opencode-ai/llm"
-import { Cause, DateTime, Duration, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
+import { Cause, DateTime, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
 import { Database } from "../../database/database"
@@ -40,12 +40,6 @@ import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
-
-/** SLICE-011 prototype: provider stream watchdog. OFF by default. */
-export const ProviderWatchdogConfig = {
-  idle: undefined as Duration.Input | undefined,
-  absolute: undefined as Duration.Input | undefined,
-}
 
 /**
  * Runs one durable coding-agent Session until it settles.
@@ -96,6 +90,31 @@ export const ProviderWatchdogConfig = {
  * provider turn. Registry definitions are advertised, local tool calls are settled durably, and an
  * explicit loop starts the next provider turn after local settlement. Configured agent step limits bound the loop.
  */
+
+// TODO(terminal 6): default-on provider-watchdog values. ADR-015 requires a
+// stalled provider to reach a terminal state WITHOUT manual intervention, so the
+// default must be ON — but the thresholds depend on terminal 6's research into
+// provider TTFT vs inter-chunk gaps (and whether idle needs a first-chunk grace
+// period, which is also why a safe idle floor cannot be guessed here). Both
+// undefined keeps the default OFF until those numbers land; setting them is the
+// only edit required to flip the default ON. They must satisfy the schema bounds
+// (idle_ms <= 600_000, absolute_ms <= 3_600_000) and idle <= absolute.
+const DEFAULT_PROVIDER_WATCHDOG = {
+  idle: undefined as number | undefined,
+  absolute: undefined as number | undefined,
+}
+
+const providerWatchdogSettings = (entries: readonly Config.Entry[]) =>
+  entries
+    .filter((entry): entry is Config.Document => entry.type === "document")
+    .flatMap((entry) => (entry.info.provider_watchdog ? [entry.info.provider_watchdog] : []))
+    .reduce<{ readonly idle: number | undefined; readonly absolute: number | undefined }>(
+      (result, current) => ({
+        idle: current.idle_ms ?? result.idle,
+        absolute: current.absolute_ms ?? result.absolute,
+      }),
+      { idle: DEFAULT_PROVIDER_WATCHDOG.idle, absolute: DEFAULT_PROVIDER_WATCHDOG.absolute },
+    )
 
 const layer = Layer.effect(
   Service,
@@ -186,6 +205,7 @@ const layer = Layer.effect(
       const session = yield* getSession(sessionID)
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
         return yield* Effect.interrupt
+      const watchdog = providerWatchdogSettings(yield* config.entries())
       const agent = yield* agents.select(session.agent)
       const initialized = yield* SessionContextEpoch.initialize(db, loadSystemContext(agent), session.id)
       const toolFibers = yield* FiberSet.make<void, ToolOutputStore.Error>()
@@ -236,10 +256,10 @@ const layer = Layer.effect(
       const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
         withPublication(publisher.publish(event, outputPaths))
       let overflowFailure: ProviderErrorEvent | undefined
-      const idleWatched = ProviderWatchdogConfig.idle
+      const idleWatched = watchdog.idle
         ? llm.stream(request).pipe(
             Stream.timeoutOrElse({
-              duration: ProviderWatchdogConfig.idle,
+              duration: watchdog.idle,
               orElse: () =>
                 Stream.fail(
                   new LLMError({
@@ -298,10 +318,10 @@ const layer = Layer.effect(
 
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          const providerTurn = ProviderWatchdogConfig.absolute
+          const providerTurn = watchdog.absolute
             ? Effect.raceFirst(
                 restore(providerStream),
-                Effect.sleep(ProviderWatchdogConfig.absolute).pipe(
+                Effect.sleep(watchdog.absolute).pipe(
                   Effect.andThen(
                     Effect.fail(
                       new LLMError({

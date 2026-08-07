@@ -25,7 +25,6 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionRunCoordinator } from "@opencode-ai/core/session/run-coordinator"
 import { SessionRunner } from "@opencode-ai/core/session/runner"
 import * as SessionRunnerLLM from "@opencode-ai/core/session/runner/llm"
-import { ProviderWatchdogConfig } from "@opencode-ai/core/session/runner/llm"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
@@ -34,12 +33,14 @@ import { Snapshot } from "@opencode-ai/core/snapshot"
 import { SystemContext } from "@opencode-ai/core/system-context"
 import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
+import { ConfigProviderWatchdog } from "@opencode-ai/core/config/provider-watchdog"
 import { Tool } from "@opencode-ai/core/tool/tool"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { Effect, Exit, Layer, Schema, Stream } from "effect"
 import { testEffect } from "./lib/effect"
 
 let responseStream: Stream.Stream<LLMEvent, LLMError> | undefined
+let watchdogConfig: ConfigProviderWatchdog.Info | undefined
 const client = Layer.succeed(
   LLMClient.Service,
   LLMClient.Service.of({
@@ -119,6 +120,7 @@ const config = Layer.succeed(
               buffer: 3_000,
               keep: new ConfigCompaction.Keep({ tokens: 1_000 }),
             }),
+            ...(watchdogConfig ? { provider_watchdog: watchdogConfig } : {}),
           }),
         }),
       ]),
@@ -210,8 +212,6 @@ const insertSession = (id: SessionV2.ID) =>
 const setup = Effect.gen(function* () {
   const { db } = yield* Database.Service
   responseStream = undefined
-  ProviderWatchdogConfig.idle = undefined
-  ProviderWatchdogConfig.absolute = undefined
   yield* db
     .insert(ProjectTable)
     .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
@@ -221,8 +221,9 @@ const setup = Effect.gen(function* () {
   yield* insertSession(sessionID)
 })
 
-it.live("RED: a stalled provider stream hangs the run with no watchdog", () =>
-  Effect.gen(function* () {
+it.live("RED: a stalled provider stream hangs the run with no watchdog", () => {
+  watchdogConfig = undefined
+  return Effect.gen(function* () {
     yield* setup
     const session = yield* SessionV2.Service
     yield* session.prompt({
@@ -247,14 +248,13 @@ it.live("RED: a stalled provider stream hangs the run with no watchdog", () =>
     const elapsed = Date.now() - start
     console.log(`[RED] stalled run did not terminate within budget; race=${result} elapsed=${elapsed}ms`)
     expect(result).toBe("HUNG-PAST-BUDGET")
-  }),
-)
+  })
+})
 
-it.live("GREEN: the watchdog terminates a stalled provider stream", () =>
-  Effect.gen(function* () {
+it.live("GREEN: the watchdog terminates a stalled provider stream", () => {
+  watchdogConfig = new ConfigProviderWatchdog.Info({ idle_ms: 400, absolute_ms: 3000 })
+  return Effect.gen(function* () {
     yield* setup
-    ProviderWatchdogConfig.idle = "400 millis"
-    ProviderWatchdogConfig.absolute = "3000 millis"
     const session = yield* SessionV2.Service
     yield* session.prompt({
       sessionID,
@@ -284,14 +284,13 @@ it.live("GREEN: the watchdog terminates a stalled provider stream", () =>
         error: { message: expect.stringContaining("idle timeout") },
       },
     ])
-  }),
-)
+  })
+})
 
-it.live("NEGATIVE CONTROL: a stalled provider still hangs with the watchdog off", () =>
-  Effect.gen(function* () {
+it.live("NEGATIVE CONTROL: a stalled provider still hangs with the watchdog off", () => {
+  watchdogConfig = undefined
+  return Effect.gen(function* () {
     yield* setup
-    ProviderWatchdogConfig.idle = undefined
-    ProviderWatchdogConfig.absolute = undefined
     const session = yield* SessionV2.Service
     yield* session.prompt({
       sessionID,
@@ -315,14 +314,13 @@ it.live("NEGATIVE CONTROL: a stalled provider still hangs with the watchdog off"
     const elapsed = Date.now() - start
     console.log(`[NEG] watchdog off; stalled run still hangs; race=${result} elapsed=${elapsed}ms`)
     expect(result).toBe("HUNG-PAST-BUDGET")
-  }),
-)
+  })
+})
 
-it.live("SLOW STREAM: a healthy slow provider stream is not falsely cut", () =>
-  Effect.gen(function* () {
+it.live("SLOW STREAM: a healthy slow provider stream is not falsely cut", () => {
+  watchdogConfig = new ConfigProviderWatchdog.Info({ idle_ms: 400, absolute_ms: 3000 })
+  return Effect.gen(function* () {
     yield* setup
-    ProviderWatchdogConfig.idle = "400 millis"
-    ProviderWatchdogConfig.absolute = "3000 millis"
     const session = yield* SessionV2.Service
     yield* session.prompt({
       sessionID,
@@ -352,14 +350,13 @@ it.live("SLOW STREAM: a healthy slow provider stream is not falsely cut", () =>
         content: [{ type: "text", text: "Complete" }],
       },
     ])
-  }),
-)
+  })
+})
 
-it.live("ABSOLUTE: the absolute timeout cuts an active stream that exceeds the turn budget", () =>
-  Effect.gen(function* () {
+it.live("ABSOLUTE: the absolute timeout cuts an active stream that exceeds the turn budget", () => {
+  watchdogConfig = new ConfigProviderWatchdog.Info({ idle_ms: 400, absolute_ms: 1000 })
+  return Effect.gen(function* () {
     yield* setup
-    ProviderWatchdogConfig.idle = "400 millis"
-    ProviderWatchdogConfig.absolute = "1000 millis"
     const session = yield* SessionV2.Service
     yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Trickle forever" }), resume: false })
     // Active stream: emits a delta every ~100ms (< idle 400ms) and never finishes.
@@ -391,14 +388,13 @@ it.live("ABSOLUTE: the absolute timeout cuts an active stream that exceeds the t
         error: { message: expect.stringContaining("absolute timeout") },
       },
     ])
-  }),
-)
+  })
+})
 
-it.live("ABSOLUTE: with idle off, the absolute timeout still terminates a stalled stream", () =>
-  Effect.gen(function* () {
+it.live("ABSOLUTE: with idle off, the absolute timeout still terminates a stalled stream", () => {
+  watchdogConfig = new ConfigProviderWatchdog.Info({ absolute_ms: 800 })
+  return Effect.gen(function* () {
     yield* setup
-    ProviderWatchdogConfig.idle = undefined
-    ProviderWatchdogConfig.absolute = "800 millis"
     const session = yield* SessionV2.Service
     yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Stall with idle off" }), resume: false })
     // idle is OFF; the only thing that can terminate the stall is the absolute budget.
@@ -426,5 +422,5 @@ it.live("ABSOLUTE: with idle off, the absolute timeout still terminates a stalle
         error: { message: expect.stringContaining("absolute timeout") },
       },
     ])
-  }),
-)
+  })
+})
