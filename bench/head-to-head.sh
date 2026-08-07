@@ -20,7 +20,7 @@ BUN="${BUN:-$HOME/.bun/bin/bun}"
 PROMPT="Create a file named AGENT_NOTE.txt at the repository root containing the single line: delegated work happened. Do not do anything else."
 
 KEY="$(cat "$KEY_FILE")"
-FORK_PKGS="$FORK_DIR/packages/opencode"
+FORK_PKGS="$FORK_DIR/packages/ranex"
 UP_PKGS="$UPSTREAM_DIR/packages/opencode"
 mkdir -p "$WORK"
 

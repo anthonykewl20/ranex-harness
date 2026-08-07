@@ -11,7 +11,7 @@ WORK="${WORK:-/tmp/opencode/bench}"
 RUNS="${RUNS:-3}"
 BUN="${BUN:-$HOME/.bun/bin/bun}"
 
-FORK_PKGS="$FORK_DIR/packages/opencode"
+FORK_PKGS="$FORK_DIR/packages/ranex"
 UP_PKGS="$UPSTREAM_DIR/packages/opencode"
 mkdir -p "$WORK"
 
