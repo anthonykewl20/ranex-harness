@@ -54,6 +54,8 @@ export const SessionTable = sqliteTable(
       providerID: string
       variant?: string
     }>(),
+    retry_attempt: integer(),
+    retry_next_attempt_at: integer(),
     ...Timestamps,
     time_compacting: integer(),
     time_archived: integer(),

@@ -1,0 +1,190 @@
+{
+  "record": "EXIT_RECORD",
+  "scope": "SLICE-011 claim 3 only (durable retry). Disposable prototype; ships nothing.",
+  "slice": "SLICE-011",
+  "claim": 3,
+  "claimTitle": "Durable retry: publish session.next.retried + project it so a fresh graph resumes from the persisted attempt count and next_attempt_at instead of resetting",
+  "adr": "ADR-015 (proposed 2026-08-06), Decision Outcome (3), Considered Options 2 (rejected) and 5 (chosen), Improvement 4, sad-paths #3 (crash during retry delay) and #10 (retried projection double-fires); quality attribute 'Recoverability: process dies during retry delay -> next_attempt_at honoured; no early retry'.",
+  "status": "GREEN",
+  "disposable": true,
+  "committed": false,
+  "pushed": false,
+  "worktree": {
+    "path": "/home/soultransit/devtony/ranex-harness-wt3-retry",
+    "branch": "proto/s011-retry",
+    "head": "2431314c3261b11736b97cacf47820d8fcd3f0e6"
+  },
+  "architecturalReality": "Uncommenting the projector alone persists NOTHING. The commented projector at projector.ts:394 routed to run(db, event) -> SessionMessageUpdater, which treats session.next.retried as a no-op (message-updater.ts:374 -> () => Effect.void). No attempt/next_attempt_at column or retry table existed anywhere in the schema (SessionTable in session/sql.ts had no retry fields; database/schema.gen.ts had none). The retry itself was process-local recursive state wholly below the session layer in packages/llm/src/route/executor.ts retryStatusFailures (executor.ts:345-364, installed at :378), invisible to the runner: the runner sees a retryable LLMError only AFTER the executor exhausts its retries (runner/llm.ts:317). So durable retry required (a) surfacing retry to the session layer, (b) making the projector write real state, and (c) teaching the drain to honour it before re-admitting.",
+  "artifacts": [
+    {
+      "role": "implementation",
+      "path": "packages/core/src/session/runner/llm.ts",
+      "sha256": "87f67afd43a466c05917c4d97e5ce101579088e13603fc2e808a385aa2511cf7",
+      "change": "+115/-... : session-layer retry. RetryTurnError defect (L183) raised at end of runTurnAttempt on a retryable, pre-assistant-start, non-interrupted failure with attempt < MAX_RETRIES (retryFailure L320, die L381). runTurn and runAfterOverflowCompaction catch RetryTurnError via shared retryTurn() helper -> publish SessionEvent.Retried, Effect.sleep(retryDelay(attempt)), recurse attempt+1 (L422, L438). run() reads persisted retry_attempt/retry_next_attempt_at and Effect.sleeps until next_attempt_at BEFORE re-admitting (L461-470), bypasses the eligible-input guard when a retry is pending (L474), resumes attempt = retryAttempt+1 (L478), and clears retry state on settle. Constants 500/10000/2 re-declared local to the runner."
+    },
+    {
+      "role": "implementation",
+      "path": "packages/core/src/session/projector.ts",
+      "sha256": "266a460c076195e22db040aed1697ff93bc46f0c9b6a115fdca2849a8aa37009",
+      "change": "L394 uncommented and replaced: on SessionEvent.Retried, db.update(SessionTable).set({retry_attempt: event.data.attempt, retry_next_attempt_at: toEpochMillis(timestamp) + min(500*2^attempt, 10000)}) where id=sessionID. Mirrors the existing RevertEvent.Staged projector pattern (projector.ts:396-414). The old no-op run(db, event) path is NOT used."
+    },
+    {
+      "role": "implementation",
+      "path": "packages/core/src/session/sql.ts",
+      "sha256": "087110fa2659e4fb8bcd6e8170ad3fc0aee0166cac2b8755afc606ab58e543ec",
+      "change": "L57-58: two nullable columns added to SessionTable: retry_attempt integer(), retry_next_attempt_at integer()."
+    },
+    {
+      "role": "implementation",
+      "path": "packages/llm/src/route/executor.ts",
+      "sha256": "3eb30ed6b6b37f457e8d922fe878b2aa365cc4e9d97d1cad68b994c3a48072c3",
+      "change": "L366 makeLayer(retry) factory; L384 export const layer = makeLayer(true) (retry ON, unchanged behavior for all existing callers); L385 export const singleAttemptLayer = makeLayer(false). singleAttemptLayer is referenced nowhere outside its own definition; the global platform node (app-node-platform.ts) still uses RequestExecutor.layer, so non-session callers keep executor retry. The session path receives the LLMError on the first 503 so the session-layer retry owns durability."
+    },
+    {
+      "role": "schema-generated",
+      "path": "packages/core/src/database/schema.gen.ts",
+      "sha256": "882966aa34a30ecca52e312ae2a13701fdd729ec7bca0a1e8cc50a0b832e26e1",
+      "change": "Regenerated baseline to include the two new session columns."
+    },
+    {
+      "role": "migration-registry",
+      "path": "packages/core/src/database/migration.gen.ts",
+      "sha256": "3af821b4df3d121d308120b38658df8632f58983cff61a9b9bd109e1b8979e1e",
+      "change": "Registers the session_retry migration."
+    },
+    {
+      "role": "migration",
+      "path": "packages/core/src/database/migration/20260807052721_session_retry.ts",
+      "sha256": "daba310d6943c63ae6279c4256f750399c8dcf6c200515afe15ab9d3a0068dd1",
+      "change": "Generated Drizzle migration adding retry_attempt and retry_next_attempt_at to the session table."
+    },
+    {
+      "role": "prototype-suite",
+      "path": "packages/core/test/retry-durable.prototype.test.ts",
+      "sha256": "66c9b4b67079bfddd8a55f79770a179a401acf497b9216b19997e2348ab9eabb",
+      "tests": 4
+    }
+  ],
+  "defect": "Retry is process-local recursive state in packages/llm/src/route/executor.ts retryStatusFailures (Effect.catchTag -> Effect.sleep -> recurse with retries-1/attempt+1). If the process/graph is torn down during Effect.sleep, the attempt counter is lost; a fresh graph starts a new request at attempt 0. Every restart defeats a rate limit. ADR-015 driver: 'Retry state must survive restart'.",
+  "design": {
+    "surfaceRetry": "Retry is moved to the session layer. runTurnAttempt detects a retryable LLMError (status 429/503/504/529 via isRetryableStatus, mirroring executor retryableStatus) when attempt < MAX_RETRIES and the assistant has not started, and dies with a RetryTurnError defect (L381). runTurn/runAfterOverflowCompaction catch it via retryTurn(): publish SessionEvent.Retried {attempt, error:{message,statusCode,isRetryable:true}}, Effect.sleep(retryDelay(attempt)), recurse runTurn(attempt+1).",
+    "persist": "The Retried projector (projector.ts:394) materializes attempt + next_attempt_at (= timestamp + min(500*2^attempt, 10000)) onto SessionTable. The durable session.next.retried event remains the source of truth; the columns are a materialized read model in the same shape as every other projector here (mirrors RevertEvent.Staged).",
+    "resume": "run() (runner/llm.ts) reads retry_attempt/retry_next_attempt_at BEFORE the eligible-input guard. If a retry is pending and next_attempt_at is in the future it Effect.sleeps until then (L461-470) - it does NOT re-admit/call the provider during the delay. It resumes at attempt = retryAttempt+1 (L478). clearRetry() nulls both columns on turn settle (success or typed terminal failure).",
+    "executorNotDoubleRetry": "singleAttemptLayer is exported for future production wiring of the session LLM client; it is NOT wired globally (P2a fix). The prototype test fakes LLMClient.Service directly so the executor is bypassed in the suite; the session-layer retry is what is proven.",
+    "backoff": "Deterministic mid-point of executor retryDelay: min(500 * 2^attempt, 10000), no jitter, so the projector and the runner share one formula and TestClock timing is exact."
+  },
+  "fixtures": {
+    "redExecutor": "RequestExecutor.layer over a fake HttpClient that returns HTTP 503 on every call; the real retryStatusFailures runs (executorCalls counted).",
+    "greenClient": "LLMClient.Service fake: every stream call increments providerCalls, signals a Deferred, and fails with LLMError{ProviderInternalReason status:503} (retryable). Route = openai-chat route (real), Model.make({id:'retry-model', provider:'prototype', route}).",
+    "overflowThenRetry": "Stream sequence: context-overflow InvalidRequestReason, then a compaction-summary success stream, then three 503 failures - exercises the overflow-compaction recovery -> RetryTurnError path."
+  },
+  "constants": { "baseDelayMs": 500, "maxDelayMs": 10000, "maxRetries": 2, "totalAttemptsFreshRun": 3 },
+  "commands": {
+    "workdir": "All run from the worktree root /home/soultransit/devtony/ranex-harness-wt3-retry.",
+    "all": "cd packages/core && bun test test/retry-durable.prototype.test.ts",
+    "red": "cd packages/core && bun test test/retry-durable.prototype.test.ts -t 'unsafe baseline resets executor retry attempts after teardown'",
+    "green": "cd packages/core && bun test test/retry-durable.prototype.test.ts -t 'fresh drain honors persisted retry delay and resumes remaining attempts'",
+    "overflow": "cd packages/core && bun test test/retry-durable.prototype.test.ts -t 'overflow recovery retries and terminates with a typed provider failure'",
+    "idempotence": "cd packages/core && bun test test/retry-durable.prototype.test.ts -t 'replaying the same retried projection is idempotent'",
+    "regressionRunner": "cd packages/core && bun test test/session-runner.test.ts",
+    "regressionProjector": "cd packages/core && bun test test/session-projector.test.ts",
+    "executor": "cd packages/llm && bun test ./test/executor.test.ts",
+    "typecheckCore": "cd packages/core && bun typecheck",
+    "typecheckLlm": "cd packages/llm && bun typecheck"
+  },
+  "observed": {
+    "suiteResult": "4 pass / 0 fail (32 expect calls)",
+    "RED": {
+      "mechanism": "Real retryStatusFailures (executor-level), shape B negative control independent of the new session-layer implementation.",
+      "before": "executorCalls === 1 after the first graph calls the provider once and enters Effect.sleep (suspended on TestClock).",
+      "teardown": "Fiber.interrupt the first executor.execute fiber during the scheduled sleep.",
+      "fresh": "A fresh executor.execute is started; TestClock.adjust('30 seconds') runs it to exhaustion.",
+      "result": "executorCalls === 4 (1 + 3): the fresh invocation made all MAX_RETRIES+1 calls again.",
+      "meaning": "attempt counter RESET to 0 across teardown - the unsafe process-local baseline proven against the real retryStatusFailures."
+    },
+    "GREEN": {
+      "firstDrain": "Retried(attempt 0, error statusCode 503 isRetryable true) published; providerCalls === 1; persisted {retry_attempt:0, retry_next_attempt_at:500}.",
+      "teardown": "execution.interrupt(sessionID); firstDrain exit === Failure (interrupted).",
+      "freshDrain": "execution.resume(sessionID) on the same session through the real coordinator/runner.",
+      "honoured": "providerCalls stays === 1 across TestClock.adjust('499 millis') - the fresh drain does NOT re-admit during the persisted delay.",
+      "resumed": "At +1 millis (=500ms next_attempt_at) the provider fires (attempt 1, providerCalls === 2, Retried attempt 1); at +1 second (attempt 2, providerCalls === 3) the drain fails. Fresh drain ran only the REMAINING attempts (1 then 2), not a fresh 0/1/2.",
+      "finalState": "Retried events in log: attempts [0,1]; SessionTable retry_attempt/retry_next_attempt_at === null/null (cleared).",
+      "meaning": "persisted next_attempt_at honoured; resumed from attempt 1, NOT re-admitted - the decoration failure is avoided."
+    },
+    "OVERFLOW": {
+      "fixture": "context-overflow -> compaction summary -> three 503s.",
+      "result": "drain exit Failure with Cause.hasFails true and Cause.hasDies FALSE (typed LLMError failure, not an unhandled defect); Retried attempt 0 published; providerCalls === 5 (overflow + compaction summary + 3 retry attempts).",
+      "meaning": "the overflow-compaction recovery path no longer leaks RetryTurnError as a crashing defect (P1 fix proven)."
+    },
+    "IDEMPOTENCE": {
+      "result": "Replaying the same serialized Retried event twice with no intervening remove yields exactly 1 EventTable row and identical SessionTable retry projection state (raw double-replay), plus a remove+replay cycle yielding {attempt:1, nextAttemptAt:2000} with 1 row.",
+      "meaning": "sad-path #10 - retried projection is idempotent, no duplicate event."
+    }
+  },
+  "regression": "session-runner.test.ts: 83 pass / 0 fail (247 expect calls). session-projector.test.ts: 8 pass / 0 fail (20 expect calls). packages/llm executor.test.ts: 15 pass / 0 fail (57 expect calls). No existing test relies on the executor retrying inside the session path.",
+  "typecheck": "core: tsgo --noEmit exit 0 (clean). llm: tsgo --noEmit exit 0 (clean).",
+  "antiDecorationChecks": [
+    "GREEN drives the real drain: session.prompt -> SessionExecution.resume -> coordinator.run -> SessionRunner.run -> runTurn -> runTurnAttempt -> llm.stream. Only the LLM transport is faked (LLMClient.Service).",
+    "The persisted delay is honoured inside run(): run reads retry_next_attempt_at and Effect.sleep(Math.max(0, nextAttemptAt - now)) BEFORE the eligible-input guard and BEFORE any provider call (runner/llm.ts:461-470). There is no other gate that could hold providerCalls at 1 for 499ms then flip to 2 at 500ms; remove the persisted sleep and the GREEN assertions fail.",
+    "TestClock is genuinely provided (test/lib/effect.ts testEnv = TestConsole.layer + TestClock.layer, merged by testEffect), so Effect.sleep and TestClock.adjust are coupled and the 499ms/500ms/1s timing assertions are deterministic, not wall-clock.",
+    "RED is a negative control independent of the new session-layer implementation: it exercises the unmodified real retryStatusFailures directly.",
+    "The fresh drain is a real resume (execution.resume -> coordinator.run), not a serialized Deferred replay."
+  ],
+  "reviewers": {
+    "reviewer-hy3": {
+      "verdict": "NEEDS-CHANGES (initial) -> all findings fixed and re-verified green on disk; claim proven non-decoration.",
+      "verbatimOpening": "NEEDS-CHANGES - The central claim (a session that tears down mid-retry-delay and resumes the remaining attempts from the persisted next_attempt_at, rather than re-admitting at attempt 0) is genuinely proven by the GREEN test and the code path is sound. However, there is a confirmed P1 defect leak: a retryable provider failure during the overflow-compaction recovery path escapes as an unhandled RetryTurnError defect and crashes the drain. That must be fixed before this prototype is promoted.",
+      "verifiedQ1nonDecoration": "Confirmed genuine. run reads retry_next_attempt_at and Effect.sleep before the eligible-input guard and before any runTurn/provider call; no other gate could keep providerCalls at 1 for 499ms and flip to 2 at 500ms. TestClock is genuinely provided; timing assertions are deterministic.",
+      "verifiedQ2arithmetic": "attempt < MAX_RETRIES(2) -> attempts 0,1 retry, 2 does not (3 total). Resume reads retryAttempt=0 -> attempt=1; fresh drain runs only 1->2 matching providerCalls 1->2->3. Exhausting attempt 2 surfaces a normal failCause, not RetryTurnError. Off-by-one: none.",
+      "P1": "RetryTurnError defect leaked out of runAfterOverflowCompaction (its catchDefect only handled TurnTransitionError) and escaped run because Effect.tapError does not catch defects - crash on (overflow -> compaction -> transient 503). FIX APPLIED: shared retryTurn() helper now handles RetryTurnError in both runTurn and runAfterOverflowCompaction; new overflow+retry test asserts Cause.hasDies FALSE.",
+      "P2a": "Global requestExecutor switched to singleAttemptLayer, dropping executor retry for all non-session LLM callers (e.g. opencode/session/processor.ts). FIX APPLIED: app-node-platform.ts reverted to RequestExecutor.layer; singleAttemptLayer is export-only, referenced nowhere in src. Supervisor-confirmed: makeLayer(true) keeps retry on for all existing callers, fetchLayer still derives from layer.",
+      "P2b": "Two SessionTable columns vs ADR 'rather than adding a counter table'. SUPERVISOR SIGN-OFF (DECISION 2): the columns are a materialized read model over the durable event, same shape as every other projector; reading a projection at resume is the standard form of event replay in this codebase. No change needed.",
+      "P3": "Redundant clearRetry (tapError + unconditional) and an idempotence test that removed before replaying. FIX APPLIED: single clear path via Effect.exit + Cause.hasDies/hasInterrupts guard; idempotence test now also asserts raw double-replay (no remove) yields 1 EventTable row and identical projection state.",
+      "reReview": "reviewer-hy3 did not re-run after fixes; re-verification was performed on disk by the implementing agent and independently by the supervisor (see supervisorVerification)."
+    },
+    "reviewer-deepseek": {
+      "verdict": "PROVEN (non-decoration)",
+      "agreesWith": "reviewer-hy3 on substance; cross-family consensus ESTABLISHED (both PROVEN). Done-criterion 7 two-reviewer requirement now MET.",
+      "debate": "Two-round adversarial debate. Round 1 (diff + observed numbers inlined, no file access): PROVEN with four P3 findings (Q1 RED-scope framing, ADR counter-vs-column doc gap, crash-before-projection window, dead singleAttemptLayer as incomplete intent). Round 2 (coordinator supplied file-access facts deepseek could not see): deepseek RETRACTED two findings, CONCEDED two. All four resolved in the record's favor; no P0/P1/P2 blocker.",
+      "Q1_RED_SCOPE": "CONCEDE. deepseek accepted that 'impossible to write a graph-level RED' is too strong; the honest ground (which DECISION_1 now reads as) is that the graph had no retry state to reset pre-GREEN (architectural reality: the runner saw a retryable LLMError only after the executor exhausted retries). The executor-level RED is a valid independent negative control for the defect class. DECISION_1 STANDS; reasoning reframe acknowledged, not a blocker. deepseek had also asserted a graph-level RED was writable by interrupting the runner mid-executor-sleep, but that rests on an unverified interrupt-reaches-sleep assumption through the runner's Effect.uninterruptibleMask.",
+      "Q2_P2b_ADR_FAITHFULNESS": "SOUND. deepseek agrees two projection-derived columns on an existing table, source-of-truth held by the durable Retried event, clears Improvement 4 and the checklist; Option 2 was rejected for wrong-layer, not for being a counter per se. Suggestion carried forward: ADR-015 should state the counter-vs-materialized-column distinction explicitly rather than leave it implicit (doc, not code).",
+      "Q3_antiDecoration": "SOUND. Confirmed run() reads retry_next_attempt_at and Effect.sleeps before the eligible-input guard and before any provider call; deepseek's own discriminator: if the persisted sleep were dead, providerCalls would be 2 at t=0, failing the test. Non-decoration.",
+      "Q4_P1_completeness": "RETRACTED (caveat resolved). Coordinator grepped the full file: runTurnAttempt has EXACTLY two call sites (llm.ts:419 in runAfterOverflowCompaction, llm.ts:435 in runTurn), both with RetryTurnError catchDefect branches. No escape path. P1 is complete.",
+      "crashBeforeProjection": "RETRACTED as a retry-specific risk. Coordinator read event.ts: the projector runs at :320-321 INSIDE the db.transaction(behavior:immediate) at :240, with the EventTable insert at :336, all under Effect.uninterruptible at :237; interface comment :122 documents 'Local operational projection committed atomically with a new durable event'. Event + projection commit atomically or not at all; pre-commit death leaves no Retried event in the log either, so run() correctly starts fresh. No retry-specific window.",
+      "doubleRetry": "CONCEDE framing. The dead singleAttemptLayer export is the CORRECT post-P2a-revert state (wiring it globally was the bug reviewer-hy3 caught), not abandoned intent; app-node-platform.ts:13 uses RequestExecutor.layer (retry ON), singleAttemptLayer referenced nowhere in src. Retained as the TOP production residual to carry forward (executor retry still ON for the session caller while the session layer also retries), but this is a deliberately-disclosed, deliberately-deferred SLICE-012+ wiring concern for a disposable prototype whose GREEN correctly fakes the transport to isolate the session-layer mechanism.",
+      "residualsEndorsed": "1) double-retry in production (SLICE-012+). 2) projector db-vs-tx connection scoping UNVERIFIED - general to the whole event system (every projector uses outer db), exercised by the 83/0 and 8/0 regressions, not retry-specific; belongs with event-system production hardening. 3) projection/log divergence + clearRetry-as-direct-update (already disclosed). 4) concurrent resume racing on the retry columns (unanalyzed; coordinator coalescing assumed)."
+    },
+    "consensusResolution": "reviewer-hy3 NEEDS-CHANGES findings (P1/P2a/P3) were debated against the code, confirmed real, and fixed; P2b resolved by supervisor sign-off (DECISION_2). reviewer-deepseek cross-family review (two-round adversarial debate, diff + numbers inlined then file-access facts) returned PROVEN and, after the coordinator refuted the crash-before-projection finding (event.ts:320-321 atomic-in-transaction) and closed the Q4 caller-exhaustiveness gap (grep: exactly two runTurnAttempt call sites), retracted/conceded all four of its P3 findings; both reviewers now PROVEN. The two supervisor decisions were each challenged independently: DECISION_1 stands with a reasoning reframe (the 'impossible' ground conceded as too strong; honest ground is that the graph had no retry state to reset); DECISION_2 stands as SOUND (deepseek agrees the two columns are a faithful projection, not a forbidden counter table). Done-criterion 7 two-reviewer requirement is MET. All gates re-verified green on disk. The claim is proven non-decoration; the prototype is GREEN."
+  },
+  "supervisorVerification": "Supervisor re-ran every gate on disk: prototype 4/0 (32 expects), session-runner 83/0, session-projector 8/0, executor 15/0, core typecheck exit 0, HEAD unchanged at 2431314c3261b11736b97cacf47820d8fcd3f0e6. Supervisor confirmed the P2a revert is genuine (layer = makeLayer(true), fetchLayer derives from it, singleAttemptLayer referenced nowhere outside its definition). Nothing further to fix.",
+  "decisions": {
+    "DECISION_1_RED_SCOPE": {
+      "decision": "RED is executor-level (real retryStatusFailures), NOT graph-level. Do NOT add a graph-level RED.",
+      "reasoning": "The defect today lives entirely inside retryStatusFailures (process-local). There is no persisted session-layer delay to tear a graph down during until GREEN creates one. A graph-level RED would have to manufacture the very mechanism it claims to prove absent - the inverse of the decoration failure this slice guards against. RED belongs at the layer where the defect is; GREEN belongs at the graph.",
+      "status": "supervisor-signed-off (do not re-open)",
+      "crossFamily": "reviewer-deepseek CHALLENGED then CONCEDED. It agreed the 'impossible to write a graph-level RED' framing is too strong; the honest ground (recorded above as the operative reasoning) is that the graph had no retry state to reset pre-GREEN (the runner saw a retryable LLMError only after the executor exhausted retries). deepseek's counter-assertion that a graph-level RED was writable by interrupting the runner mid-executor-sleep itself rests on an unverified interrupt-reaches-sleep assumption through the runner's Effect.uninterruptibleMask. DECISION STANDS; the executor-level RED is a valid independent negative control for the defect class."
+    },
+    "DECISION_2_P2b_ADR_FAITHFULNESS": {
+      "decision": "ACCEPTED. Two columns on SessionTable written by a projector from the durable session.next.retried event is a materialized read model over an event that remains the source of truth.",
+      "reasoning": "ADR-015 ruled out a parallel execution-state store (session_execution, a tool_attempt replay column). This is two columns on an existing table, written by a projector, mirroring the existing RevertEvent pattern rather than inventing one. Reading a projection at resume is not a departure from event replay; it is the standard form of it in this codebase. The honest residual (projection could diverge from the log) is what the sad-path-10 idempotency test constrains.",
+      "status": "supervisor-signed-off (do not re-open)",
+      "crossFamily": "reviewer-deepseek ruled SOUND: the projection-derived columns clear Improvement 4 and the checklist (Option 2 was rejected for wrong-layer, not for being a counter per se). Doc carry-forward: ADR-015 should state the counter-vs-materialized-column distinction explicitly. DECISION STANDS."
+    }
+  },
+  "residualRisks": [
+    "The projection (retry_attempt/retry_next_attempt_at) could in principle diverge from the durable event log; constrained but not eliminated by the sad-path-10 idempotency test.",
+    "RED is executor-level by design (DECISION 1); a graph-level RED is deliberately absent.",
+    "singleAttemptLayer is exported but NOT wired to the session path globally; production SLICE-012+ must scope single-attempt to ONLY the session LLM client (so the executor does not double-retry), without dropping retry for non-session callers. Cross-family (reviewer-deepseek) confirmed this dead export is the correct post-P2a-revert state, not abandoned intent; double-retry is the top production residual to carry forward.",
+    "Projector writes use the outer Database.Service db handle (event.ts:320-321), not a transaction-bound tx; whether those writes join the surrounding db.transaction at the Drizzle/bun-sqlite connection level is UNVERIFIED. This is general to the whole event system (every projector shares it), exercised by the 83/0 and 8/0 regressions, not retry-specific; flagged by reviewer-deepseek, belongs with event-system production hardening, not this prototype's verdict.",
+    "clearRetry is a direct projection-table update, not a separate durable clearing event; rebuilding projections purely from Retried events could in principle resurrect the final retry state. The idempotent projection itself is verified.",
+    "Retry-clearing-on-success semantics assume the session-input/promotion state is consistent with resume; concurrent resume racing on the retry columns was not analyzed (coordinator is expected to coalesce, unverified).",
+    "This is the claim-3 record only, NOT the full SLICE-011 EXIT_RECORD."
+  ],
+  "notProven": [
+    "Claims 1, 2, 4, 5 of ADR-015 (watchdog, reconciler reorder, durable blockers, Session-ID fencing) - tracked in their own worktrees/records.",
+    "Production integration: a green prototype is not proof of production durability (ADR-015 Scope); durability is claimed for process crash only at synchronous = NORMAL.",
+    "The production wiring that gives the SESSION path a single-attempt executor while keeping executor retry for non-session callers (deferred to SLICE-012+).",
+    "Cross-model failover and subagent/task recovery (deferred by ADR-015)."
+  ],
+  "gitDiffStat": "packages/core/schema.json +.../-... (generated Drizzle snapshot, not a bound artifact); packages/core/src/database/migration.gen.ts +1; packages/core/src/database/schema.gen.ts +2; packages/core/src/session/projector.ts +13/-1; packages/core/src/session/runner/llm.ts +103/-12; packages/core/src/session/sql.ts +2; packages/llm/src/route/executor.ts +24/-10; tracked total 303 insertions / 76 deletions. Untracked: packages/core/src/database/migration/20260807052721_session_retry.ts, packages/core/test/retry-durable.prototype.test.ts. No commits, no pushes; HEAD unchanged at 2431314c3261b11736b97cacf47820d8fcd3f0e6."
+}

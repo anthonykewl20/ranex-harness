@@ -8,7 +8,7 @@ import {
   isContextOverflowFailure,
   type ProviderErrorEvent,
 } from "@opencode-ai/llm"
-import { Cause, DateTime, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
+import { Cause, DateTime, Effect, Exit, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
 import { Database } from "../../database/database"
@@ -39,6 +39,25 @@ import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
+import { SessionTable } from "../sql"
+import { eq } from "drizzle-orm"
+
+const MAX_RETRIES = 2
+const BASE_DELAY_MS = 500
+const MAX_DELAY_MS = 10_000
+
+const retryStatus = (error: LLMError) => {
+  if (error.reason._tag === "ProviderInternal") return error.reason.status
+  if (error.reason._tag === "RateLimit") return error.reason.http?.response?.status ?? 429
+  return undefined
+}
+
+const isRetryableStatus = (error: LLMError) => {
+  const status = retryStatus(error)
+  return status === 429 || status === 503 || status === 504 || status === 529
+}
+
+const retryDelay = (attempt: number) => Math.min(BASE_DELAY_MS * 2 ** attempt, MAX_DELAY_MS)
 
 /**
  * Runs one durable coding-agent Session until it settles.
@@ -161,6 +180,15 @@ const layer = Layer.effect(
       }
     }
 
+    class RetryTurnError extends Error {
+      constructor(
+        readonly failure: LLMError,
+        readonly attempt: number,
+      ) {
+        super()
+      }
+    }
+
     const continueAfterCompaction = (step: number) => new TurnTransitionError({ _tag: "ContinueAfterCompaction", step })
     const continueAfterOverflowCompaction = (step: number) =>
       new TurnTransitionError({ _tag: "ContinueAfterOverflowCompaction", step })
@@ -174,6 +202,7 @@ const layer = Layer.effect(
       sessionID: SessionSchema.ID,
       promotion: SessionInput.Delivery | undefined,
       step: number,
+      attempt: number,
       recoverOverflow?: typeof compaction.compactAfterOverflow,
     ) {
       const session = yield* getSession(sessionID)
@@ -288,7 +317,17 @@ const layer = Layer.effect(
             return yield* Effect.die(continueAfterOverflowCompaction(currentStep))
           if (overflowFailure) yield* publish(overflowFailure)
           const llmFailure = failure instanceof LLMError ? failure : undefined
-          if (llmFailure && !publisher.hasProviderError()) {
+          const retryFailure =
+            llmFailure &&
+            !publisher.hasAssistantStarted() &&
+            !publisher.hasProviderError() &&
+            stream._tag === "Failure" &&
+            !Cause.hasInterrupts(stream.cause) &&
+            attempt < MAX_RETRIES &&
+            isRetryableStatus(llmFailure)
+              ? llmFailure
+              : undefined
+          if (llmFailure && !retryFailure && !publisher.hasProviderError()) {
             yield* withPublication(publisher.failUnsettledTools("Provider did not return a tool result", true))
             yield* withPublication(publisher.failAssistant(llmFailure.reason.message))
           }
@@ -339,6 +378,7 @@ const layer = Layer.effect(
             yield* withPublication(publisher.failUnsettledTools("Tool execution interrupted"))
           if (stream._tag === "Success" && !publisher.hasProviderError())
             yield* withPublication(publisher.failUnsettledTools("Provider did not return a tool result", true))
+          if (retryFailure) return yield* Effect.die(new RetryTurnError(retryFailure, attempt))
           if (stream._tag === "Failure") return yield* Effect.failCause(stream.cause)
           if (settled._tag === "Failure" && Cause.hasInterrupts(settled.cause))
             return yield* Effect.failCause(settled.cause)
@@ -350,51 +390,102 @@ const layer = Layer.effect(
       sessionID: SessionSchema.ID,
       promotion: SessionInput.Delivery | undefined,
       step: number,
+      attempt: number,
     ) => Effect.Effect<{ readonly needsContinuation: boolean; readonly step: number }, RunError>
 
-    const runAfterOverflowCompaction: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step) {
-      return yield* runTurnAttempt(sessionID, promotion, step).pipe(
+    const retryTurn = (
+      sessionID: SessionSchema.ID,
+      step: number,
+      defect: RetryTurnError,
+      resume: RunTurn,
+    ) =>
+      Effect.gen(function* () {
+        const statusCode = retryStatus(defect.failure)
+        yield* events.publish(SessionEvent.Retried, {
+          sessionID,
+          timestamp: yield* DateTime.now,
+          attempt: defect.attempt,
+          error: {
+            message: defect.failure.reason.message,
+            ...(statusCode === undefined ? {} : { statusCode }),
+            isRetryable: true,
+          },
+        })
+        yield* Effect.sleep(retryDelay(defect.attempt))
+        return yield* resume(sessionID, undefined, step, defect.attempt + 1)
+      })
+
+    const runAfterOverflowCompaction: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, attempt) {
+      return yield* runTurnAttempt(sessionID, promotion, step, attempt).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {
+            if (defect instanceof RetryTurnError)
+              return yield* retryTurn(sessionID, step, defect, runAfterOverflowCompaction)
             if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
               return yield* Effect.die("Post-compaction provider attempt cannot recover another overflow")
             yield* Effect.yieldNow
-            return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
+            return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step, attempt)
           }),
         ),
       )
     })
 
-    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step) {
-      return yield* runTurnAttempt(sessionID, promotion, step, compaction.compactAfterOverflow).pipe(
+    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, attempt) {
+      return yield* runTurnAttempt(sessionID, promotion, step, attempt, compaction.compactAfterOverflow).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {
+            if (defect instanceof RetryTurnError) return yield* retryTurn(sessionID, step, defect, runTurn)
             if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
             yield* Effect.yieldNow
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
-              return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
-            return yield* runTurn(sessionID, undefined, defect.transition.step)
+              return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step, attempt)
+            return yield* runTurn(sessionID, undefined, defect.transition.step, attempt)
           }),
         ),
       )
     })
+
+    const clearRetry = (sessionID: SessionSchema.ID) =>
+      db
+        .update(SessionTable)
+        .set({ retry_attempt: null, retry_next_attempt_at: null })
+        .where(eq(SessionTable.id, sessionID))
+        .run()
+        .pipe(Effect.orDie, Effect.asVoid)
 
     const run = Effect.fn("SessionRunner.run")(function* (input: {
       readonly sessionID: SessionSchema.ID
       readonly force: boolean
     }) {
+      const persistedRetry = yield* db
+        .select({ attempt: SessionTable.retry_attempt, nextAttemptAt: SessionTable.retry_next_attempt_at })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, input.sessionID))
+        .get()
+        .pipe(Effect.orDie)
+      const retryAttempt = persistedRetry?.attempt ?? undefined
+      if (retryAttempt !== undefined && typeof persistedRetry?.nextAttemptAt === "number") {
+        const now = DateTime.toEpochMillis(yield* DateTime.now)
+        yield* Effect.sleep(Math.max(0, persistedRetry.nextAttemptAt - now))
+      }
       const hasSteer = yield* SessionInput.hasPending(db, input.sessionID, "steer")
       const hasQueue = hasSteer ? false : yield* SessionInput.hasPending(db, input.sessionID, "queue")
-      if (!input.force && !hasSteer && !hasQueue) return
+      if (!input.force && !hasSteer && !hasQueue && retryAttempt === undefined) return
       yield* failInterruptedTools(input.sessionID)
       let promotion: SessionInput.Delivery | undefined = hasSteer ? "steer" : hasQueue ? "queue" : undefined
-      let shouldRun = input.force || hasSteer || hasQueue
+      let shouldRun = input.force || hasSteer || hasQueue || retryAttempt !== undefined
+      let attempt = retryAttempt === undefined ? 0 : retryAttempt + 1
       while (shouldRun) {
         let needsContinuation = true
         let step = 1
         while (needsContinuation) {
-          const result = yield* runTurn(input.sessionID, promotion, step)
+          const outcome = yield* runTurn(input.sessionID, promotion, step, attempt).pipe(Effect.exit)
+          if (Exit.isFailure(outcome) && (Cause.hasDies(outcome.cause) || Cause.hasInterrupts(outcome.cause)))
+            return yield* outcome
+          yield* clearRetry(input.sessionID)
+          attempt = 0
+          const result = yield* outcome
           needsContinuation = result.needsContinuation
           step = result.step + 1
           promotion = "steer"
