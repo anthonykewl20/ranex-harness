@@ -9,6 +9,9 @@ import {
   isContextOverflowFailure,
   type ProviderErrorEvent,
 } from "@opencode-ai/llm"
+
+const WATCHDOG_IDLE_KIND = "watchdog-idle"
+const WATCHDOG_ABSOLUTE_KIND = "watchdog-absolute"
 import { Cause, DateTime, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
@@ -235,7 +238,7 @@ const layer = Layer.effect(
       const idleError = new LLMError({
         module: "SessionRunner",
         method: "stream",
-        reason: new TransportReason({ message: "Provider stream idle timeout" }),
+        reason: new TransportReason({ message: "Provider stream idle timeout", kind: WATCHDOG_IDLE_KIND }),
       })
       const idleDuration = watchdog.idle
       // Idle measures inter-chunk silence only, NOT time-to-first-token. The deadline starts
@@ -319,7 +322,7 @@ const layer = Layer.effect(
                         new LLMError({
                           module: "SessionRunner",
                           method: "stream",
-                          reason: new TransportReason({ message: "Provider turn absolute timeout" }),
+                          reason: new TransportReason({ message: "Provider turn absolute timeout", kind: WATCHDOG_ABSOLUTE_KIND }),
                         }),
                       ),
                     ),
