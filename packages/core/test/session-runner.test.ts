@@ -4,6 +4,7 @@ import {
   LLMError,
   LLMEvent,
   Model,
+  ContentPolicyReason,
   TransportReason,
   InvalidRequestReason,
   type LLMClientShape,
@@ -34,6 +35,7 @@ import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionRunCoordinator } from "@opencode-ai/core/session/run-coordinator"
 import { SessionRunner } from "@opencode-ai/core/session/runner"
 import * as SessionRunnerLLM from "@opencode-ai/core/session/runner/llm"
+import { ProviderWatchdogConfig } from "@opencode-ai/core/session/runner/llm"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
@@ -322,6 +324,8 @@ const setup = Effect.gen(function* () {
   responses = undefined
   streamFailure = undefined
   responseStream = undefined
+  ProviderWatchdogConfig.idle = undefined
+  ProviderWatchdogConfig.absolute = undefined
   streamGate = undefined
   streamStarted = undefined
   toolExecutionGate = undefined
@@ -3137,6 +3141,123 @@ describe("SessionRunnerLLM", () => {
       ])
     }),
   )
+
+  describe("SLICE-012 criterion 7: watchdog failure legibility by LLMError.reason", () => {
+    // Per the amended slice, legibility is carried by LLMError.reason (the tagged union at
+    // errors.ts:160-177), not by message text and with no schema change. Both watchdog
+    // timeouts are TransportReason (non-retryable, consistent with criterion 2); idle vs
+    // absolute are distinguished programmatically by reason.kind, and a watchdog is
+    // distinguished from a provider refusal by reason._tag.
+    it.live("a stream-idle watchdog termination fails as a non-retryable Transport reason tagged watchdog-idle", () =>
+      Effect.gen(function* () {
+        yield* setup
+        ProviderWatchdogConfig.idle = "300 millis"
+        ProviderWatchdogConfig.absolute = "5 seconds"
+        const id = SessionV2.ID.make("ses_legible_idle")
+        yield* insertSession(id)
+        const session = yield* SessionV2.Service
+        yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Stall mid-stream" }), resume: false })
+        responseStream = Stream.concat(
+          Stream.fromIterable([
+            LLMEvent.stepStart({ index: 0 }),
+            LLMEvent.textStart({ id: "text-legible-idle" }),
+            LLMEvent.textDelta({ id: "text-legible-idle", text: "Partial" }),
+          ]),
+          Stream.never,
+        )
+        const failure = yield* session.resume(id).pipe(Effect.flip)
+        expect(failure).toBeInstanceOf(LLMError)
+        const error = failure as LLMError
+        // legibility by reason: a watchdog idle timeout is Transport, non-retryable, kind-tagged
+        expect(error.reason._tag).toBe("Transport")
+        if (error.reason._tag === "Transport") expect(error.reason.kind).toBe("watchdog-idle")
+        expect(error.retryable).toBe(false)
+        // the reason's identity is what the operator reads; the record carries reason.message verbatim
+        const reasonMessage = error.reason.message
+        const assertRecord = () =>
+          Effect.gen(function* () {
+            expect(yield* session.context(id)).toMatchObject([
+              { type: "user", text: "Stall mid-stream" },
+              { type: "assistant", finish: "error", error: { type: "unknown", message: reasonMessage } },
+            ])
+          })
+        yield* assertRecord()
+        yield* replaySessionProjection(id)
+        yield* assertRecord()
+      }),
+    )
+
+    it.live("an absolute-budget watchdog termination fails as a non-retryable Transport reason tagged watchdog-absolute", () =>
+      Effect.gen(function* () {
+        yield* setup
+        ProviderWatchdogConfig.idle = undefined
+        ProviderWatchdogConfig.absolute = "400 millis"
+        const id = SessionV2.ID.make("ses_legible_absolute")
+        yield* insertSession(id)
+        const session = yield* SessionV2.Service
+        yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Stall with idle off" }), resume: false })
+        responseStream = Stream.concat(
+          Stream.fromIterable([
+            LLMEvent.stepStart({ index: 0 }),
+            LLMEvent.textStart({ id: "text-legible-abs" }),
+            LLMEvent.textDelta({ id: "text-legible-abs", text: "Partial" }),
+          ]),
+          Stream.never,
+        )
+        const failure = yield* session.resume(id).pipe(Effect.flip)
+        expect(failure).toBeInstanceOf(LLMError)
+        const error = failure as LLMError
+        expect(error.reason._tag).toBe("Transport")
+        if (error.reason._tag === "Transport") expect(error.reason.kind).toBe("watchdog-absolute")
+        expect(error.retryable).toBe(false)
+        const reasonMessage = error.reason.message
+        const assertRecord = () =>
+          Effect.gen(function* () {
+            expect(yield* session.context(id)).toMatchObject([
+              { type: "user", text: "Stall with idle off" },
+              { type: "assistant", finish: "error", error: { type: "unknown", message: reasonMessage } },
+            ])
+          })
+        yield* assertRecord()
+        yield* replaySessionProjection(id)
+        yield* assertRecord()
+      }),
+    )
+
+    it.live("a provider refusal fails as a ContentPolicy reason, distinguishable from a watchdog by reason._tag", () =>
+      Effect.gen(function* () {
+        yield* setup
+        const id = SessionV2.ID.make("ses_legible_refusal")
+        yield* insertSession(id)
+        const session = yield* SessionV2.Service
+        yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Refuse this" }), resume: false })
+        responseStream = Stream.fail(
+          new LLMError({
+            module: "test",
+            method: "stream",
+            reason: new ContentPolicyReason({ message: "content policy violation" }),
+          }),
+        )
+        const failure = yield* session.resume(id).pipe(Effect.flip)
+        expect(failure).toBeInstanceOf(LLMError)
+        const error = failure as LLMError
+        // distinguishable from a watchdog termination by reason._tag (ContentPolicy vs Transport)
+        expect(error.reason._tag).toBe("ContentPolicy")
+        expect(error.retryable).toBe(false)
+        const reasonMessage = error.reason.message
+        const assertRecord = () =>
+          Effect.gen(function* () {
+            expect(yield* session.context(id)).toMatchObject([
+              { type: "user", text: "Refuse this" },
+              { type: "assistant", finish: "error", error: { type: "unknown", message: reasonMessage } },
+            ])
+          })
+        yield* assertRecord()
+        yield* replaySessionProjection(id)
+        yield* assertRecord()
+      }),
+    )
+  })
 
   it.effect("does not continue automatically after a provider error follows a local tool call", () =>
     Effect.gen(function* () {

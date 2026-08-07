@@ -47,6 +47,22 @@ export const ProviderWatchdogConfig = {
   absolute: undefined as Duration.Input | undefined,
 }
 
+const WATCHDOG_IDLE_KIND = "watchdog-idle"
+const WATCHDOG_ABSOLUTE_KIND = "watchdog-absolute"
+
+const idleTimeoutFailure = () =>
+  new LLMError({
+    module: "SessionRunner",
+    method: "stream",
+    reason: new TransportReason({ message: "Provider stream idle timeout", kind: WATCHDOG_IDLE_KIND }),
+  })
+const absoluteTimeoutFailure = () =>
+  new LLMError({
+    module: "SessionRunner",
+    method: "stream",
+    reason: new TransportReason({ message: "Provider turn absolute timeout", kind: WATCHDOG_ABSOLUTE_KIND }),
+  })
+
 /**
  * Runs one durable coding-agent Session until it settles.
  *
@@ -240,14 +256,7 @@ const layer = Layer.effect(
         ? llm.stream(request).pipe(
             Stream.timeoutOrElse({
               duration: ProviderWatchdogConfig.idle,
-              orElse: () =>
-                Stream.fail(
-                  new LLMError({
-                    module: "SessionRunner",
-                    method: "stream",
-                    reason: new TransportReason({ message: "Provider stream idle timeout" }),
-                  }),
-                ),
+              orElse: () => Stream.fail(idleTimeoutFailure()),
             }),
           )
         : llm.stream(request)
@@ -303,13 +312,7 @@ const layer = Layer.effect(
                 restore(providerStream),
                 Effect.sleep(ProviderWatchdogConfig.absolute).pipe(
                   Effect.andThen(
-                    Effect.fail(
-                      new LLMError({
-                        module: "SessionRunner",
-                        method: "stream",
-                        reason: new TransportReason({ message: "Provider turn absolute timeout" }),
-                      }),
-                    ),
+                    Effect.fail(absoluteTimeoutFailure()),
                   ),
                 ),
               )
