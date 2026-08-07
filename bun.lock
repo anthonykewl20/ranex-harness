@@ -176,7 +176,7 @@
       "name": "opencode",
       "version": "1.18.11",
       "bin": {
-        "ranex": "./bin/opencode",
+        "opencode": "./bin/opencode",
       },
       "dependencies": {
         "@actions/core": "1.11.1",

@@ -12,7 +12,7 @@ import {
 
 const WATCHDOG_IDLE_KIND = "watchdog-idle"
 const WATCHDOG_ABSOLUTE_KIND = "watchdog-absolute"
-import { Cause, DateTime, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
+import { Cause, DateTime, Effect, Exit, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
 import { Database } from "../../database/database"
@@ -347,7 +347,23 @@ const layer = Layer.effect(
             yield* withPublication(publisher.failAssistant(llmFailure.reason.message))
           }
           if (stream._tag === "Failure" && Cause.hasInterrupts(stream.cause)) yield* FiberSet.clear(toolFibers)
-          const settled = yield* restore(awaitToolFibers(toolFibers)).pipe(Effect.exit)
+          // A failed provider turn must not wait forever for a tool that ignored the
+          // provider watchdog. Keep every healthy or unbudgeted settlement await
+          // unchanged; only a failed, absolutely-bounded turn gains this second bound.
+          const settled = yield* Effect.gen(function* () {
+            if (stream._tag !== "Failure" || watchdog.absolute === undefined)
+              return yield* restore(awaitToolFibers(toolFibers)).pipe(Effect.exit)
+            const raced = yield* Effect.raceFirst(
+              restore(awaitToolFibers(toolFibers)).pipe(Effect.exit),
+              restore(Effect.sleep(watchdog.absolute)).pipe(Effect.as(null)),
+            )
+            if (raced === null) {
+              yield* FiberSet.clear(toolFibers)
+              yield* withPublication(publisher.failUnsettledTools("Tool execution interrupted"))
+              return Exit.succeed(undefined)
+            }
+            return raced
+          })
           if (settled._tag === "Failure" && isUserDeclined(settled.cause)) {
             yield* FiberSet.clear(toolFibers)
             yield* withPublication(publisher.failUnsettledTools("Tool execution interrupted"))
