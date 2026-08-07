@@ -1,5 +1,5 @@
 {
-  "name": "@opencode-ai/sdk-root",
+  "name": "@ranex/sdk-root",
   "private": true,
   "type": "module"
 }

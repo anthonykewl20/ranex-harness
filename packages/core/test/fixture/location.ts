@@ -1,6 +1,6 @@
-import { Location } from "@opencode-ai/core/location"
-import { Project } from "@opencode-ai/core/project"
-import { AbsolutePath } from "@opencode-ai/core/schema"
+import { Location } from "@ranex/core/location"
+import { Project } from "@ranex/core/project"
+import { AbsolutePath } from "@ranex/core/schema"
 import { Effect, Layer } from "effect"
 import { tmpdir } from "./tmpdir"
 

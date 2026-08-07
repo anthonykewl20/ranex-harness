@@ -1,5 +1,5 @@
-import { LLMEvent, Model } from "@opencode-ai/llm"
-import { Endpoint, Protocol, Route, type TransportDef } from "@opencode-ai/llm/route"
+import { LLMEvent, Model } from "@ranex/llm"
+import { Endpoint, Protocol, Route, type TransportDef } from "@ranex/llm/route"
 import { Effect, Schema, Stream } from "effect"
 
 const protocol = Protocol.make({

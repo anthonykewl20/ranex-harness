@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@opencode-ai/tui",
+  "name": "@ranex/tui",
   "version": "1.18.11",
   "private": true,
   "type": "module",
@@ -48,9 +48,9 @@
     "./component/register-spinner": "./src/component/register-spinner.ts"
   },
   "dependencies": {
-    "@opencode-ai/core": "workspace:*",
-    "@opencode-ai/plugin": "workspace:*",
-    "@opencode-ai/sdk": "workspace:*",
+    "@ranex/core": "workspace:*",
+    "@ranex/plugin": "workspace:*",
+    "@ranex/sdk": "workspace:*",
     "@opentui/core": "catalog:",
     "@opentui/keymap": "catalog:",
     "@opentui/solid": "catalog:",

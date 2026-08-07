@@ -8,7 +8,7 @@ import {
   TransportReason,
   isContextOverflowFailure,
   type ProviderErrorEvent,
-} from "@opencode-ai/llm"
+} from "@ranex/llm"
 
 const WATCHDOG_IDLE_KIND = "watchdog-idle"
 const WATCHDOG_ABSOLUTE_KIND = "watchdog-absolute"
@@ -64,7 +64,7 @@ import { llmClient } from "../../effect/app-node-platform"
  *
  * - One provider turn
  *   - [x] Translate every projected V2 Session message variant into canonical
- *     `@opencode-ai/llm` messages.
+ *     `@ranex/llm` messages.
  *   - [ ] Resolve policy-filtered built-in, MCP, plugin, and structured-output tool definitions.
  *   - [x] Stream exactly one `llm.stream(request)` provider turn.
  *   - [x] Persist assistant text and usage events incrementally as they arrive.

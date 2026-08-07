@@ -1,5 +1,5 @@
-import { Agent } from "@opencode-ai/schema/agent"
-import { Location } from "@opencode-ai/schema/location"
+import { Agent } from "@ranex/schema/agent"
+import { Location } from "@ranex/schema/location"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { LocationQuery, locationQueryOpenApi } from "./location"

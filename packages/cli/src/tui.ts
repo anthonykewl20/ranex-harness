@@ -1,8 +1,8 @@
-import { run } from "@opencode-ai/tui"
-import { TuiConfig } from "@opencode-ai/tui/config"
+import { run } from "@ranex/tui"
+import { TuiConfig } from "@ranex/tui/config"
 import { Effect } from "effect"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
-import { Global } from "@opencode-ai/core/global"
+import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
+import { Global } from "@ranex/core/global"
 
 export function runTui(transport: { url: string; headers: RequestInit["headers"] }) {
   const config = TuiConfig.resolve({}, { terminalSuspend: false })

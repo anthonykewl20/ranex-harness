@@ -13,7 +13,7 @@
       "outputs": [],
       "passThroughEnv": ["*"]
     },
-    "@opencode-ai/core#test": {
+    "@ranex/core#test": {
       "dependsOn": ["^build"],
       "outputs": []
     }

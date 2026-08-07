@@ -1,5 +1,5 @@
-import { Integration } from "@opencode-ai/schema/integration"
-import { Location } from "@opencode-ai/schema/location"
+import { Integration } from "@ranex/schema/integration"
+import { Location } from "@ranex/schema/location"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
 import { InvalidRequestError } from "../errors"
