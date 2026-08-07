@@ -5,10 +5,14 @@ import {
   LLMEvent,
   Message,
   SystemPart,
+  TransportReason,
   isContextOverflowFailure,
   type ProviderErrorEvent,
 } from "@opencode-ai/llm"
-import { Cause, DateTime, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
+
+const WATCHDOG_IDLE_KIND = "watchdog-idle"
+const WATCHDOG_ABSOLUTE_KIND = "watchdog-absolute"
+import { Cause, DateTime, Effect, Exit, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
 import { Database } from "../../database/database"
@@ -33,6 +37,7 @@ import { SessionSchema } from "../schema"
 import { SessionStore } from "../store"
 import { type RunError, Service } from "./index"
 import { SessionRunnerModel } from "./model"
+import { ProviderWatchdog } from "./provider-watchdog"
 import { createLLMEventPublisher } from "./publish-llm-event"
 import { toLLMMessages } from "./to-llm-message"
 import { MAX_STEPS_PROMPT } from "./max-steps"
@@ -105,6 +110,7 @@ const layer = Layer.effect(
     const referenceGuidance = yield* ReferenceGuidance.Service
     const config = yield* Config.Service
     const snapshots = yield* Snapshot.Service
+    const watchdog = yield* ProviderWatchdog.Service
     const db = (yield* Database.Service).db
     const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
     const getSession = Effect.fn("SessionRunner.getSession")(function* (sessionID: SessionSchema.ID) {
@@ -229,7 +235,37 @@ const layer = Layer.effect(
       const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
         withPublication(publisher.publish(event, outputPaths))
       let overflowFailure: ProviderErrorEvent | undefined
-      const providerStream = llm.stream(request).pipe(
+      const idleError = new LLMError({
+        module: "SessionRunner",
+        method: "stream",
+        reason: new TransportReason({ message: "Provider stream idle timeout", kind: WATCHDOG_IDLE_KIND }),
+      })
+      const idleDuration = watchdog.idle
+      // Idle measures inter-chunk silence only, NOT time-to-first-token. The deadline starts
+      // only after the first chunk arrives: the first pull runs untimed (a slow first token —
+      // reasoning / extended thinking — is bounded by the absolute budget), then every
+      // subsequent pull is raced against the idle deadline. Built on Stream.toPull/fromPull
+      // because Stream.peel + Sink.head drops the chunk remainder in this Effect version.
+      const idleWatched =
+        idleDuration !== undefined
+          ? Stream.fromPull(
+              Effect.gen(function* () {
+                const pull = yield* Stream.toPull(llm.stream(request))
+                let first = true
+                return Effect.gen(function* () {
+                  if (first) {
+                    first = false
+                    return yield* pull
+                  }
+                  return yield* Effect.raceFirst(
+                    pull,
+                    Effect.sleep(idleDuration).pipe(Effect.andThen(Effect.fail(idleError))),
+                  )
+                })
+              }),
+            )
+          : llm.stream(request)
+      const providerStream = idleWatched.pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {
             if (overflowFailure || publisher.hasProviderError()) return
@@ -276,7 +312,25 @@ const layer = Layer.effect(
 
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          const stream = yield* restore(providerStream).pipe(Effect.exit)
+          const providerTurn = watchdog.absolute !== undefined
+            ? Effect.raceFirst(
+                restore(providerStream),
+                restore(
+                  Effect.sleep(watchdog.absolute).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new LLMError({
+                          module: "SessionRunner",
+                          method: "stream",
+                          reason: new TransportReason({ message: "Provider turn absolute timeout", kind: WATCHDOG_ABSOLUTE_KIND }),
+                        }),
+                      ),
+                    ),
+                  ),
+                ),
+              )
+            : providerStream
+          const stream = yield* restore(providerTurn).pipe(Effect.exit)
           const failure =
             stream._tag === "Failure" ? Option.getOrUndefined(Cause.findErrorOption(stream.cause)) : undefined
           if (
@@ -293,7 +347,23 @@ const layer = Layer.effect(
             yield* withPublication(publisher.failAssistant(llmFailure.reason.message))
           }
           if (stream._tag === "Failure" && Cause.hasInterrupts(stream.cause)) yield* FiberSet.clear(toolFibers)
-          const settled = yield* restore(awaitToolFibers(toolFibers)).pipe(Effect.exit)
+          // A failed provider turn must not wait forever for a tool that ignored the
+          // provider watchdog. Keep every healthy or unbudgeted settlement await
+          // unchanged; only a failed, absolutely-bounded turn gains this second bound.
+          const settled = yield* Effect.gen(function* () {
+            if (stream._tag !== "Failure" || watchdog.absolute === undefined)
+              return yield* restore(awaitToolFibers(toolFibers)).pipe(Effect.exit)
+            const raced = yield* Effect.raceFirst(
+              restore(awaitToolFibers(toolFibers)).pipe(Effect.exit),
+              restore(Effect.sleep(watchdog.absolute)).pipe(Effect.as(null)),
+            )
+            if (raced === null) {
+              yield* FiberSet.clear(toolFibers)
+              yield* withPublication(publisher.failUnsettledTools("Tool execution interrupted"))
+              return Exit.succeed(undefined)
+            }
+            return raced
+          })
           if (settled._tag === "Failure" && isUserDeclined(settled.cause)) {
             yield* FiberSet.clear(toolFibers)
             yield* withPublication(publisher.failUnsettledTools("Tool execution interrupted"))
@@ -420,6 +490,7 @@ export const node = makeLocationNode({
     AgentV2.node,
     ToolRegistry.node,
     SessionRunnerModel.node,
+    ProviderWatchdog.node,
     SessionStore.node,
     Location.node,
     SystemContextRegistry.node,
