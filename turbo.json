@@ -1,20 +1,34 @@
 {
   "$schema": "https://v2-8-13.turborepo.dev/schema.json",
-  "globalEnv": ["CI", "RANEX_DISABLE_SHARE"],
-  "globalPassThroughEnv": ["CI", "RANEX_DISABLE_SHARE"],
+  "globalEnv": [
+    "CI",
+    "RANEX_DISABLE_SHARE"
+  ],
+  "globalPassThroughEnv": [
+    "CI",
+    "RANEX_DISABLE_SHARE"
+  ],
   "tasks": {
     "typecheck": {},
     "build": {
       "dependsOn": [],
-      "outputs": ["dist/**"]
+      "outputs": [
+        "dist/**"
+      ]
     },
-    "opencode#test": {
-      "dependsOn": ["^build"],
+    "ranex#test": {
+      "dependsOn": [
+        "^build"
+      ],
       "outputs": [],
-      "passThroughEnv": ["*"]
+      "passThroughEnv": [
+        "*"
+      ]
     },
     "@ranex/core#test": {
-      "dependsOn": ["^build"],
+      "dependsOn": [
+        "^build"
+      ],
       "outputs": []
     }
   }
