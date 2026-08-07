@@ -183,4 +183,44 @@ describe("Discovery.pull", () => {
       expect(mutableDownloadCount).toBe(3)
     }),
   )
+
+  it.live("honours and supersedes a legacy .opencode-version marker", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() => rm(cacheDir, { recursive: true, force: true }))
+      const root = path.join(cacheDir, "mutable")
+      yield* Effect.promise(() => Bun.write(path.join(root, "SKILL.md"), "# Old"))
+      yield* Effect.promise(() => Bun.write(path.join(root, ".opencode-version"), "1"))
+      mutableVersion = "1"
+      mutableDownloadCount = 0
+      mutableFiles = ["SKILL.md"]
+      const discovery = yield* Discovery.Service
+
+      yield* discovery.pull(`http://localhost:${server.port}/mutable/`)
+
+      expect(mutableDownloadCount).toBe(0)
+      expect(yield* Effect.promise(() => Bun.file(path.join(root, ".ranex-version")).text())).toBe("1")
+      expect(yield* Effect.promise(() => Bun.file(path.join(root, ".opencode-version")).exists())).toBe(false)
+    }),
+  )
+
+  it.live("a version bump supersedes a legacy .opencode-version marker via refresh", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() => rm(cacheDir, { recursive: true, force: true }))
+      const root = path.join(cacheDir, "mutable")
+      yield* Effect.promise(() => Bun.write(path.join(root, "SKILL.md"), "# Old"))
+      yield* Effect.promise(() => Bun.write(path.join(root, ".opencode-version"), "1"))
+      mutableVersion = "2"
+      mutableContent = "# New"
+      mutableFiles = ["SKILL.md"]
+      mutableDownloadCount = 0
+      const discovery = yield* Discovery.Service
+
+      yield* discovery.pull(`http://localhost:${server.port}/mutable/`)
+
+      expect(yield* Effect.promise(() => Bun.file(path.join(root, "SKILL.md")).text())).toBe("# New")
+      expect(yield* Effect.promise(() => Bun.file(path.join(root, ".ranex-version")).text())).toBe("2")
+      expect(yield* Effect.promise(() => Bun.file(path.join(root, ".opencode-version")).exists())).toBe(false)
+      expect(mutableDownloadCount).toBe(1)
+    }),
+  )
 })

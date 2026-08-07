@@ -123,12 +123,54 @@ describe("SkillDiscovery.pull", () => {
 
       expect(await fs.readFile(path.join(first.directories[0], "SKILL.md"), "utf8")).toBe("# New")
       expect(second.requests).toContain(`${base}deploy/SKILL.md`)
+      expect(await fs.readFile(path.join(first.directories[0], ".ranex-version"), "utf8")).toBe("2")
+      expect(await Bun.file(path.join(first.directories[0], ".opencode-version")).exists()).toBe(false)
       const third = await pull(
         [{ name: "deploy", version: "2", files: ["SKILL.md"] }],
         { [`${base}deploy/SKILL.md`]: "# Ignored" },
         tmp,
       )
       expect(third.requests).toEqual([`${base}index.json`])
+    } finally {
+      await tmp[Symbol.asyncDispose]()
+    }
+  })
+
+  test("honours and supersedes a legacy .opencode-version marker", async () => {
+    const tmp = await tmpdir()
+    try {
+      const root = path.resolve(tmp.path, "skills", Bun.hash(base).toString(16), "deploy")
+      await fs.mkdir(root, { recursive: true })
+      await Bun.write(path.join(root, "SKILL.md"), "# Deploy")
+      await Bun.write(path.join(root, ".opencode-version"), "1")
+
+      const result = await pull([{ name: "deploy", version: "1", files: ["SKILL.md"] }], {}, tmp)
+
+      expect(result.requests).toEqual([`${base}index.json`])
+      expect(await Bun.file(path.join(root, ".ranex-version")).text()).toBe("1")
+      expect(await Bun.file(path.join(root, ".opencode-version")).exists()).toBe(false)
+    } finally {
+      await tmp[Symbol.asyncDispose]()
+    }
+  })
+
+  test("a version bump supersedes a legacy .opencode-version marker via refresh", async () => {
+    const tmp = await tmpdir()
+    try {
+      const root = path.resolve(tmp.path, "skills", Bun.hash(base).toString(16), "deploy")
+      await fs.mkdir(root, { recursive: true })
+      await Bun.write(path.join(root, "SKILL.md"), "# Old")
+      await Bun.write(path.join(root, ".opencode-version"), "1")
+
+      await pull(
+        [{ name: "deploy", version: "2", files: ["SKILL.md"] }],
+        { [`${base}deploy/SKILL.md`]: "# New" },
+        tmp,
+      )
+
+      expect(await Bun.file(path.join(root, "SKILL.md")).text()).toBe("# New")
+      expect(await Bun.file(path.join(root, ".ranex-version")).text()).toBe("2")
+      expect(await Bun.file(path.join(root, ".opencode-version")).exists()).toBe(false)
     } finally {
       await tmp[Symbol.asyncDispose]()
     }

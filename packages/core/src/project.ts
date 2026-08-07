@@ -63,6 +63,12 @@ const layer = Layer.effect(
     })
 
     const cached = Effect.fnUntraced(function* (dir: string) {
+      const current = yield* fs.readFileString(path.join(dir, "ranex")).pipe(
+        Effect.map((value) => value.trim()),
+        Effect.map((value) => (value ? ID.make(value) : undefined)),
+        Effect.catch(() => Effect.succeed(undefined)),
+      )
+      if (current) return current
       return yield* fs.readFileString(path.join(dir, "opencode")).pipe(
         Effect.map((value) => value.trim()),
         Effect.map((value) => (value ? ID.make(value) : undefined)),
@@ -122,7 +128,10 @@ const layer = Layer.effect(
     })
 
     const commit = Effect.fn("Project.commit")(function* (input: { store: AbsolutePath; id: ID }) {
-      yield* fs.writeFileString(path.join(input.store, "opencode"), input.id).pipe(Effect.ignore)
+      yield* Effect.gen(function* () {
+        yield* fs.writeFileString(path.join(input.store, "ranex"), input.id)
+        yield* fs.remove(path.join(input.store, "opencode"), { force: true })
+      }).pipe(Effect.ignore)
     })
 
     return Service.of({ directories, resolve, commit })

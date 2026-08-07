@@ -147,7 +147,7 @@ describe("ProjectV2.resolve", () => {
     }),
   )
 
-  it.live("returns previous cached id from common dir", () =>
+  it.live("honours the legacy cached id from common dir", () =>
     Effect.gen(function* () {
       const tmp = yield* Effect.acquireRelease(
         Effect.promise(() => tmpdir()),
@@ -164,6 +164,41 @@ describe("ProjectV2.resolve", () => {
     }),
   )
 
+  it.live("returns previous cached id from the ranex file", () =>
+    Effect.gen(function* () {
+      const tmp = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      yield* Effect.promise(() => initRepo(tmp.path, { commit: true }))
+      yield* Effect.promise(() => Bun.write(path.join(tmp.path, ".git", "ranex"), "old-id"))
+      const project = yield* ProjectV2.Service
+
+      const result = yield* project.resolve(abs(tmp.path))
+
+      expect(result.previous).toBe(ProjectV2.ID.make("old-id"))
+      expect(result.id).toBe(ProjectV2.ID.make("old-id"))
+    }),
+  )
+
+  it.live("prefers the ranex cached id over the legacy cached id", () =>
+    Effect.gen(function* () {
+      const tmp = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      yield* Effect.promise(() => initRepo(tmp.path, { commit: true }))
+      yield* Effect.promise(() => Bun.write(path.join(tmp.path, ".git", "opencode"), "legacy-id"))
+      yield* Effect.promise(() => Bun.write(path.join(tmp.path, ".git", "ranex"), "ranex-id"))
+      const project = yield* ProjectV2.Service
+
+      const result = yield* project.resolve(abs(tmp.path))
+
+      expect(result.previous).toBe(ProjectV2.ID.make("ranex-id"))
+      expect(result.id).toBe(ProjectV2.ID.make("ranex-id"))
+    }),
+  )
+
   it.live("does not write the cache while resolving", () =>
     Effect.gen(function* () {
       const tmp = yield* Effect.acquireRelease(
@@ -175,6 +210,27 @@ describe("ProjectV2.resolve", () => {
 
       yield* project.resolve(abs(tmp.path))
 
+      expect(yield* Effect.promise(() => Bun.file(path.join(tmp.path, ".git", "ranex")).exists())).toBe(false)
+      expect(yield* Effect.promise(() => Bun.file(path.join(tmp.path, ".git", "opencode")).exists())).toBe(false)
+    }),
+  )
+
+  it.live("commit writes the ranex cache and removes the legacy cache", () =>
+    Effect.gen(function* () {
+      const tmp = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      yield* Effect.promise(() => initRepo(tmp.path, { commit: true }))
+      yield* Effect.promise(() => Bun.write(path.join(tmp.path, ".git", "opencode"), "old-id"))
+      const project = yield* ProjectV2.Service
+      const result = yield* project.resolve(abs(tmp.path))
+      expect(result.vcs).toBeDefined()
+      if (!result.vcs) return
+
+      yield* project.commit({ store: result.vcs.store, id: ProjectV2.ID.make("new-id") })
+
+      expect(yield* Effect.promise(() => Bun.file(path.join(tmp.path, ".git", "ranex")).text())).toBe("new-id")
       expect(yield* Effect.promise(() => Bun.file(path.join(tmp.path, ".git", "opencode")).exists())).toBe(false)
     }),
   )
@@ -195,7 +251,7 @@ describe("ProjectV2.resolve", () => {
     }),
   )
 
-  it.live("linked worktree returns opened worktree directory and previous from common dir", () =>
+  it.live("linked worktree honours the legacy cached id from common dir", () =>
     Effect.gen(function* () {
       const tmp = yield* Effect.acquireRelease(
         Effect.promise(() => tmpdir()),
