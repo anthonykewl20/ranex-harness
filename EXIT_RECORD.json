@@ -1,0 +1,46 @@
+{
+  "claim": "ADR-015 claim 4 / SLICE-011 done-criterion 5 — durable blockers (sad paths 5 and 6)",
+  "thesis": "Pending permission/question blockers are an in-memory Map cleared on location-layer teardown. Persist them as SQLite rows so the SAME blocker ID survives teardown, accepts EXACTLY ONE reply, and never re-runs the creating tool's pre-permission work.",
+  "anti_decoration_rule": "The Deferred is NOT durable; the SQLite row is. Exactly-once is enforced by ROW DELETION on reply/reject. Persisting the payload and replaying into a fresh Deferred is decoration unless the same blocker ID accepts exactly one reply after teardown.",
+  "worktree": {
+    "path": "/home/soultransit/devtony/ranex-harness-wt4-blockers",
+    "branch": "proto/s011-blockers",
+    "head": "2431314c3261b11736b97cacf47820d8fcd3f0e6",
+    "committed": false,
+    "pushed": false
+  },
+  "artifacts": {
+    "packages/core/src/permission.ts": { "sha256": "9129bceb647ff6016d21232d9c6c8a70d0aa654af1e65e58f4ef4cbaee7440eb", "change": "durable rows + rehydrate on construction; remove() deletes row on every terminal path; finalizer leaves rows; create INSERT cleans up pending on error" },
+    "packages/core/src/question.ts": { "sha256": "713063972d1d4e968c9410b990b64455dceeee0f09359d8230ce246d8cc3e305", "change": "durable rows + rehydrate; remove() on reply/reject; finalizer leaves rows" },
+    "packages/core/src/permission/request-sql.ts": { "sha256": "b9c32056d90bc4a9a13a5749accfffb1ee794bff1a1adbd7c4266aad7a37a40a", "change": "new drizzle table permission_request (outside the migration glob; test creates it via DDL)" },
+    "packages/core/src/question/request-sql.ts": { "sha256": "d1fdf10aa5175fa0a92ded5c5f95fb1bca297280319935706adda907a66a8f18", "change": "new drizzle table question_request" },
+    "packages/core/test/durable-blocker.test.ts": { "sha256": "5c2d5320646d16a35fb093677ba51248fd3bc1070a197e9c31ccf252433b0237", "change": "scratch red/green suite: shared DB connection, two fresh location-layer builds across Scope.close teardown; plus a positive control proving the injected EventV2 listener observes a genuine Asked publish for the same blocker id (closes the vacuous-listener residual risk)" }
+  },
+  "commands": {
+    "red": "cd packages/core && bun test test/durable-blocker.test.ts   # run with src/permission.ts + src/question.ts reverted to HEAD",
+    "green": "cd packages/core && bun test test/durable-blocker.test.ts",
+    "regression": "cd packages/core && bun test test/permission.test.ts test/question.test.ts",
+    "typecheck": "cd packages/core && bun run typecheck"
+  },
+  "observed": {
+    "red": "0 pass, 4 fail, 6 expect() calls. Failure mode: after Scope.close teardown, service.list() omits the blocker id (Expected: true / Received: false) and reply/reject return PermissionV2.NotFoundError / QuestionV2.NotFoundError — the pending Map was cleared by the finalizer and nothing persisted.",
+    "green": "5 pass, 0 fail, 23 expect() calls. Tests: permission-once, permission-reject, question-reply, question-cancel — all across teardown — plus a positive control proving the injected listener observes a genuine Asked publish.",
+    "regression": "14 pass, 0 fail, 50 expect() calls (existing permission + question suites unchanged).",
+    "typecheck": "tsgo --noEmit exit 0"
+  },
+  "exactly_once_evidence": "After teardown + fresh build, the same blocker id is listed (list/forSession/get), one reply/reject succeeds and drives requestCount to 0, and the second reply/reject returns NotFoundError. Covered: permission 'once', permission 'reject', question 'reply', question 'reject' (cancel also asserts a follow-up reply is NotFound).",
+  "no_rerun_evidence": "Rehydration loads rows directly into the pending Map with fresh Deferreds (no create/ask/evaluateInput/publish). An EventV2 listener installed BEFORE the second layer builds asserts republished === 0. Asked is non-durable (define() with no durable option), so it is never written to the event table; the in-process listener is the no-rerun authority. The listener's load-bearing nature is POSITIVELY test-backed, not construction-only — see positive_control.",
+  "positive_control": "durable-blocker.test.ts 'positive control: an injected event listener observes a genuine Asked publish'. Attaches the listener to the injected EventV2 instance BEFORE the creating context and asserts it observes a genuine Asked publish for the SAME blocker id, for BOTH permission and question. This proves the EventV2.node override (Layer.succeed(EventV2.Service, events)) is load-bearing, so the republished===0 no-rerun assertions are non-vacuous — the same species of defect as the removed askedEventCount decoration is now one refactor from a red test, not a silent pass. Verified by breaking the override: removing the permission override fails the control at the permission assertion (expect permissionAsked > 0, received 0) while the four rehydration tests still pass (proving their republished===0 was the vacuous path); removing the question override fails it at the question assertion. Restored: 5 pass. Closes the listener-vacuity residual risk.",
+  "review": {
+    "reviewer_hy3": { "decision": "NITS -> APPROVE after fixes", "note": "exactly-once-after-teardown and no-rerun PROVEN. Fixed its two P2 findings: (1) create INSERT orphan now cleans up pending on error; (2) removed vacuous askedEventCount event-table assertions (Asked is non-durable)." },
+    "reviewer_deepseek": { "decision": "APPROVE", "note": "exactly-once and no-rerun PROVEN by code+test. Remaining findings are production-slice scope: no migration yet (intended — SLICE-012+), stale-row lifecycle/TTL, multi-location fencing (claim 5), fail-fast decode." },
+    "consensus": "both approve; no blocker/major findings against the claim"
+  },
+  "scope_notes_and_residual_risk": [
+    "Prototype only — ships nothing. Production slice (SLICE-012+) must add a real drizzle migration creating permission_request/question_request; until then the sqlite_master probe degrades to legacy in-memory behavior.",
+    "Tables are defined in request-sql.ts (outside the drizzle migration glob ./src/**/*.sql.ts and ./src/**/sql.ts) and created via raw DDL in the test; no migration generator churn.",
+    "Stale rows survive teardown by design (that IS the durability). A TTL/expiry/GC policy for orphaned blockers is a production concern, out of scope for the claim.",
+    "Multi-location concurrency over shared blocker rows is claim 5 (Session-ID fencing); single-location assumption is explicit here.",
+    "reject-cascade and always-remember loops delete rows via the shared remove() helper (code-derived, not separately tested across teardown)."
+  ]
+}

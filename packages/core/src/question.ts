@@ -5,6 +5,9 @@ import { Context, Deferred, Effect, Layer, Schema } from "effect"
 import { Question } from "@opencode-ai/schema/question"
 import { EventV2 } from "./event"
 import { SessionSchema } from "./session/schema"
+import { Database } from "./database/database"
+import { eq, sql } from "drizzle-orm"
+import { QuestionRequestTable } from "./question/request-sql"
 
 export const ID = Question.ID
 export type ID = typeof ID.Type
@@ -76,7 +79,21 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2.Service
+    const { db } = yield* Database.Service
     const pending = new Map<ID, Pending>()
+
+    const durable = Boolean(
+      yield* db
+        .get(sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'question_request'`)
+        .pipe(Effect.orDie),
+    )
+    const rows = durable ? yield* db.select().from(QuestionRequestTable).all().pipe(Effect.orDie) : []
+    for (const row of rows) {
+      if (pending.has(row.id as ID)) continue
+      const deferred = yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>()
+      const request = Schema.decodeUnknownSync(Request)(JSON.parse(row.data))
+      pending.set(request.id, { request, deferred })
+    }
 
     yield* Effect.addFinalizer(() =>
       Effect.forEach(pending.values(), (item) => Deferred.fail(item.deferred, new RejectedError()), {
@@ -90,6 +107,15 @@ const layer = Layer.effect(
       ),
     )
 
+    const remove = (id: ID) =>
+      Effect.sync(() => pending.delete(id)).pipe(
+        Effect.andThen(
+          durable
+            ? db.delete(QuestionRequestTable).where(eq(QuestionRequestTable.id, id)).run().pipe(Effect.orDie)
+            : Effect.void,
+        ),
+      )
+
     const ask = Effect.fn("QuestionV2.ask")((input: AskInput) =>
       Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
@@ -98,6 +124,19 @@ const layer = Layer.effect(
           const request: Request = { id, ...input }
           pending.set(id, { request, deferred })
           return yield* events.publish(Event.Asked, request).pipe(
+            Effect.andThen(
+              durable
+                ? db
+                    .insert(QuestionRequestTable)
+                    .values({
+                      id,
+                      session_id: input.sessionID,
+                      data: JSON.stringify(Schema.encodeUnknownSync(Request)(request)),
+                    })
+                    .run()
+                    .pipe(Effect.orDie)
+                : Effect.void,
+            ),
             Effect.andThen(restore(Deferred.await(deferred))),
             Effect.ensuring(
               Effect.sync(() => {
@@ -120,7 +159,7 @@ const layer = Layer.effect(
             answers: input.answers.map((answer) => [...answer]),
           })
           yield* Deferred.succeed(existing.deferred, input.answers)
-          pending.delete(input.requestID)
+          yield* remove(input.requestID)
         }),
       ),
     )
@@ -135,7 +174,7 @@ const layer = Layer.effect(
             requestID: existing.request.id,
           })
           yield* Deferred.fail(existing.deferred, new RejectedError())
-          pending.delete(requestID)
+          yield* remove(requestID)
         }),
       ),
     )
@@ -150,4 +189,4 @@ const layer = Layer.effect(
 
 export const locationLayer = layer
 
-export const node = makeLocationNode({ service: Service, layer, deps: [EventV2.node] })
+export const node = makeLocationNode({ service: Service, layer, deps: [Database.node, EventV2.node] })

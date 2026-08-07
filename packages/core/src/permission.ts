@@ -10,6 +10,9 @@ import { SessionV2 } from "./session"
 import { SessionStore } from "./session/store"
 import { Wildcard } from "./util/wildcard"
 import { PermissionSaved } from "./permission/saved"
+import { Database } from "./database/database"
+import { eq, sql } from "drizzle-orm"
+import { PermissionRequestTable } from "./permission/request-sql"
 
 export { Effect, Rule, Ruleset } from "@opencode-ai/schema/permission"
 const missingAgentPermissions: Permission.Ruleset = [{ action: "*", resource: "*", effect: "deny" }]
@@ -114,7 +117,27 @@ const layer = Layer.effect(
     const agents = yield* AgentV2.Service
     const sessions = yield* SessionStore.Service
     const saved = yield* PermissionSaved.Service
+    const { db } = yield* Database.Service
     const pending = new Map<ID, Pending>()
+
+    const durable = Boolean(
+      yield* db
+        .get(sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'permission_request'`)
+        .pipe(EffectRuntime.orDie),
+    )
+    const rows = durable
+      ? yield* db.select().from(PermissionRequestTable).all().pipe(EffectRuntime.orDie)
+      : []
+    for (const row of rows) {
+      if (pending.has(row.id as ID)) continue
+      const deferred = yield* Deferred.make<void, DeclinedError | CorrectedError>()
+      const request = Schema.decodeUnknownSync(Request)(JSON.parse(row.data))
+      pending.set(request.id, {
+        request,
+        agent: (row.agent ?? undefined) as AgentV2.ID | undefined,
+        deferred,
+      })
+    }
 
     yield* EffectRuntime.addFinalizer(() =>
       EffectRuntime.forEach(pending.values(), (item) => Deferred.fail(item.deferred, new DeclinedError()), {
@@ -173,6 +196,15 @@ const layer = Layer.effect(
       }
     }
 
+    const remove = (id: ID) =>
+      EffectRuntime.sync(() => pending.delete(id)).pipe(
+        EffectRuntime.andThen(
+          durable
+            ? db.delete(PermissionRequestTable).where(eq(PermissionRequestTable.id, id)).run().pipe(EffectRuntime.orDie)
+            : EffectRuntime.void,
+        ),
+      )
+
     const create = (request: Request, agent?: AgentV2.ID) =>
       EffectRuntime.uninterruptible(
         EffectRuntime.gen(function* () {
@@ -183,6 +215,20 @@ const layer = Layer.effect(
           yield* events
             .publish(Event.Asked, request)
             .pipe(EffectRuntime.onError(() => EffectRuntime.sync(() => pending.delete(request.id))))
+          if (durable)
+            yield* db
+              .insert(PermissionRequestTable)
+              .values({
+                id: request.id,
+                session_id: request.sessionID,
+                data: JSON.stringify(Schema.encodeUnknownSync(Request)(request)),
+                agent: agent ?? null,
+              })
+              .run()
+              .pipe(
+                EffectRuntime.onError(() => EffectRuntime.sync(() => pending.delete(request.id))),
+                EffectRuntime.orDie,
+              )
           return item
         }),
       )
@@ -233,7 +279,7 @@ const layer = Layer.effect(
               existing.deferred,
               input.message ? new CorrectedError({ feedback: input.message }) : new DeclinedError(),
             )
-            pending.delete(input.requestID)
+            yield* remove(input.requestID)
             for (const [id, item] of pending) {
               if (item.request.sessionID !== existing.request.sessionID) continue
               yield* events.publish(Event.Replied, {
@@ -242,7 +288,7 @@ const layer = Layer.effect(
                 reply: "reject",
               })
               yield* Deferred.fail(item.deferred, new DeclinedError())
-              pending.delete(id)
+              yield* remove(id)
             }
             return
           }
@@ -255,7 +301,7 @@ const layer = Layer.effect(
             })
           }
           yield* Deferred.succeed(existing.deferred, undefined)
-          pending.delete(input.requestID)
+          yield* remove(input.requestID)
           if (input.reply !== "always" || !existing.request.save?.length) return
 
           const rememberedRules = yield* savedRules()
@@ -279,7 +325,7 @@ const layer = Layer.effect(
               reply: "always",
             })
             yield* Deferred.succeed(item.deferred, undefined)
-            pending.delete(id)
+            yield* remove(id)
           }
         }),
       ),
@@ -306,5 +352,5 @@ export const locationLayer = layer.pipe(Layer.provideMerge(AgentV2.locationLayer
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [EventV2.node, Location.node, AgentV2.node, SessionStore.node, PermissionSaved.node],
+  deps: [Database.node, EventV2.node, Location.node, AgentV2.node, SessionStore.node, PermissionSaved.node],
 })
