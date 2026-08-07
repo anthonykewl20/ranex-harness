@@ -1,0 +1,129 @@
+{
+  "schema": "ranex/slice-exit-record/v1",
+  "slice": "SLICE-011",
+  "claim": "5 — Session-ID fencing (ownership)",
+  "adr": "ADR-015 (sad path 7; decision outcome point 5)",
+  "mode": "disposable prototype (scratch suite, no commits, no pushes)",
+  "worktree": {
+    "path": "/home/soultransit/devtony/ranex-harness-wt5-fencing",
+    "branch": "proto/s011-fencing",
+    "head": "2431314c3261b11736b97cacf47820d8fcd3f0e6",
+    "base": "ranex-trim @ 2431314c32 (ranex-harness fork)"
+  },
+  "thesis_under_test": "Ownership is an in-memory Map (packages/core/src/session/run-coordinator.ts:28) over a globally shared SQLite DB (packages/core/src/database/database.ts:53). Two live processes can therefore double-drain one Session. The fence is the existing effect-flock (packages/core/src/util/effect-flock.ts) keyed on sessionID plus EventSequenceTable.owner_id claim/refuse (packages/core/src/event.ts:254,274,291,525; schema packages/core/src/database/schema.gen.ts:73-77).",
+  "fixtures": [
+    { "path": "packages/core/test/scratch-s011-fencing/schema.ts", "digest_sha256": "f7a5334f02e9248d670ba3917ab9874e28263b0eacba37b97121303122b95a96", "role": "shared event_sequence + drain_log schema (mirrors schema.gen.ts:73-77) and the drain observable" },
+    { "path": "packages/core/test/scratch-s011-fencing/worker.ts", "digest_sha256": "f20e66ce71a63ce75c20792e023bab363d8097077f8d8fefe32b7db84faf524c", "role": "one process: builds a real SessionRunCoordinator + real EffectFlock; drain modes = unfenced / flock+owner_id / owner_id-only; claim is an atomic INSERT...ON CONFLICT...RETURNING mirroring event.ts:325-334. CORRECTED: busy_timeout is now the first pragma and journal_mode/DDL were dropped (prepareDb owns those) so concurrent opens no longer collide on the WAL pragma; DB setup is wrapped in try/catch that writes a clear stderr + deliberate non-zero exit." },
+    { "path": "packages/core/test/scratch-s011-fencing/ownership-fence.test.ts", "digest_sha256": "c4096613e6539247b558dfef2a3a4ee8dd07a45ebcbcd4a8ec0d0b68cc8eaccd", "role": "orchestrator: spawns two worker subprocesses over ONE shared DB; baseline / green(flock+owner) / isolation(owner-only) / s.p.7 / negative-control. CORRECTED: every scenario now calls assertWorkersOk, which throws with the captured worker stderr inlined — previously spawnWorker collected stderr and discarded it, so a startup crash read as a signal-less flake." }
+  ],
+  "commands": {
+    "reproduce_all": "cd packages/core && bun test test/scratch-s011-fencing/ownership-fence.test.ts",
+    "run_dir": "packages/core (tests cannot run from repo root — guard do-not-run-tests-from-root)",
+    "baseline_double_drain": "BASELINE test (fence OFF): two worker subprocesses drain session sess-DOUBLE-DRAIN-fixture against one shared SQLite file concurrently",
+    "fence_refusal": "GREEN test (fence ON): worker A holds flock + claims owner_id; worker B (startAfterFile handshake) is blocked by the flock then refused by owner_id mismatch"
+  },
+  "observed": {
+    "run_output_digest_sha256": "4ea99c96bcd18cc33deef36e60011bbacbb3fa531df2b751a4c6db7d3b3d41ff",
+    "stability": "20/20 consecutive FULL-suite runs green after the fixture correction (concurrent spawns in BASELINE/ISOLATION/NEG-CTL are where the race lived). isolation also 10/10 single-test runs before this round. tsgo --noEmit clean. NOT called stable on fewer than 20/20.",
+    "stability_history": {
+      "defect_found_by": "supervisor verification (not by the agent or the two reviewers)",
+      "symptom": "2 failures in 16 full-suite runs (~12%), always NEGATIVE CONTROL at the `expect(results.every(r=>r.code===0)).toBe(true)` line — a worker subprocess exited non-zero. Every fencing assertion still passed, so the failure carried no fencing signal.",
+      "root_cause": "FIXTURE BUG, not a fencing bug. worker.ts set PRAGMA busy_timeout AFTER PRAGMA journal_mode = WAL; the journal_mode change needs a brief exclusive lock and busy_timeout was still 0, so two workers opening the shared DB concurrently collided with SQLiteError 'database is locked'. The throw ran at module top level, OUTSIDE the Effect.runPromise .catch(), so it escaped unhandled. GREEN escaped only because its startAfterFile handshake serializes startup.",
+      "why_it_read_as_stable": "spawnWorker collected worker stderr and then discarded it; the failure was diagnostically blank.",
+      "fix": "(1) worker.ts: busy_timeout is now the first pragma; journal_mode and the DDL were dropped entirely (prepareDb in the orchestrator already creates the DB in WAL with the schema, and WAL is persistent). (2) worker.ts: DB setup is wrapped in try/catch that writes a clear stderr and exits non-zero deliberately. (3) ownership-fence.test.ts: every scenario calls assertWorkersOk, which throws with the captured worker stderr inlined on any non-zero exit. (4) re-measured: 20/20 full-suite runs green.",
+      "lesson": "a control that is itself flaky cannot distinguish a startup race from a changed mechanism — the negative control's stability is load-bearing evidence."
+    },
+    "typecheck": "tsgo --noEmit from packages/core: exit 0, 0 errors",
+    "baseline_fence_off": {
+      "drain_log_rows": 2,
+      "rows": ["#1 owner=A dur=403ms", "#2 owner=B dur=401ms"],
+      "outcomes": "A=drained, B=drained",
+      "wall_both": "~1.0-1.2s (hold each=400ms -> concurrent, not serialized)",
+      "concurrent_overlap": true,
+      "verdict": "RED — the double-drain is real: the per-process in-memory coordinator Map does not fence across processes over the shared DB"
+    },
+    "green_fence_on": {
+      "drain_log_rows": 1,
+      "rows": ["#1 owner=A dur=401-404ms"],
+      "outcomes": "A=drained, B=refused(owner=A)",
+      "final_owner_id": "A",
+      "active_after": "A={}  B={}",
+      "verdict": "GREEN — flock serialised B behind A; owner_id mismatch then refused B. Exactly one owner drained."
+    },
+    "isolation_owner_id_only_no_flock": {
+      "drain_log_rows": 1,
+      "outcomes": "one drained + one refused (winner nondeterministic: e.g. B=drained, A=refused(owner=B))",
+      "verdict": "ISOLATION — closes the reviewer gap: with the flock removed entirely and both processes started concurrently (no handshake), the atomic owner_id claim/refuse (INSERT...ON CONFLICT...RETURNING, mirroring event.ts:325-334) ALONE still refuses the second concurrent owner. owner_id is load-bearing, not decoration. (Note: an earlier non-atomic claim using a read-then-write transaction flaked ~1/10 under write contention — proving the claim must be a single atomic statement, as production's onConflictDoUpdate is.)"
+    },
+    "sad_path_7_live_sample": {
+      "while_busy_owner_id_sampled": "A",
+      "verdict": "s.p.7 — while the session is busy draining, event_sequence.owner_id is a valid (non-null) owner; after, no worker leaves the session active"
+    },
+    "negative_control_fence_off": {
+      "drain_log_rows": 2,
+      "outcomes": "A=drained, B=drained",
+      "concurrent_overlap": true,
+      "verdict": "NEG-CTL — defect recurs with the fence removed (independent of the implementation under test: identical harness, fence code path disabled)"
+    }
+  },
+  "assertions": [
+    "BASELINE: rows.length==2, owners {A,B}, both drained, time ranges overlap",
+    "GREEN: rows.length==1, exactly one drained + one refused, refused.conflict==drained.owner, final owner_id==drained.owner, no worker activeAfter contains the session",
+    "ISOLATION: owner_id-only, no flock, no handshake -> rows.length==1, one drained + one refused (owner_id load-bearing under true concurrency)",
+    "s.p.7: owner_id sampled while in-drain == the active owner (busy => valid owner)",
+    "NEG-CTL: rows.length==2, owners {A,B}, overlap (defect returns when fence off)"
+  ],
+  "what_is_NOT_proven": [
+    "This is the disposable prototype only. Production integration in the harness (wiring the fence into execution/local.ts drain) is SLICE-012+.",
+    "Durability is process-crash only at synchronous=NORMAL (ADR-015 s.p. 9); host-crash is unclaimed.",
+    "Cross-process failover and subagent/task recovery remain deferred (ADR-015).",
+    "The flock's stale-recovery (STALE_MS=60s) reclaim path is exercised by the existing effect-flock.test.ts, not re-proven here.",
+    "SCOPE NOTE (candidate 2): GREEN is handshake-serialized — B starts only after A holds the flock — so flock+owner_id TOGETHER are not proven under true concurrency. This is not load-bearing for the claim: ISOLATION removes the flock and the handshake and proves owner_id alone refuses a genuinely concurrent second owner; the flock's added value is cross-process serialization/stale-recovery, not a correctness gate the claim depends on.",
+    "SCOPE NOTE (candidate 1, deferred): the prototype never clears owner_id after a drain, so a finished/crashed owner leaves owner_id set and a different future owner is refused until an explicit reclaim. Owner release / lease-reclaim is SLICE-012+.",
+    "SCOPE NOTE (candidate 3, deferred): production event.ts owner_id is replay-ownership (gates event replay at :254/:291), not session-drain ownership; this prototype validates a drain-ownership reading the harness does not have yet. Reconciling the two is SLICE-012+.",
+    "RESIDUAL RISK: the negative control's own stability is load-bearing evidence — an unstable control cannot distinguish a startup flake from a changed mechanism. The pre-fix ~12% startup race is corrected (20/20), but any future flake in a control scenario must be treated as a fixture bug first, not dismissed."
+  ],
+  "reviewer_decision": {
+    "status": "RE-ISSUED AGAINST THE CORRECTED FIXTURE. Both reviewers re-reviewed the current bytes (worker.ts=f20e66ce..., ownership-fence.test.ts=c4096613...) and independently re-ran the suite. Consensus: APPROVE-FOR-GATING for BOTH fencing semantics AND fixture stability. This record MAY gate SLICE-012+.",
+    "pre_correction_history": {
+      "note": "Honest history, retained. Both reviewers APPROVED pre-correction bytes (worker.ts=11fbf2e0..., test=ec5d2194...) BEFORE a supervisor found the ~12% startup race. Neither caught it: hy3 judged fencing semantics only; deepseek re-ran but stderr was swallowed so its failures read as signal-less flakes. Those approvals cover superseded bytes and do NOT carry forward.",
+      "root_cause_recap": "busy_timeout set AFTER journal_mode=WAL raced concurrent DB open; the throw ran off the Effect path and captured worker stderr was discarded -> signal-less flake."
+    },
+    "re_review_against_corrected_bytes": {
+      "digests_judged": {
+        "worker.ts": "f20e66ce71a63ce75c20792e023bab363d8097077f8d8fefe32b7db84faf524c",
+        "ownership-fence.test.ts": "c4096613e6539247b558dfef2a3a4ee8dd07a45ebcbcd4a8ec0d0b68cc8eaccd"
+      },
+      "reviewer_hy3": {
+        "verdict": "APPROVE-FOR-GATING (fencing mechanism + fixture stability)",
+        "independent_runs": "56 green (1 single + 15-loop + 40-soak) by the reviewer; verified digests on disk byte-for-byte.",
+        "mechanism_basis": "claim atomicity rests on event_sequence.aggregate_id PRIMARY KEY (schema.ts:9) + single INSERT...ON CONFLICT...RETURNING under SQLite writer lock; EffectFlock is a real cross-process mkdir lock (effect-flock.ts:175-176); ISOLATION is a fair load-bearing test of owner_id with the flock removed.",
+        "Q1_stderr_genuine": "YES. Uses child 'close' (not 'exit'), which Node fires only after stdio streams close -> all stderr data flushed before Buffer.concat. No path masks a non-zero exit as exit 0.",
+        "Q2_unrelated_failure": "UNLIKELY, and if so NAMED. tmp cleanup in finally after spawns resolve; WAL/shm race removed at root; appendFile awaited before close; startAfterFile poll has no local deadline but an A-crash is named by assertWorkersOk (only a true hang reaches the 30s test timeout).",
+        "Q3_negative_control_trustworthy": "YES. Same concurrent-spawn config that hosted the pre-fix race; 0/40 in its soak; a flake now = fixture bug surfaced via assertWorkersOk with stderr, not a fence signal; fresh mkdtemp per scenario so no masking of BASELINE/GREEN/ISOLATION.",
+        "report_only_blind_spot": "statistical/timing races gated behind rare interleavings; 'passes once' != 'passes reliably'; a second-hand 20/20 number a reader cannot reproduce; silent-failure masking by swallowed stderr. Mitigated here only by independent repeated execution.",
+        "findings": "P0 none, P1 none. P2 (non-blocking, no false PASS): GREEN startAfterFile poll has no local deadline — acceptable, named as a timeout."
+      },
+      "reviewer_deepseek": {
+        "verdict": "APPROVE-FOR-GATING (fencing mechanism + fixture stability)",
+        "independent_runs": "11 green (5 pass / 0 fail / 22 expects each) by the reviewer; verified digests on disk; tsgo --noEmit clean.",
+        "mechanism_basis": "claim is a single-statement onConflictDoUpdate mirroring event.ts:324-334; ISOLATION fairly isolates owner_id (winner nondeterminism asserted-away by checking one-drained-plus-one-refused only).",
+        "Q1_stderr_genuine": "YES, with a named caveat. Child 'close' guarantees stdio drained (validated vs Node docs: 'close' fires after stdio streams closed; 'exit' may fire while streams still open), so no close-before-data race. BUT worker's process.exit(1) right after process.stderr.write can truncate pending async stderr TEXT under a pipe — exit code still non-zero so assertWorkersOk still fails the test (named), only diagnostic richness degrades. No path masks a non-zero exit as exit 0.",
+        "Q2_unrelated_failure": "YES, three NAMED paths (none produce a false PASS): (1) GREEN handshake — if A exits non-zero before writing aReady, B polls startAfterFile forever -> Promise.all never resolves -> 30s bun:test timeout, assertWorkersOk never reached (defeats the diagnostic in exactly the A-crash case, but named as a timeout); (2) process.exit stderr truncation (see Q1); (3) s.p.7 5s deadline load-sensitivity (400ms hold vs 5s window, low probability). Also noted: test openDb connections set no busy_timeout (safe under WAL reads, latent).",
+        "Q3_negative_control_trustworthy": "YES. Exact pre-fix config; a flake now is a worker non-zero exit surfaced by assertWorkersOk WITH stderr -> load-bearing fixture bug, not a fence signal; fresh mkdtemp per scenario -> no masking path.",
+        "report_only_blind_spot": "statistical races below the observed run count (a ~12% flake needs ~50+ runs to bound; 31 green ~= 98%); process.exit() stderr-truncation and GREEN-handshake-timeout masking visible only on a real crash-injection or repeated loop, not in a static read of try/catch; load-sensitive timing invisible in source.",
+        "findings": "P0 none, P1 none. P2 (non-blocking, no false PASS): GREEN handshake can mask an A-crash as a 30s timeout; process.exit(1) after stderr.write can truncate diagnostic text. P3: s.p.7 deadline load-sensitivity; manual/sample openDb no busy_timeout."
+      },
+      "supervisor_verification_of_load_bearing_claims": {
+        "node_close_vs_exit": "VALIDATED against Node.js v26 docs (Stable API): 'close' = emitted after process ended AND stdio streams closed; 'exit' = stdio might still be open. So test:50 proc.on('close') drains stderr before Buffer.concat.",
+        "effectflock_is_cross_process": "VERIFIED on disk: tryAcquireLockDir (effect-flock.ts:176) -> atomicMkdir -> fs.makeDirectory(dir,{mode:0o700}) (line 118) on a path = lockDir + Hash.fast(sessionID) (line 257). Both workers pass the SAME lockDir + sessionID, so they race mkdir of one filesystem path -> genuine POSIX cross-process mutual exclusion, not in-process state.",
+        "claim_atomicity": "VERIFIED on disk: event_sequence.aggregate_id TEXT PRIMARY KEY (schema.ts:9) enforces single-winner; claimOrRefuse is one statement.",
+        "stability_pool": "87 independent green runs total = supervisor 20/20 + hy3 56 + deepseek 11; pre-fix ~12% race bounded at ~>99.99% gone."
+      },
+      "consensus": "APPROVE-FOR-GATING (fencing + fixture stability). Both reviewers independently re-ran (hy3 56, deepseek 11) and verified digests on disk. Agreement on all three control questions: stderr surfacing is genuine (child 'close' drains stdio, validated vs Node docs; process.exit may truncate text but exit stays non-zero so no false PASS); surviving unrelated failures are NAMED (timeouts/assertions, not signal-less); the negative control is load-bearing (a control flake = a fixture bug, surfaced with stderr; independent tmp dirs preclude masking). No P0/P1 from either. One P2 the supervisor endorses as real-but-non-blocking: the GREEN handshake path masks the new diagnostic in exactly the A-crash-before-ready case (failure degrades to a 30s timeout instead of inlined stderr) — it does NOT produce a false PASS and is not active in the corrected fixture (A reliably writes aReady across 87+ runs), so it is recorded as a named residual risk / hardening candidate, NOT a fixture change (per task constraint: no fixture change absent a real defect; both reviewers classify it P2 non-blocking).",
+      "what_a_report_only_review_still_misses": "the whole class of low-probability, timing-dependent, cross-process races whose failure signature is absent or masked in a single green run — exactly the class that defeated the prior approval. A soak bounds the rate but cannot prove zero; only repeated execution distinguishes 'fixed' from 'below the runs examined'.",
+      "residual_risk": "(1) GREEN-handshake path: if A crashes before writing aReady the diagnostic degrades to a 30s timeout and assertWorkersOk's stderr is never reached — NAMED (not a false PASS), not active in the corrected fixture, a hardening candidate (ready-write deadline / poll bail-out). (2) process.exit(1) may truncate async stderr text under a pipe; exit code stays non-zero so the test still fails named. (3) A soak cannot prove a zero flake rate; 87 green runs bound the pre-fix ~12% race at ~>99.99% gone but cannot exclude a rarer residual. (4) Production wiring (fence at execution/local.ts confirmed absent at local.ts:16-29, owner release/lease-reclaim, reconcile drain-ownership vs event.ts replay-ownership) remains SLICE-012+ and out of this prototype's scope.",
+      "gating_decision": "MAY GATE SLICE-012+. The corrected fixture removes the pre-fix defect at its root (busy_timeout first; journal_mode/DDL dropped from the worker) AND makes any future failure named (assertWorkersOk inlines stderr). Two independent fresh reviews + independent re-runs (56 + 11 + supervisor 20/20 = 87 green) converge on APPROVE-FOR-GATING with no P0/P1. Carried-forward scope caveats (production wiring, owner release, replay-vs-drain ownership) are explicitly SLICE-012+ and do not undermine the prototype's claim."
+    }
+  }
+}
