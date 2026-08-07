@@ -23,6 +23,8 @@ export interface Interface {
     readonly sessionID: SessionSchema.ID
     readonly force: boolean
   }) => Effect.Effect<void, RunError>
+  /** Reconciles tools left running by a prior crash without scheduling a provider turn (startup sweep). */
+  readonly reconcile: (sessionID: SessionSchema.ID) => Effect.Effect<void, RunError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/SessionRunner") {}

@@ -384,10 +384,13 @@ const layer = Layer.effect(
       readonly sessionID: SessionSchema.ID
       readonly force: boolean
     }) {
+      // Reconcile tools stranded by a prior crash BEFORE the eligible-input guard.
+      // A crash with an empty inbox never re-enters run() through the inbox, so the
+      // sweep must fire here (and at startup via reconcile) regardless of pending work.
+      yield* failInterruptedTools(input.sessionID)
       const hasSteer = yield* SessionInput.hasPending(db, input.sessionID, "steer")
       const hasQueue = hasSteer ? false : yield* SessionInput.hasPending(db, input.sessionID, "queue")
       if (!input.force && !hasSteer && !hasQueue) return
-      yield* failInterruptedTools(input.sessionID)
       let promotion: SessionInput.Delivery | undefined = hasSteer ? "steer" : hasQueue ? "queue" : undefined
       let shouldRun = input.force || hasSteer || hasQueue
       while (shouldRun) {
@@ -405,8 +408,16 @@ const layer = Layer.effect(
       }
     })
 
+    // Startup sweep: reconcile interrupted tools for one session without scheduling
+    // a provider turn. Production wires this over all sessions at process start so a
+    // crash with an empty inbox (where nobody calls run()) is still recovered.
+    const reconcile = Effect.fn("SessionRunner.reconcile")(function* (sessionID: SessionSchema.ID) {
+      yield* failInterruptedTools(sessionID)
+    })
+
     return Service.of({
       run,
+      reconcile,
     })
   }),
 )

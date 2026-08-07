@@ -1,0 +1,126 @@
+{
+  "record": "EXIT_RECORD",
+  "scope": "SLICE-011 claim 2 only (reconciler reorder). Disposable prototype; ships nothing.",
+  "slice": "SLICE-011",
+  "claim": 2,
+  "claimTitle": "Reconciler reorder: hoist interrupted-tool reconciliation above the eligible-input guard + startup sweep",
+  "adr": "ADR-015 (proposed 2026-08-06), Decision Outcome (2) and sad-path #2/#8; quality attribute 'Reliability: crash with an empty inbox -> stranded running tools reconciled at startup'.",
+  "status": "GREEN",
+  "disposable": true,
+  "committed": false,
+  "pushed": false,
+  "worktree": {
+    "path": "/home/soultransit/devtony/ranex-harness-wt2-reconciler",
+    "branch": "proto/s011-reconciler",
+    "head": "2431314c3261b11736b97cacf47820d8fcd3f0e6"
+  },
+  "artifacts": [
+    {
+      "role": "implementation",
+      "path": "packages/core/src/session/runner/llm.ts",
+      "sha256": "2ffeb2e1b9ce11b205d3fd02f57c928241cffcb085c984f1a3d861ec7fe901ad",
+      "change": "+13/-1; hoist yield* failInterruptedTools(sessionID) above the eligible-input guard (now ~L387-391, was after the ~L389 return); add reconcile = Effect.fn('SessionRunner.reconcile') calling failInterruptedTools, exposed on Service.of alongside run (~L411-415)."
+    },
+    {
+      "role": "implementation",
+      "path": "packages/core/src/session/runner/index.ts",
+      "sha256": "ec23641631e6e6287c3ee07b3084f5e9a898c4ae9ab3b536bb925b7cf8355055",
+      "change": "+2/-0; Interface gains readonly reconcile: (sessionID) => Effect.Effect<void, RunError> (startup-sweep capability)."
+    },
+    {
+      "role": "prototype-suite",
+      "path": "packages/core/test/session-runner-reconciler.test.ts",
+      "sha256": "6d4f80f7a687dac3c3c9392e11336dd5bb5a0a2280e971dad5732fd700a1a710",
+      "tests": 4
+    }
+  ],
+  "defect": "The reconciler returned on the eligible-input guard (runner/llm.ts:389, `if (!input.force && !hasSteer && !hasQueue) return`) BEFORE interrupted-tool reconciliation at :390 (`yield* failInterruptedTools(input.sessionID)`). A crash with an EMPTY inbox leaves a tool projected `running` forever: the empty inbox trips the guard's early return, so failInterruptedTools never runs. A crash with a pending steer would NOT trigger the bug (the guard passes) -> the empty-inbox path is the whole point (SLICE-011 decoration warning #2).",
+  "design": {
+    "hoist": "Move `yield* failInterruptedTools(input.sessionID)` to the first statement of run(), above the hasSteer/hasQueue reads and the eligible-input guard. failInterruptedTools iterates the session's projected context (store.context) and publishes a Tool.Failed event for every tool still `pending`/`running`; it is a no-op when none exist, so the normal drain flow is byte-identical when there are no stranded tools.",
+    "startupSweep": "New SessionRunner.reconcile(sessionID) calls failInterruptedTools without scheduling a provider turn. Production wires this over all sessions at process start so a crash with an empty inbox (where nobody calls run()) is still recovered. The capability is added and tested here; automatic invocation over all sessions at boot is deferred to SLICE-012+.",
+    "idempotency": "failInterruptedTools only acts on pending/running tools; after one pass the tool is `error`, so subsequent passes skip it. The projector's own Tool.Failed handler (message-updater.ts:323) re-checks `status === 'pending' || 'running'`, so projection is idempotent even under a duplicate event."
+  },
+  "fixtures": {
+    "strandedTool": "Two-graph file-DB fixture. Graph 1 emits the durable events a provider turn leaves behind when the process is killed AFTER a tool is called but BEFORE it settles: publisher.publish(toolInputStart), toolInputEnd, toolCall({ id: 'call-stranded', name: 'echo', input }) with NO Tool.Success/Tool.Failed. The projector writes an assistant message with one tool projected `running`. The scope is torn down. This faithfully reproduces the post-SIGKILL durable state (the runner's own interruption path cannot strand a tool because runTurnAttempt is wrapped in Effect.uninterruptibleMask which reconciles on interrupt).",
+    "twoGraph": "Graph 2 reopens the same file-backed SQLite DB; the projected assistant message survived teardown as `running`. The inbox is asserted empty for BOTH steer and queue (SessionInput.hasPending) before the reconciler runs."
+  },
+  "commands": {
+    "all": "cd packages/core && bun test test/session-runner-reconciler.test.ts",
+    "red": "cd packages/core && bun test test/session-runner-reconciler.test.ts --test-name-pattern 'RED->GREEN'",
+    "green": "cd packages/core && bun test test/session-runner-reconciler.test.ts",
+    "regression": "cd packages/core && bun test test/session-runner.test.ts",
+    "typecheck": "cd packages/core && bun typecheck"
+  },
+  "observed": {
+    "suiteResult": "4 pass / 0 fail (11 expect calls, ~1.0s)",
+    "RED": {
+      "setup": "fix reverted (only the hoist removed; reconcile capability retained)",
+      "inboxAsserted": "hasPending(steer)=false, hasPending(queue)=false before run()",
+      "result": "fail",
+      "received": "running",
+      "expected": "error",
+      "meaning": "empty-inbox run() tripped the guard at :389 and returned before failInterruptedTools; the stranded tool stayed running. The 3 reconcile-based tests still pass under RED, isolating the defect to guard ordering."
+    },
+    "GREEN": {
+      "reconcilerSuite": "4 pass / 0 fail",
+      "meaning": "hoist makes run() reconcile on the empty-inbox path; reconcile() marks the stranded tool interrupted without scheduling a provider turn."
+    },
+    "idempotency": {
+      "afterFirstReconcile": "tool.status = error; Tool.Failed events in DB = 1",
+      "afterSecondReconcileAndRun": "tool.status = error; Tool.Failed events in DB = 1 (unchanged)",
+      "assertion": "expect(eventsAfter).toBe(eventsBefore) -> pass",
+      "meaning": "reconciling twice produces no second message, attempt, or effect (ADR-015 sad paths 2 and 8)"
+    },
+    "graphTeardownDurability": "Graph 1 fixture -> scope teardown -> Graph 2 reads the tool as `running` from the file DB (test 'graph teardown leaves the tool projected running across a fresh graph' pass)."
+  },
+  "regression": "session-runner.test.ts: 83 pass / 0 fail (247 expect calls). Plus session-runner-tool-events + session-projector + session-runner-tool-registry + session-runner-message: 37 pass / 0 fail. The hoist adds exactly one failInterruptedTools call per run(); since it is a no-op with no stranded tools, all existing turns are byte-identical.",
+  "typecheck": "tsgo --noEmit exit 0 (clean). reconcile's Effect<void, RunError> composes: failInterruptedTools reads store.context (MessageDecodeError, which is in RunError) and events.publish.",
+  "antiDecorationChecks": [
+    "The RED->GREEN test asserts the inbox is empty for BOTH steer and queue (SessionInput.hasPending) immediately before run({force:false}) -> the empty-inbox path is exercised, not a pending-steer path that would pass even with the bug (SLICE-011 decoration warning #2).",
+    "Under RED (hoist reverted) the test FAILS with Received:'running'; it cannot pass with the bug present.",
+    "The crash fixture uses direct durable-event emission (no Tool.Success/Tool.Failed), not the runner's clean-interrupt path (which is uninterruptibleMask'd and reconciles on interrupt, so it can never strand a tool).",
+    "Two-graph file-DB teardown proves the projected `running` tool survives graph teardown into a fresh graph; the reconciler then runs against genuinely stranded durable state."
+  ],
+  "provenCodeValidation": [
+    "failInterruptedTools (llm.ts:119-139) iterates store.context(sessionID) and publishes SessionEvent.Tool.Failed for tools with status 'pending' || 'running' only.",
+    "The projector's session.next.tool.failed handler (message-updater.ts:320-342) re-checks `match.state.status === 'pending' || 'running'` before applying the error transition, so projection is idempotent under a duplicate Tool.Failed event.",
+    "SessionInput.hasPending (input.ts:170-189) checks SessionInputTable where promoted_seq IS NULL; the crash fixture admits no session_input, so the inbox is genuinely empty.",
+    "store.context (store.ts:39-41) reads SessionHistory.load from SessionMessageTable, so the stranded tool survives graph teardown in the file DB.",
+    "reviewer-hy3 APPROVE: the hoist does not alter the SessionInput reads or the steer-priority short-circuit; the empty-inbox defect reproduction is faithful."
+  ],
+  "reviewers": {
+    "reviewer-hy3": {
+      "verdict": "APPROVE",
+      "verbatimOverall": "APPROVE \u2014 the hoist correctly and completely fixes the targeted empty-inbox defect and is evidenced by RED/GREEN; the only real gaps (startup-sweep wiring, concurrency atomicity) are explicitly scoped/deferred and do not break the change as reviewed. Verify transactional reconcile before the sweep is wired.",
+      "q1Hoist": "CORRECT for the targeted defect; complete for the run()-called path. failInterruptedTools only touches the projected tool context, not SessionInput, so hasSteer/hasQueue and their steer-priority short-circuit are byte-for-byte unchanged. No new double-reconcile within a single run().",
+      "q2Idempotency": "GUARANTEED sequentially; TOCTOU under concurrency UNVERIFIED. The pending/running-only filter makes a second sequential pass a no-op (corroborated by the GREEN 'exactly ONE Tool.Failed' test). The read-projected-context-then-publish sequence is not shown to be transactional/locked, so a concurrent reconcile() and run() for the same session could both read 'running' and both publish.",
+      "q3TestFidelity": "GENUINE, not decoration. The test reproduces the exact bug trigger: it asserts the inbox is empty for both steer and queue, then calls run({force:false}). In the buggy (hoist-removed) version the guard returns before failInterruptedTools, so the tool stays 'running' and the assertion fails \u2014 the test cannot pass with the bug present.",
+      "q4StartupSweepGap": "ACCEPTABLE scope for a prototype, but leaves the headline scenario UNPROVEN. The hoist fixes run()-called-with-empty-inbox. The actual original defect frame \u2014 'crash with empty inbox, nobody calls run()' \u2014 is only recovered by a wired sweep, which does not exist here.",
+      "q5Other": "Every run() now performs a reconcile DB read + possible publish even on the early-return path, so run() with empty inbox is no longer a pure no-op \u2014 intended, documented in-code."
+    },
+    "consensusResolution": "CROSS-FAMILY CONSENSUS ESTABLISHED: reviewer-hy3 (APPROVE) and reviewer-deepseek (APPROVE) both accept. Both reviewers' deferred items are the SAME two, and both confirm they are correctly scoped for a capability-only prototype that ships nothing: (1) TOCTOU \u2014 see Q3 below; the only reachable surface is the future reconcile()|run() cross-fiber race (sweep-vs-drain), unreachable until SLICE-012+ wires the sweep. (2) Startup-sweep auto-wiring \u2014 the reconcile capability exists and is tested without run(); wiring over all sessions at boot belongs to SLICE-012+. Done-criterion 7 (two-reviewer consensus) is now met.",
+    "reviewer-deepseek": {
+      "verdict": "APPROVE",
+      "verbatimOverall": "APPROVE \u2014 The fix is correct. The RED is genuine, the idempotency is real (not merely asserted), and the TOCTOU is correctly deferred because reconcile has no production caller in this diff.",
+      "q1Red": "GENUINE. Under the buggy ordering, run({force:false}) with both inboxes empty trips the guard (!force && !hasSteer && !hasQueue) and returns BEFORE failInterruptedTools; the stranded tool stays running. The test's pre-assertion of hasPending(steer)=false AND hasPending(queue)=false is the load-bearing guard against the pending-steer path (which would pass even with the bug). No escape hatch (force=true, non-empty inbox, side channel, self-transition to error) is open under the test as written.",
+      "q2Idempotency": "REAL, and stronger than projection alone. After the first reconcile the tool is error; the filter (pending||running only) skips it, so the second reconcile() and the hoisted failInterruptedTools in run() both publish nothing. The test asserts the durable EVENT COUNT stays 1, which is the correct non-redundant guarantee (projection-idempotency would mask a duplicate publish; the count check catches it). Nothing can regress the tool to pending/running between reconciles. P3 note only: the test name ('no second message, attempt, or effect') over-promises vs the body (count + state), but harmlessly \u2014 failInterruptedTools cannot create messages/attempts.",
+      "q3Toctou": "CORRECTLY DEFERRED, on firmer ground than first stated. After supervisor debate, deepseek retracted its 'pre-existing run()|run() race' framing: the repo's SessionRunCoordinator contract (joins same-Session resumes) makes two concurrent same-session run() calls architecturally impossible by construction, so that variant is non-existent. The TOCTOU's ONLY reachable surface is reconcile()|run() \u2014 a cross-fiber race between the future startup sweep and a drain, NOT joined because reconcile bypasses the coordinator. That surface does not exist until SLICE-012+ wires the sweep; unreachable today.",
+      "q4Other": "Four P3 notes, none blocking: (a) run()'s failure surface is extended to the empty-inbox path (a corrupt/undecodable history via getContext could now fail an empty-inbox run() that previously returned cleanly) \u2014 defensible semantic improvement, not a regression. (b) Coverage gap (re-framed after supervisor debate): the fixture covers only ONE committed-event subset (full toolCall, no settlement). SQLite WAL durability makes committed publishes survive SIGKILL byte-identically to the clean scope close, so the fixture IS faithful for the subset it models \u2014 the unexercised space is OTHER committed subsets (partial tool input -> projected pending, still caught by the filter; settlement-lost-in-transit -> already error, correctly skipped), NOT 'clean close != SIGKILL'. (c) The hoist is behavior-preserving on the normal drain path (guard passes, failInterruptedTools ran both before and after), so the 83-pass regression suite correctly cannot catch it; the new RED->GREEN test 2 is the only test that can. No hazard between the hoisted reconcile and the subsequent hasPending reads (reconcile publishes output events, cannot enqueue input). (d) The Stream.empty fake client is irrelevant here (no provider turn scheduled on the reconcile path).",
+      "debate": "Supervisor challenged two points; deepseek CONCEDED BOTH and corrected its framing. (1) The 'clean close != SIGKILL' residual-risk framing (deepseek's self-declared strongest finding) was imprecise: SQLite WAL durability of committed transactions makes the clean-close fixture faithful for the three-event committed subset it models. Residual risk narrowed to 'unexercised committed-event subsets', which is accurate. (2) The 'pre-existing run()|run() race' was non-existent under the SessionRunCoordinator same-session join contract; the TOCTOU's only surface is the future sweep-vs-drain reconcile()|run() race. Neither concession alters the verdict; both sharpen the consensus. Nothing hy3 missed rose above P3.",
+      "consensusWithHy3": "AGREE \u2014 APPROVE. Concur with hy3's APPROVE and both deferrals, now confirmed correctly scoped. The cross-family consensus on the RED genuineness, idempotency, and TOCTOU scoping is unanimous."
+    }
+  },
+  "residualRisks": [
+    "Startup sweep is a capability only: reconcile(sessionID) is not auto-invoked over all sessions at process boot. The 'crash with empty inbox, nobody calls run()' case is recovered only when production wires the sweep (SLICE-012+). The hoist covers the run()-called empty-inbox path; the reconcile capability is proven per-session.",
+    "Concurrent sweep + same-session run() could publish a duplicate durable Tool.Failed event (TOCTOU): failInterruptedTools reads projected context then publishes in two steps. Per the cross-family review (consensus), the ONLY reachable surface is reconcile()|run() (the future startup sweep's reconcile vs an in-flight drain) \u2014 NOT run()|run(), which is architecturally impossible under the SessionRunCoordinator same-session join contract. Projected end-state stays correct (idempotent projection, message-updater.ts:323), but the durable event count could exceed one. Serialize per-session reconcile (per-session mutex or BEGIN IMMEDIATE) before wiring the sweep (SLICE-012+). Unreachable today; reconcile has no production caller in this diff.",
+    "Coverage gap (P3, consensus): the crash fixture models exactly one committed-event subset \u2014 full toolCall (toolInputStart + toolInputEnd + toolCall), no settlement. SQLite WAL durability makes committed publishes survive SIGKILL byte-identically to the clean scope close the fixture uses, so the model is faithful for that subset. Other committed subsets are unexercised: partial tool input (-> projected pending, still caught by the pending||running filter) and settlement-lost-in-transit (-> already error, correctly skipped). None of these weaken the fix; all caught subsets reconcile correctly.",
+    "This record is claim-2 scoped only. It is NOT the full SLICE-011 EXIT_RECORD: claims 1, 3, 4, 5 (watchdog, durable retry, durable blockers, Session-ID fencing) are covered by their own per-claim records."
+  ],
+  "notProven": [
+    "Claims 1, 3, 4, 5 of ADR-015 (see their per-claim EXIT_RECORDs).",
+    "Production integration: a green prototype is not proof of production durability (ADR-015 Scope).",
+    "Automatic startup sweep over all sessions (deferred to SLICE-012+).",
+    "Cross-model failover and subagent/task recovery (deferred by ADR-015)."
+  ],
+  "gitDiffStat": "packages/core/src/session/runner/index.ts +2/-0; packages/core/src/session/runner/llm.ts +13/-1; packages/core/test/session-runner-reconciler.test.ts +324 (untracked). 3 files changed, 338 insertions(+), 1 deletion(-)."
+}
