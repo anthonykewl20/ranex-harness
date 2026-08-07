@@ -35,6 +35,7 @@ import { SessionRunCoordinator } from "@opencode-ai/core/session/run-coordinator
 import { SessionRunner } from "@opencode-ai/core/session/runner"
 import * as SessionRunnerLLM from "@opencode-ai/core/session/runner/llm"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
+import { ProviderWatchdog } from "@opencode-ai/core/session/runner/provider-watchdog"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { AgentV2 } from "@opencode-ai/core/agent"
@@ -55,7 +56,8 @@ import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Location } from "@opencode-ai/core/location"
 import { ProviderV2 } from "@opencode-ai/core/provider"
-import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
+import { Cause, DateTime, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect"
+import { TestClock } from "effect/testing"
 import { asc, eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 
@@ -71,6 +73,21 @@ let toolExecutionsStarted: Deferred.Deferred<void> | undefined
 let toolExecutionsReady = 5
 let activeToolExecutions = 0
 let maxActiveToolExecutions = 0
+const watchdogConfig = {
+  idle: undefined as Duration.Input | undefined,
+  absolute: undefined as Duration.Input | undefined,
+}
+const watchdogLayer = Layer.succeed(
+  ProviderWatchdog.Service,
+  ProviderWatchdog.Service.of({
+    get idle() {
+      return watchdogConfig.idle
+    },
+    get absolute() {
+      return watchdogConfig.absolute
+    },
+  }),
+)
 const client = Layer.succeed(
   LLMClient.Service,
   LLMClient.Service.of({
@@ -229,6 +246,7 @@ const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
   [Snapshot.node, Snapshot.noopLayer],
   [LayerNodePlatform.llmClient, client],
   [SessionRunnerModel.node, models],
+  [ProviderWatchdog.node, watchdogLayer],
   [SystemContextRegistry.node, systemContext],
   [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
   [SkillGuidance.node, skillGuidance],
@@ -278,6 +296,7 @@ const it = testEffect(
       [LayerNodePlatform.llmClient, client],
       [PermissionV2.node, permission],
       [SessionRunnerModel.node, models],
+      [ProviderWatchdog.node, watchdogLayer],
       [SystemContextRegistry.node, systemContext],
       [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
       [SkillGuidance.node, skillGuidance],
@@ -329,6 +348,8 @@ const setup = Effect.gen(function* () {
   toolExecutionsReady = 5
   activeToolExecutions = 0
   maxActiveToolExecutions = 0
+  watchdogConfig.idle = undefined
+  watchdogConfig.absolute = undefined
   yield* db
     .insert(ProjectTable)
     .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
@@ -3360,6 +3381,262 @@ describe("SessionRunnerLLM", () => {
       expect(yield* session.resume(sessionID).pipe(Effect.catchDefect(Effect.succeed))).toBe(
         "Tool input delta before start: call-1",
       )
+    }),
+  )
+})
+
+describe("SessionRunnerLLM provider watchdog", () => {
+  it.effect("does not reach a terminal state within budget when the watchdog is disabled", () =>
+    Effect.gen(function* () {
+      yield* setup
+      watchdogConfig.idle = undefined
+      watchdogConfig.absolute = undefined
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Stall mid-stream" }), resume: false })
+      responseStream = Stream.concat(
+        Stream.fromIterable([
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.textStart({ id: "text-red" }),
+          LLMEvent.textDelta({ id: "text-red", text: "Partial" }),
+        ]),
+        Stream.never,
+      )
+    const run = yield* session.resume(sessionID).pipe(Effect.exit, Effect.forkChild)
+    yield* Effect.yieldNow
+    yield* TestClock.adjust("1200 millis") // budget B: the watchdog is off, so nothing terminates the stall
+      // Negative assertion: the run did NOT reach a terminal state within budget B.
+      expect(yield* session.active).toContain(sessionID)
+      yield* session.interrupt(sessionID) // cleanup
+      yield* Fiber.await(run)
+    }),
+  )
+
+  it.effect("terminates a stalled stream within budget, clears active, and is not retried", () =>
+    Effect.gen(function* () {
+      yield* setup
+      watchdogConfig.idle = "400 millis"
+      watchdogConfig.absolute = "3000 millis"
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Stall mid-stream" }), resume: false })
+      responseStream = Stream.concat(
+        Stream.fromIterable([
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.textStart({ id: "text-stall" }),
+          LLMEvent.textDelta({ id: "text-stall", text: "Partial" }),
+        ]),
+        Stream.never,
+      )
+      requests.length = 0
+      const run = yield* session.resume(sessionID).pipe(Effect.exit, Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("500 millis") // past the 400ms idle deadline
+      const exit = yield* Fiber.join(run)
+      expect(Exit.isFailure(exit)).toBe(true)
+      // Non-retryable, and proved not retried: exactly one provider request, and the error's retryable flag is false.
+      expect(requests).toHaveLength(1)
+      const error = exit._tag === "Failure" ? Option.getOrUndefined(Cause.findErrorOption(exit.cause)) : undefined
+      expect(error).toBeInstanceOf(LLMError)
+      if (error instanceof LLMError) {
+        expect(error.reason._tag).toBe("Transport")
+        expect(error.retryable).toBe(false)
+      }
+      expect(yield* session.active).not.toContain(sessionID)
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Stall mid-stream" },
+        { type: "assistant", finish: "error", error: { message: expect.stringContaining("idle timeout") } },
+      ])
+    }),
+  )
+
+  it.effect("absolute timeout cuts an active stream whose deltas stay under the idle threshold", () =>
+    Effect.gen(function* () {
+      yield* setup
+      watchdogConfig.idle = "400 millis"
+      watchdogConfig.absolute = "1000 millis"
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Trickle forever" }), resume: false })
+      // A delta every ~100ms (< idle 400ms) resets the idle deadline on every pull, so idle can NEVER fire.
+      // Only the 1000ms absolute budget can cut this stream; the "absolute timeout" message proves which branch fired.
+      responseStream = Stream.concat(
+        Stream.fromIterable([LLMEvent.stepStart({ index: 0 }), LLMEvent.textStart({ id: "text-abs-active" })]),
+        Stream.make(LLMEvent.textDelta({ id: "text-abs-active", text: "." })).pipe(
+          Stream.tap(() => Effect.sleep("100 millis")),
+          Stream.forever,
+        ),
+      )
+      requests.length = 0
+      const run = yield* session.resume(sessionID).pipe(Effect.exit, Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("1100 millis") // past the 1000ms absolute budget
+      const exit = yield* Fiber.join(run)
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(requests).toHaveLength(1)
+      const error = exit._tag === "Failure" ? Option.getOrUndefined(Cause.findErrorOption(exit.cause)) : undefined
+      expect(error).toBeInstanceOf(LLMError)
+      if (error instanceof LLMError) {
+        expect(error.reason._tag).toBe("Transport")
+        expect(error.retryable).toBe(false)
+      }
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Trickle forever" },
+        { type: "assistant", finish: "error", error: { message: expect.stringContaining("absolute timeout") } },
+      ])
+    }),
+  )
+
+  it.effect("absolute timeout alone cuts a stalled stream with idle disabled", () =>
+    Effect.gen(function* () {
+      yield* setup
+      watchdogConfig.idle = undefined
+      watchdogConfig.absolute = "800 millis"
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Stall with idle off" }), resume: false })
+      // idle is OFF; the only thing that can terminate this stall is the absolute budget.
+      responseStream = Stream.concat(
+        Stream.fromIterable([
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.textStart({ id: "text-abs-stall" }),
+          LLMEvent.textDelta({ id: "text-abs-stall", text: "Partial" }),
+        ]),
+        Stream.never,
+      )
+      requests.length = 0
+      const run = yield* session.resume(sessionID).pipe(Effect.exit, Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("850 millis") // past the 800ms absolute budget
+      const exit = yield* Fiber.join(run)
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(requests).toHaveLength(1)
+      const error = exit._tag === "Failure" ? Option.getOrUndefined(Cause.findErrorOption(exit.cause)) : undefined
+      expect(error).toBeInstanceOf(LLMError)
+      if (error instanceof LLMError) {
+        expect(error.reason._tag).toBe("Transport")
+        expect(error.retryable).toBe(false)
+      }
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Stall with idle off" },
+        { type: "assistant", finish: "error", error: { message: expect.stringContaining("absolute timeout") } },
+      ])
+    }),
+  )
+
+  it.effect("does not cut a healthy slow stream whose latency stays under the idle threshold", () =>
+    Effect.gen(function* () {
+      yield* setup
+      watchdogConfig.idle = "400 millis"
+      watchdogConfig.absolute = "3000 millis"
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Slow but healthy" }), resume: false })
+      // One event every ~150ms; the idle threshold is 400ms => 2.67x headroom on each pull.
+      // Total stream time ~900ms vs the 3000ms absolute budget => 3.3x absolute headroom.
+      responseStream = Stream.fromIterable([
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: "text-slow" }),
+        LLMEvent.textDelta({ id: "text-slow", text: "Complete" }),
+        LLMEvent.textEnd({ id: "text-slow" }),
+        LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+        LLMEvent.finish({ reason: "stop" }),
+      ]).pipe(Stream.tap(() => Effect.sleep("150 millis")))
+      const run = yield* session.resume(sessionID).pipe(Effect.exit, Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("1000 millis") // past completion (~900ms), well under absolute (3000ms)
+      const exit = yield* Fiber.join(run)
+      expect(Exit.isSuccess(exit)).toBe(true)
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Slow but healthy" },
+        { type: "assistant", finish: "stop", content: [{ type: "text", text: "Complete" }] },
+      ])
+    }),
+  )
+
+  it.effect("does not cut a healthy long turn that completes within the absolute budget", () =>
+    Effect.gen(function* () {
+      yield* setup
+      watchdogConfig.idle = "400 millis"
+      watchdogConfig.absolute = "3000 millis"
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Long but healthy" }), resume: false })
+      // 18 events every ~150ms => ~2700ms total, completing inside the 3000ms absolute budget
+      // and with each pull's 150ms latency well under the 400ms idle threshold (2.67x headroom).
+      const deltas = Array.from({ length: 13 }, (_, i) =>
+        LLMEvent.textDelta({ id: "text-long", text: `${i}` }),
+      )
+      responseStream = Stream.fromIterable([
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: "text-long" }),
+        ...deltas,
+        LLMEvent.textEnd({ id: "text-long" }),
+        LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+        LLMEvent.finish({ reason: "stop" }),
+      ]).pipe(Stream.tap(() => Effect.sleep("150 millis")))
+      const run = yield* session.resume(sessionID).pipe(Effect.exit, Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("2850 millis") // past completion (~2700ms), under absolute (3000ms)
+      const exit = yield* Fiber.join(run)
+      expect(Exit.isSuccess(exit)).toBe(true)
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Long but healthy" },
+        { type: "assistant", finish: "stop" },
+      ])
+    }),
+  )
+
+  it.effect("does not cut a stream whose first chunk is slow to arrive (idle exempts time-to-first-token)", () =>
+    Effect.gen(function* () {
+      yield* setup
+      watchdogConfig.idle = "400 millis"
+      watchdogConfig.absolute = "3000 millis"
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Slow first token" }), resume: false })
+      // The first chunk (stepStart) arrives after 1000ms — slower than the 400ms idle threshold
+      // but well under the 3000ms absolute budget. Idle must NOT fire here: it applies only after
+      // the first chunk, so time-to-first-token is bounded by the absolute budget alone.
+      // Subsequent chunks arrive every ~50ms (< idle). This is the case a TTFT-measuring idle
+      // gets wrong: it would cut extended-thinking / reasoning models on every call.
+      responseStream = Stream.concat(
+        Stream.make(LLMEvent.stepStart({ index: 0 })).pipe(Stream.tap(() => Effect.sleep("1000 millis"))),
+        Stream.fromIterable([
+          LLMEvent.textStart({ id: "text-slow-first" }),
+          LLMEvent.textDelta({ id: "text-slow-first", text: "Slow start" }),
+          LLMEvent.textEnd({ id: "text-slow-first" }),
+          LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+          LLMEvent.finish({ reason: "stop" }),
+        ]).pipe(Stream.tap(() => Effect.sleep("50 millis"))),
+      )
+      const run = yield* session.resume(sessionID).pipe(Effect.exit, Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("1300 millis") // past first-chunk (1000ms) + completion, under absolute (3000ms)
+      const exit = yield* Fiber.join(run)
+      expect(Exit.isSuccess(exit)).toBe(true)
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Slow first token" },
+        { type: "assistant", finish: "stop", content: [{ type: "text", text: "Slow start" }] },
+      ])
+    }),
+  )
+
+  it.effect("propagates an external interrupt during a watchdog-protected stall without waiting for the budget", () =>
+    Effect.gen(function* () {
+      yield* setup
+      watchdogConfig.idle = undefined
+      watchdogConfig.absolute = "5 seconds"
+      const session = yield* SessionV2.Service
+      yield* session.prompt({
+        sessionID,
+        prompt: Prompt.make({ text: "Stall then get interrupted" }),
+        resume: false,
+      })
+      responseStream = Stream.concat(
+        Stream.fromIterable([LLMEvent.stepStart({ index: 0 }), LLMEvent.textStart({ id: "text-int" })]),
+        Stream.never,
+      )
+      const run = yield* session.resume(sessionID).pipe(Effect.exit, Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* session.interrupt(sessionID) // no TestClock.advance: an interrupt must not wait for the 5s budget
+      const exit = yield* Fiber.join(run)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (exit._tag === "Failure") expect(Cause.hasInterrupts(exit.cause)).toBe(true)
+      expect(yield* session.active).not.toContain(sessionID)
     }),
   )
 })
