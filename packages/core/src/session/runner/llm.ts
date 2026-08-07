@@ -9,7 +9,7 @@ import {
   isContextOverflowFailure,
   type ProviderErrorEvent,
 } from "@opencode-ai/llm"
-import { Cause, DateTime, Duration, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
+import { Cause, DateTime, Duration, Effect, Exit, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
 import { Database } from "../../database/database"
@@ -331,7 +331,33 @@ const layer = Layer.effect(
             yield* withPublication(publisher.failAssistant(llmFailure.reason.message))
           }
           if (stream._tag === "Failure" && Cause.hasInterrupts(stream.cause)) yield* FiberSet.clear(toolFibers)
-          const settled = yield* restore(awaitToolFibers(toolFibers)).pipe(Effect.exit)
+          // Tools dispatch as fibers during streaming (llm.ts:271) and :334
+          // below awaited them so a started local tool can finish and record its
+          // result before the turn settles — the at-most-once contract a plain
+          // provider error still relies on (test: "awaits started local tools
+          // before surfacing provider stream failure"). But on a failed turn a
+          // tool that never completes then holds the turn open forever, which is
+          // the hole a watchdog timeout exposes. Bound only the settlement await
+          // on a FAILED turn, and only by the configured turn budget: every
+          // other path (no budget, or a successful stream that still lets a
+          // started tool finish) is byte-identical to before. This is narrower
+          // than treating a watchdog failure as an interrupt: Cause.hasInterrupts
+          // is unchanged, the watchdog cause stays a typed LLMError, and only a
+          // failed turn's settlement await gains a bound when a budget exists.
+          const settled = yield* Effect.gen(function* () {
+            if (stream._tag !== "Failure" || !ProviderWatchdogConfig.absolute)
+              return yield* restore(awaitToolFibers(toolFibers)).pipe(Effect.exit)
+            const raced = yield* Effect.raceFirst(
+              restore(awaitToolFibers(toolFibers)).pipe(Effect.exit),
+              restore(Effect.sleep(ProviderWatchdogConfig.absolute)).pipe(Effect.as(null)),
+            )
+            if (raced === null) {
+              yield* FiberSet.clear(toolFibers)
+              yield* withPublication(publisher.failUnsettledTools("Tool execution interrupted"))
+              return Exit.succeed(undefined)
+            }
+            return raced
+          })
           if (settled._tag === "Failure" && isUserDeclined(settled.cause)) {
             yield* FiberSet.clear(toolFibers)
             yield* withPublication(publisher.failUnsettledTools("Tool execution interrupted"))
