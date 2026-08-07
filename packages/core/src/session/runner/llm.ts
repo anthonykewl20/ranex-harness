@@ -5,10 +5,11 @@ import {
   LLMEvent,
   Message,
   SystemPart,
+  TransportReason,
   isContextOverflowFailure,
   type ProviderErrorEvent,
 } from "@opencode-ai/llm"
-import { Cause, DateTime, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
+import { Cause, DateTime, Duration, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
 import { Database } from "../../database/database"
@@ -39,6 +40,12 @@ import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
+
+/** SLICE-011 prototype: provider stream watchdog. OFF by default. */
+export const ProviderWatchdogConfig = {
+  idle: undefined as Duration.Input | undefined,
+  absolute: undefined as Duration.Input | undefined,
+}
 
 /**
  * Runs one durable coding-agent Session until it settles.
@@ -229,7 +236,22 @@ const layer = Layer.effect(
       const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
         withPublication(publisher.publish(event, outputPaths))
       let overflowFailure: ProviderErrorEvent | undefined
-      const providerStream = llm.stream(request).pipe(
+      const idleWatched = ProviderWatchdogConfig.idle
+        ? llm.stream(request).pipe(
+            Stream.timeoutOrElse({
+              duration: ProviderWatchdogConfig.idle,
+              orElse: () =>
+                Stream.fail(
+                  new LLMError({
+                    module: "SessionRunner",
+                    method: "stream",
+                    reason: new TransportReason({ message: "Provider stream idle timeout" }),
+                  }),
+                ),
+            }),
+          )
+        : llm.stream(request)
+      const providerStream = idleWatched.pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {
             if (overflowFailure || publisher.hasProviderError()) return
@@ -276,7 +298,23 @@ const layer = Layer.effect(
 
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          const stream = yield* restore(providerStream).pipe(Effect.exit)
+          const providerTurn = ProviderWatchdogConfig.absolute
+            ? Effect.raceFirst(
+                restore(providerStream),
+                Effect.sleep(ProviderWatchdogConfig.absolute).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new LLMError({
+                        module: "SessionRunner",
+                        method: "stream",
+                        reason: new TransportReason({ message: "Provider turn absolute timeout" }),
+                      }),
+                    ),
+                  ),
+                ),
+              )
+            : restore(providerStream)
+          const stream = yield* providerTurn.pipe(Effect.exit)
           const failure =
             stream._tag === "Failure" ? Option.getOrUndefined(Cause.findErrorOption(stream.cause)) : undefined
           if (

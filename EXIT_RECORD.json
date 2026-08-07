@@ -1,0 +1,110 @@
+{
+  "record": "EXIT_RECORD",
+  "scope": "SLICE-011 claim 1 only (provider watchdog). Disposable prototype; ships nothing.",
+  "slice": "SLICE-011",
+  "claim": 1,
+  "claimTitle": "Provider watchdog: inactivity (idle) + absolute timeout around llm.stream",
+  "adr": "ADR-015 (proposed 2026-08-06), Decision Outcome (1) and sad-path #1/#11; quality attribute 'Reliability: a provider stalls mid-stream -> run reaches a terminal state within budget'.",
+  "status": "GREEN",
+  "disposable": true,
+  "committed": false,
+  "pushed": false,
+  "worktree": {
+    "path": "/home/soultransit/devtony/ranex-harness-wt1-watchdog",
+    "branch": "proto/s011-watchdog",
+    "head": "2431314c3261b11736b97cacf47820d8fcd3f0e6"
+  },
+  "artifacts": [
+    {
+      "role": "implementation",
+      "path": "packages/core/src/session/runner/llm.ts",
+      "sha256": "88eb93a013428b628343e155f5c75cab5dd9d6743cf8f9c1283b47b846dfe400",
+      "change": "+40/-4; idle guard via Stream.timeoutOrElse (~L236-251), absolute guard via Effect.raceFirst vs failing sleep (~L298-318), ProviderWatchdogConfig off-by-default (~L44-49). RunError union unchanged; both failures typed LLMError."
+    },
+    {
+      "role": "prototype-suite",
+      "path": "packages/core/test/watchdog-prototype.test.ts",
+      "sha256": "02eed4103c5aabb8af20c11cc3229cdcd4f24010a57b3d41a5ac9a4a7d1f875e",
+      "tests": 6
+    }
+  ],
+  "defect": "A stalled provider stream (one chunk then silence) makes llm.stream(request).pipe(Stream.runForEach(...)) block forever, so the run never reaches a terminal state. Baseline proven by the existing manually-interrupted test verifyPartialFlushOnInterruption (session-runner.test.ts:525).",
+  "design": {
+    "idle": "Stream.timeoutOrElse({ duration: idle, orElse: () => Stream.fail(LLMError 'Provider stream idle timeout') }) wrapping llm.stream(request). Per-pull deadline that RESETS on every emitted chunk (verified in installed effect@4.0.0-beta.83 dist/Stream.js:2075-2109).",
+    "absolute": "Effect.raceFirst(restore(providerStream), Effect.sleep(absolute).pipe(Effect.andThen(Effect.fail(LLMError 'Provider turn absolute timeout')))) inside the existing Effect.uninterruptibleMask. On budget elapse the blocked consumer is interrupted (raceAllFirst -> fiberInterruptAll, verified dist/internal/effect.js:948-975).",
+    "whyNotEffectTimeout": "Effect.timeout widens the error type to Cause.TimeoutError, which is outside the RunError/LLMError union and would not satisfy `failure instanceof LLMError`. Both watchdog failures are kept as LLMError so existing failure-handling maps them to a terminal assistant-error state.",
+    "toggle": "ProviderWatchdogConfig (module-level, OFF by default) so existing behavior is byte-identical when idle/absolute are undefined."
+  },
+  "fixtures": {
+    "redStall": "Stream.fromIterable([stepStart, textStart, textDelta('Partial')]) ++ Stream.never",
+    "slowComplete": "Stream.fromIterable([stepStart, textStart, textDelta('Complete'), textEnd, stepFinish, finish]).pipe(Stream.tap(() => Effect.sleep('150 millis')))",
+    "activeForever": "Stream.fromIterable([stepStart, textStart]) ++ Stream.make(textDelta('.')).pipe(Stream.tap(() => Effect.sleep('100 millis')), Stream.forever)"
+  },
+  "budgets": { "idle": "400 millis", "absolute": "3000 millis (GREEN/NEG/SLOW), 1000 millis (ABS-ACTIVE), 800 millis (ABS-STALL)", "hangRace": "1500 millis", "slowGap": "150 millis", "activeGap": "100 millis" },
+  "commands": {
+    "all": "cd packages/core && bun test test/watchdog-prototype.test.ts",
+    "red": "cd packages/core && bun test test/watchdog-prototype.test.ts -t 'RED:'",
+    "green": "cd packages/core && bun test test/watchdog-prototype.test.ts -t 'GREEN:'",
+    "negative": "cd packages/core && bun test test/watchdog-prototype.test.ts -t 'NEGATIVE CONTROL:'",
+    "slow": "cd packages/core && bun test test/watchdog-prototype.test.ts -t 'SLOW STREAM:'",
+    "absoluteActive": "cd packages/core && bun test test/watchdog-prototype.test.ts -t 'ABSOLUTE: the absolute timeout cuts an active stream'",
+    "absoluteStall": "cd packages/core && bun test test/watchdog-prototype.test.ts -t 'ABSOLUTE: with idle off'",
+    "regression": "cd packages/core && bun test test/session-runner.test.ts",
+    "typecheck": "cd packages/core && bunx --bun tsgo --noEmit"
+  },
+  "observed": {
+    "suiteResult": "6 pass / 0 fail (15 expect calls, ~7.96s)",
+    "RED": { "watchdog": "off", "result": "race=HUNG-PAST-BUDGET", "elapsedMs": 1570, "meaning": "stalled run does not terminate (unsafe baseline)" },
+    "GREEN": { "watchdog": "idle=400,absolute=3000", "result": "exit=Failure", "elapsedMs": 441, "terminalState": "[user, assistant finish:error 'idle timeout']", "meaning": "idle watchdog drives stalled run to terminal state within budget" },
+    "NEG": { "watchdog": "off (same fixture as GREEN)", "result": "race=HUNG-PAST-BUDGET", "elapsedMs": 1533, "meaning": "negative control: watchdog off -> still hangs (watchdog is the cause)" },
+    "SLOW": { "watchdog": "idle=400,absolute=3000", "result": "success (not cut)", "elapsedMs": 936, "terminalState": "[user, assistant finish:stop 'Complete']", "meaning": "healthy slow stream (150ms gaps < idle, 936ms < absolute) is NOT falsely cut" },
+    "ABS-ACTIVE": { "watchdog": "idle=400,absolute=1000", "result": "exit=Failure", "elapsedMs": 1018, "terminalState": "[user, assistant finish:error 'absolute timeout']", "meaning": "active stream (100ms gaps < idle so idle cannot fire) is cut by the ABSOLUTE budget at ~1000ms, not idle at 400ms" },
+    "ABS-STALL": { "watchdog": "idle=off,absolute=800", "result": "exit=Failure", "elapsedMs": 827, "terminalState": "[user, assistant finish:error 'absolute timeout']", "meaning": "with idle OFF, the absolute budget alone terminates a stall (~800ms) -> absolute is independently effective" }
+  },
+  "regression": "session-runner.test.ts: 83 pass / 0 fail (247 expect calls). Watchdog off-by-default leaves verifyPartialFlushOnInterruption and all existing turns byte-identical.",
+  "typecheck": "tsgo --noEmit exit 0 (clean)",
+  "antiDecorationChecks": [
+    "RED/GREEN/NEG/ABS all drive the real runner.run -> SessionRunner.Service -> runTurnAttempt -> llm.stream(request).pipe(Stream.runForEach(...)); only the LLM transport is faked.",
+    "No test asserts a timeout helper's return value; the stall happens inside the real runner stream.",
+    "The watchdog toggles the real production path in llm.ts (not a test-only stub).",
+    "Fresh DB per test verified: GREEN observes ctxLen=2 in a full-file run (no cross-test contamination)."
+  ],
+  "idleAbsoluteDistinct": [
+    "GREEN: idle fires on a silent stall at 441ms.",
+    "SLOW: idle does NOT false-fire on a 150ms-gap active stream; absolute does NOT fire under 3000ms.",
+    "ABS-ACTIVE: on a 100ms-gap active stream idle cannot fire, absolute fires at ~1000ms -> the two mechanisms are observably distinct.",
+    "ABS-STALL: with idle disabled, absolute alone terminates -> absolute is independently effective, not a shadow of idle."
+  ],
+  "provenCodeValidation": [
+    "Stream.timeoutOrElse is per-pull and resets the deadline on each delivered chunk; keeps error typed LLMError (effect@4.0.0-beta.83 dist/Stream.js:2075-2109) - reviewer-hy3 + reviewer-deepseek.",
+    "Effect.raceFirst interrupts the losing fiber via raceAllFirst -> fiberInterruptAll and awaits its death incl. finalizers (dist/internal/effect.js:948-975, :602-608) - reviewer-hy3 + reviewer-deepseek.",
+    "forkUnsafe creates race children interruptible regardless of the enclosing mask (dist/internal/effect.js:2075-2088) - reviewer-deepseek.",
+    "The installed Stream.timeout doc example itself uses Stream.make(1).pipe(Stream.concat(Stream.never), Stream.timeout('1 second')) (Stream.ts:3536-3545), i.e. the exact stall pattern this watchdog guards."
+  ],
+  "reviewers": {
+    "reviewer-hy3": {
+      "verdict": "APPROVE-WITH-NOTES",
+      "consensusFinding": "Absolute-timeout branch was source-verified correct but never empirically exercised by the original 4-test suite (idle always fired first on silent stalls; SLOW fired neither).",
+      "requiredFollowUp": "Add a test where only the absolute timeout fires (active-but-over-budget, and absolute-only on a stall with idle off)."
+    },
+    "reviewer-deepseek": {
+      "verdict": "APPROVE-WITH-NOTES",
+      "consensusFinding": "Same as reviewer-hy3: idle half fully proven; absolute half correct in code but unverified by execution. Also flagged SLOW-test timing headroom (2.67x) and ProviderWatchdogConfig mutable-singleton as residual.",
+      "requiredFollowUp": "Empirically exercise the absolute branch."
+    },
+    "consensusResolution": "CONSENSUS ACCEPTED (not debated): the finding is specific, correct, and verifiable. CLOSED by adding ABS-ACTIVE (1018ms ~ absolute 1000ms, idle cannot fire on 100ms gaps) and ABS-STALL (827ms ~ absolute 800ms, idle off). Both halves now empirically proven; suite is 6/6 green."
+  },
+  "residualRisks": [
+    "ProviderWatchdogConfig is a module-level mutable singleton, not per-session; acceptable for a disposable prototype, must become real config before any production slice (SLICE-012+).",
+    "SLOW test uses real-clock timing with 2.67x headroom (150ms gap vs 400ms idle); low false-cut risk but could flake under extreme scheduler load.",
+    "Tool-call-in-flight interaction with a firing watchdog is untested (fixtures are no-tool); out of claim-1 scope, noted for the production slice.",
+    "Wall-clock elapsed assertions are timing-sensitive by design (disposable prototype).",
+    "This record is claim-1 scoped only. It is NOT the full SLICE-011 EXIT_RECORD: claims 2-5 (reconciler, durable retry, durable blockers, fencing) remain unproven."
+  ],
+  "notProven": [
+    "Claims 2-5 of ADR-015 (reconciler reorder, durable retry, durable blockers, Session-ID fencing).",
+    "Production integration: a green prototype is not proof of production durability (ADR-015 Scope).",
+    "Cross-model failover and subagent/task recovery (deferred by ADR-015)."
+  ],
+  "gitDiffStat": "bun.lock +1/-1 (from bun install, not watchdog logic); packages/core/src/session/runner/llm.ts +40/-4; packages/core/test/watchdog-prototype.test.ts +430 (untracked)."
+}
