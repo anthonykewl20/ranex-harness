@@ -126,7 +126,8 @@ const layer = Layer.effect(
             }
 
             const skillUrl = new URL(`${encodeURIComponent(skill.name)}/`, source)
-            const versionFile = path.join(root, ".opencode-version")
+            const versionFile = path.join(root, ".ranex-version")
+            const legacyVersionFile = path.join(root, ".opencode-version")
             const files = skill.files.map((file) => {
               if (!isSafeRelativePath(file)) return undefined
               let resource: URL
@@ -148,20 +149,29 @@ const layer = Layer.effect(
             if (files.some((file) => file === undefined)) {
               return []
             }
-            return [{ skill, root, versionFile, files: files as { url: string; destination: string; file: string }[] }]
+            return [
+              { skill, root, versionFile, legacyVersionFile, files: files as { url: string; destination: string; file: string }[] },
+            ]
           }),
-          ({ skill, root, versionFile, files }) =>
+          ({ skill, root, versionFile, legacyVersionFile, files }) =>
             Effect.gen(function* () {
               const version = skill.version
-              const current =
+              const currentNew =
                 version === undefined
                   ? undefined
                   : yield* fs.readFileStringSafe(versionFile).pipe(Effect.catch(() => Effect.succeed(undefined)))
+              const current =
+                version === undefined || currentNew !== undefined
+                  ? currentNew
+                  : yield* fs.readFileStringSafe(legacyVersionFile).pipe(Effect.catch(() => Effect.succeed(undefined)))
               if (version === undefined || current === version) {
                 yield* Effect.forEach(files, (file) => download(file.url, file.destination), {
                   concurrency: fileConcurrency,
                   discard: true,
                 })
+                if (version !== undefined && currentNew === undefined && current === version) {
+                  yield* fs.rename(legacyVersionFile, versionFile).pipe(Effect.ignore)
+                }
               } else {
                 const token = crypto.randomUUID()
                 const staging = `${root}.tmp-${token}`
@@ -177,7 +187,7 @@ const layer = Layer.effect(
                     (yield* fs.exists(path.join(staging, "SKILL.md")).pipe(Effect.orDie)) ||
                     (yield* fs.exists(path.join(staging, `${skill.name}.md`)).pipe(Effect.orDie))
                   if (!exists) return
-                  yield* fs.writeFileString(path.join(staging, ".opencode-version"), version)
+                  yield* fs.writeFileString(path.join(staging, ".ranex-version"), version)
                   yield* Effect.uninterruptible(
                     Effect.gen(function* () {
                       const cached = yield* fs.exists(root).pipe(Effect.orDie)
