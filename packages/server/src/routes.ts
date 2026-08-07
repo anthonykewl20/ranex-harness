@@ -8,6 +8,7 @@ import { PermissionSaved } from "@ranex/core/permission/saved"
 import { PtyTicket } from "@ranex/core/pty/ticket"
 import { SessionV2 } from "@ranex/core/session"
 import { SessionExecution } from "@ranex/core/session/execution"
+import { SessionReconcile } from "@ranex/core/session/reconcile"
 import { LocationServiceMap } from "@ranex/core/location-service-map"
 import { SessionExecutionLocal } from "@ranex/core/session/execution/local"
 import { ToolOutputStore } from "@ranex/core/tool-output-store"
@@ -28,6 +29,7 @@ const applicationServices = LayerNode.group([
   EventV2.node,
   httpClient,
   ToolOutputStore.cleanupNode,
+  SessionReconcile.sweepNode,
   SessionV2.node,
   PermissionSaved.node,
   PtyTicket.node,

@@ -33,6 +33,7 @@ import { SessionCompaction } from "../compaction"
 import { SessionEvent } from "../event"
 import { SessionHistory } from "../history"
 import { SessionInput } from "../input"
+import { SessionReconcile } from "../reconcile"
 import { SessionSchema } from "../schema"
 import { SessionStore } from "../store"
 import { type RunError, Service } from "./index"
@@ -119,29 +120,20 @@ const layer = Layer.effect(
       return session
     })
 
-    const getContext = Effect.fn("SessionRunner.getContext")(function* (sessionID: SessionSchema.ID) {
-      return yield* store.context(sessionID)
-    })
+    // Per-session serialization of interrupted-tool reconciliation. The single
+    // reachable TOCTOU surface is reconcile()-vs-run(): both call this, both can
+    // read a tool as `running` and double-publish. run()-vs-run() is impossible
+    // by construction (the SessionRunCoordinator same-session join contract).
+    const sessionLocks = new Map<SessionSchema.ID, Semaphore.Semaphore>()
     const failInterruptedTools = Effect.fn("SessionRunner.failInterruptedTools")(function* (
       sessionID: SessionSchema.ID,
     ) {
-      for (const message of yield* getContext(sessionID)) {
-        if (message.type !== "assistant") continue
-        for (const tool of message.content) {
-          if (tool.type !== "tool" || (tool.state.status !== "pending" && tool.state.status !== "running")) continue
-          yield* events.publish(SessionEvent.Tool.Failed, {
-            sessionID,
-            timestamp: yield* DateTime.now,
-            assistantMessageID: message.id,
-            callID: tool.id,
-            error: { type: "unknown", message: "Tool execution interrupted" },
-            provider: {
-              executed: tool.provider?.executed === true,
-              ...(tool.provider?.metadata === undefined ? {} : { metadata: tool.provider.metadata }),
-            },
-          })
-        }
+      let semaphore = sessionLocks.get(sessionID)
+      if (semaphore === undefined) {
+        semaphore = Semaphore.makeUnsafe(1)
+        sessionLocks.set(sessionID, semaphore)
       }
+      yield* semaphore.withPermit(SessionReconcile.reconcileInterruptedTools({ events, store, sessionID }))
     })
 
     const awaitToolFibers = (fibers: FiberSet.FiberSet<void, ToolOutputStore.Error>) =>
@@ -454,10 +446,14 @@ const layer = Layer.effect(
       readonly sessionID: SessionSchema.ID
       readonly force: boolean
     }) {
+      // Reconcile tools stranded by a prior crash BEFORE the eligible-input guard.
+      // A crash with an empty inbox never re-enters run() through the inbox, so
+      // reconciliation must fire here regardless of pending work. It only touches
+      // projected tool context, never SessionInput, so the guard is unchanged.
+      yield* failInterruptedTools(input.sessionID)
       const hasSteer = yield* SessionInput.hasPending(db, input.sessionID, "steer")
       const hasQueue = hasSteer ? false : yield* SessionInput.hasPending(db, input.sessionID, "queue")
       if (!input.force && !hasSteer && !hasQueue) return
-      yield* failInterruptedTools(input.sessionID)
       let promotion: SessionInput.Delivery | undefined = hasSteer ? "steer" : hasQueue ? "queue" : undefined
       let shouldRun = input.force || hasSteer || hasQueue
       while (shouldRun) {
@@ -475,8 +471,16 @@ const layer = Layer.effect(
       }
     })
 
+    // Reconciles interrupted tools for one session without scheduling a provider
+    // turn. The startup sweep (SessionReconcile.sweepNode) calls the shared logic
+    // over all sessions at process boot; this capability is the explicit entrypoint.
+    const reconcile = Effect.fn("SessionRunner.reconcile")(function* (sessionID: SessionSchema.ID) {
+      yield* failInterruptedTools(sessionID)
+    })
+
     return Service.of({
       run,
+      reconcile,
     })
   }),
 )

@@ -65,6 +65,7 @@ import { Ripgrep } from "@ranex/core/ripgrep"
 import { SessionProjector } from "@ranex/core/session/projector"
 import { SessionV2 } from "@ranex/core/session"
 import { SessionExecution } from "@ranex/core/session/execution"
+import { SessionReconcile } from "@ranex/core/session/reconcile"
 import * as SessionExecutionLocal from "@ranex/core/session/execution/local"
 import { lazy } from "@/util/lazy"
 import { CorsConfig, isAllowedCorsOrigin, type CorsOptions } from "@ranex/server/cors"
@@ -296,7 +297,7 @@ export function createRoutes(
     Layer.provide(locationLayer),
     Layer.provide(PtyEnvironment.layer),
     Layer.provide(
-      AppNodeBuilderV1.build(SessionV2.node, [
+      AppNodeBuilderV1.build(LayerNode.group([SessionV2.node, SessionReconcile.sweepNode]), [
         [LocationServiceMap.node, locationServiceMapV2],
         [SessionExecution.node, SessionExecutionLocal.node],
       ]),
