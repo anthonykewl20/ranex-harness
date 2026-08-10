@@ -19,7 +19,12 @@ import {
   upsertTheme,
   type ThemeJson,
 } from "../theme"
+import { degrade, detectCapability } from "../theme/capability"
 import { createEffect, createMemo, onCleanup, onMount } from "solid-js"
+
+/** Read once: it depends on the environment and on stdout, neither of which
+ * changes while the process runs. */
+const CAPABILITY = detectCapability()
 import { createStore, produce } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import { useKV } from "./kv"
@@ -254,16 +259,24 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
     })
 
     const values = createMemo(() => {
-      const active = store.themes[store.active]
-      if (active) return resolveTheme(active, store.mode)
+      const resolved = () => {
+        const active = store.themes[store.active]
+        if (active) return resolveTheme(active, store.mode)
 
-      const saved = kv.get("theme")
-      if (typeof saved === "string") {
-        const theme = store.themes[saved]
-        if (theme) return resolveTheme(theme, store.mode)
+        const saved = kv.get("theme")
+        if (typeof saved === "string") {
+          const theme = store.themes[saved]
+          if (theme) return resolveTheme(theme, store.mode)
+        }
+
+        return resolveTheme(store.themes.ranex, store.mode)
       }
 
-      return resolveTheme(store.themes.ranex, store.mode)
+      // BOARD-03. Every theme passes through here, so this is the one place
+      // degradation belongs. Capability is read once at startup: it depends on
+      // the environment and on whether stdout is a terminal, and neither
+      // changes under us.
+      return degrade(resolved(), CAPABILITY)
     })
 
     createEffect(() => renderer.setBackgroundColor(values().background))
