@@ -255,7 +255,7 @@ describe("ProviderWatchdog configuration (SLICE-012 criterion 5)", () => {
   defaultsIt.effect("uses shipped defaults when provider_watchdog is omitted", () =>
     Effect.gen(function* () {
       const watchdog = yield* ProviderWatchdog.Service
-      expect(watchdog).toEqual({ idle: 30_000, absolute: 1_800_000 })
+      expect(watchdog).toEqual({ idle: 30_000, first: 120_000, absolute: 1_800_000 })
     }),
   )
 
@@ -300,7 +300,7 @@ describe("ProviderWatchdog configuration (SLICE-012 criterion 5)", () => {
     ),
   )
 
-  runnerIt(new ConfigProviderWatchdog.Info({ idle_ms: 120, absolute_ms: 10_000 })).live(
+  runnerIt(new ConfigProviderWatchdog.Info({ idle_ms: 120, first_ms: 5_000, absolute_ms: 10_000 })).live(
     "idle_ms below a 300ms gap cuts the provider stream",
     () =>
       Effect.gen(function* () {
@@ -319,7 +319,7 @@ describe("ProviderWatchdog configuration (SLICE-012 criterion 5)", () => {
       }),
   )
 
-  runnerIt(new ConfigProviderWatchdog.Info({ idle_ms: 3_000, absolute_ms: 10_000 })).live(
+  runnerIt(new ConfigProviderWatchdog.Info({ idle_ms: 3_000, first_ms: 5_000, absolute_ms: 10_000 })).live(
     "idle_ms above the same 300ms gap lets the provider stream complete",
     () =>
       Effect.gen(function* () {
@@ -333,6 +333,29 @@ describe("ProviderWatchdog configuration (SLICE-012 criterion 5)", () => {
         expect(yield* session.context(sessionID)).toMatchObject([
           { type: "user", text: "Gated slow" },
           { type: "assistant", finish: "stop", content: [{ type: "text", text: "FirstSecond" }] },
+        ])
+      }),
+  )
+
+  runnerIt(new ConfigProviderWatchdog.Info({ idle_ms: 1_000, first_ms: 200, absolute_ms: 5_000 })).live(
+    "first_ms terminates a provider that accepts the stream call but never emits a first chunk",
+    () =>
+      Effect.gen(function* () {
+        responseStream = undefined
+        yield* insertSession
+        const session = yield* SessionV2.Service
+        yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Silent connection" }), resume: false })
+        responseStream = Stream.fromEffect(Effect.never)
+        const started = Date.now()
+        const failure = yield* session.resume(sessionID).pipe(Effect.timeout("3 seconds"), Effect.flip)
+        expect(failure).toBeInstanceOf(LLMError)
+        const error = failure as LLMError
+        expect(error.reason._tag).toBe("Transport")
+        if (error.reason._tag === "Transport") expect(error.reason.kind).toBe("watchdog-first-chunk")
+        expect(Date.now() - started).toBeLessThan(3_000)
+        expect(yield* session.context(sessionID)).toMatchObject([
+          { type: "user", text: "Silent connection" },
+          { type: "assistant", finish: "error", error: { message: "Provider time-to-first-chunk timeout" } },
         ])
       }),
   )
@@ -382,6 +405,16 @@ describe("ProviderWatchdog schema bounds (refused at load, not at use)", () => {
     }),
   )
 
+  decodeIt.effect("rejects invalid first_ms values and accepts its 600_000ms ceiling", () =>
+    Effect.sync(() => {
+      expect(Option.isNone(decode({ provider_watchdog: { first_ms: 0 } }))).toBe(true)
+      expect(Option.isNone(decode({ provider_watchdog: { first_ms: 600_001 } }))).toBe(true)
+      const ceiling = decode({ provider_watchdog: { first_ms: 600_000 } })
+      expect(Option.isSome(ceiling)).toBe(true)
+      if (Option.isSome(ceiling)) expect(ceiling.value.provider_watchdog?.first_ms).toBe(600_000)
+    }),
+  )
+
   decodeIt.effect("accepts a fully valid watchdog and preserves both fields", () =>
     Effect.sync(() => {
       const valid = decode({ provider_watchdog: { idle_ms: 500, absolute_ms: 10_000 } })
@@ -400,6 +433,13 @@ describe("ProviderWatchdog schema bounds (refused at load, not at use)", () => {
       expect(Option.isSome(decode({ provider_watchdog: { idle_ms: 2_000 } }))).toBe(true)
       expect(Option.isSome(decode({ provider_watchdog: { absolute_ms: 1_000 } }))).toBe(true)
       expect(Option.isSome(decode({ provider_watchdog: { idle_ms: 1_000, absolute_ms: 2_000 } }))).toBe(true)
+    }),
+  )
+
+  decodeIt.effect("refuses first_ms greater than absolute_ms at load and accepts equality", () =>
+    Effect.sync(() => {
+      expect(Option.isNone(decode({ provider_watchdog: { first_ms: 2_000, absolute_ms: 1_000 } }))).toBe(true)
+      expect(Option.isSome(decode({ provider_watchdog: { first_ms: 1_000, absolute_ms: 1_000 } }))).toBe(true)
     }),
   )
 

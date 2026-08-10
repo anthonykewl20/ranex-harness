@@ -76,6 +76,7 @@ let activeToolExecutions = 0
 let maxActiveToolExecutions = 0
 const watchdogConfig = {
   idle: undefined as Duration.Input | undefined,
+  first: undefined as Duration.Input | undefined,
   absolute: undefined as Duration.Input | undefined,
 }
 const watchdogLayer = Layer.succeed(
@@ -83,6 +84,9 @@ const watchdogLayer = Layer.succeed(
   ProviderWatchdog.Service.of({
     get idle() {
       return watchdogConfig.idle
+    },
+    get first() {
+      return watchdogConfig.first
     },
     get absolute() {
       return watchdogConfig.absolute
@@ -350,6 +354,7 @@ const setup = Effect.gen(function* () {
   activeToolExecutions = 0
   maxActiveToolExecutions = 0
   watchdogConfig.idle = undefined
+  watchdogConfig.first = undefined
   watchdogConfig.absolute = undefined
   yield* db
     .insert(ProjectTable)

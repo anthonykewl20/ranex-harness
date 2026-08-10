@@ -11,6 +11,7 @@ import {
 } from "@ranex/llm"
 
 const WATCHDOG_IDLE_KIND = "watchdog-idle"
+const WATCHDOG_FIRST_CHUNK_KIND = "watchdog-first-chunk"
 const WATCHDOG_ABSOLUTE_KIND = "watchdog-absolute"
 import { Cause, DateTime, Effect, Exit, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
@@ -233,14 +234,22 @@ const layer = Layer.effect(
         method: "stream",
         reason: new TransportReason({ message: "Provider stream idle timeout", kind: WATCHDOG_IDLE_KIND }),
       })
+      const firstChunkError = new LLMError({
+        module: "SessionRunner",
+        method: "stream",
+        reason: new TransportReason({
+          message: "Provider time-to-first-chunk timeout",
+          kind: WATCHDOG_FIRST_CHUNK_KIND,
+        }),
+      })
       const idleDuration = watchdog.idle
-      // Idle measures inter-chunk silence only, NOT time-to-first-token. The deadline starts
-      // only after the first chunk arrives: the first pull runs untimed (a slow first token —
-      // reasoning / extended thinking — is bounded by the absolute budget), then every
-      // subsequent pull is raced against the idle deadline. Built on Stream.toPull/fromPull
+      const firstDuration = watchdog.first
+      // Idle measures inter-chunk silence only, NOT time-to-first-token. The first pull uses
+      // the separate, generous first-chunk deadline, then every subsequent pull is raced
+      // against the idle deadline. Built on Stream.toPull/fromPull
       // because Stream.peel + Sink.head drops the chunk remainder in this Effect version.
       const idleWatched =
-        idleDuration !== undefined
+        idleDuration !== undefined || firstDuration !== undefined
           ? Stream.fromPull(
               Effect.gen(function* () {
                 const pull = yield* Stream.toPull(llm.stream(request))
@@ -248,8 +257,14 @@ const layer = Layer.effect(
                 return Effect.gen(function* () {
                   if (first) {
                     first = false
+                    if (firstDuration !== undefined)
+                      return yield* Effect.raceFirst(
+                        pull,
+                        Effect.sleep(firstDuration).pipe(Effect.andThen(Effect.fail(firstChunkError))),
+                      )
                     return yield* pull
                   }
+                  if (idleDuration === undefined) return yield* pull
                   return yield* Effect.raceFirst(
                     pull,
                     Effect.sleep(idleDuration).pipe(Effect.andThen(Effect.fail(idleError))),

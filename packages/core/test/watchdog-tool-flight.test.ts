@@ -42,6 +42,7 @@ import { testEffect } from "./lib/effect"
 let responseStream: Stream.Stream<LLMEvent, LLMError> | undefined
 const watchdogConfig = {
   idle: undefined as Duration.Input | undefined,
+  first: undefined as Duration.Input | undefined,
   absolute: undefined as Duration.Input | undefined,
 }
 const watchdogLayer = Layer.succeed(
@@ -49,6 +50,9 @@ const watchdogLayer = Layer.succeed(
   ProviderWatchdog.Service.of({
     get idle() {
       return watchdogConfig.idle
+    },
+    get first() {
+      return watchdogConfig.first
     },
     get absolute() {
       return watchdogConfig.absolute
