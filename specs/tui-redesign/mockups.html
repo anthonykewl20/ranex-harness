@@ -1,0 +1,516 @@
+<title>Ranex TUI — front door options</title>
+
+<style>
+  /* ---- page tokens: light is the bare :root, complete ---- */
+  :root {
+    --ground:#F4F6F7; --surface:#FFFFFF; --surface-2:#EDF1F3;
+    --ink:#1B2733; --ink-soft:#52616E; --ink-faint:#8496A5;
+    --line:#D9E0E4; --line-strong:#B9C4CC;
+    --accent:#2B5C8A; --accent-tint:#E7EEF5;
+    --pass:#1E7A45; --fail:#B23A32; --warn:#8A6114;
+    --shadow:0 1px 0 rgba(27,39,51,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:#0E151D; --surface:#16202A; --surface-2:#121B24;
+      --ink:#E9EDF1; --ink-soft:#9DACB9; --ink-faint:#6B7C8B;
+      --line:#26333F; --line-strong:#3A4B59;
+      --accent:#7FB0DC; --accent-tint:#1A2836;
+      --pass:#4FB27E; --fail:#E07B6F; --warn:#D9A441;
+      --shadow:none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0E151D; --surface:#16202A; --surface-2:#121B24;
+    --ink:#E9EDF1; --ink-soft:#9DACB9; --ink-faint:#6B7C8B;
+    --line:#26333F; --line-strong:#3A4B59;
+    --accent:#7FB0DC; --accent-tint:#1A2836;
+    --pass:#4FB27E; --fail:#E07B6F; --warn:#D9A441;
+    --shadow:none;
+  }
+
+  * { box-sizing:border-box; }
+
+  body {
+    margin:0;
+    background:var(--ground);
+    color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+    font-size:16px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .wrap { max-width:1120px; margin:0 auto; padding:0 24px 96px; }
+
+  /* ---- masthead ---- */
+  header.mast { padding:56px 0 28px; border-bottom:1px solid var(--line); }
+  .eyebrow {
+    font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--ink-faint); margin:0 0 14px;
+  }
+  h1 {
+    font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    font-weight:600; font-size:clamp(30px,4.4vw,46px); line-height:1.12;
+    margin:0 0 14px; text-wrap:balance; letter-spacing:-.01em;
+  }
+  .standfirst {
+    max-width:62ch; margin:0; color:var(--ink-soft); font-size:17px;
+  }
+  .standfirst strong { color:var(--ink); font-weight:600; }
+
+  /* ---- controls ---- */
+  .controls {
+    position:sticky; top:0; z-index:20;
+    background:var(--ground);
+    border-bottom:1px solid var(--line);
+    padding:14px 0;
+    display:flex; flex-wrap:wrap; gap:22px; align-items:center;
+  }
+  .cgroup { display:flex; align-items:center; gap:10px; }
+  .clabel {
+    font-size:10px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--ink-faint); white-space:nowrap;
+  }
+  .seg { display:flex; border:1px solid var(--line-strong); }
+  .seg button {
+    appearance:none; border:0; background:var(--surface); color:var(--ink-soft);
+    font:inherit; font-size:13px; padding:7px 14px; cursor:pointer;
+    border-right:1px solid var(--line-strong);
+  }
+  .seg button:last-child { border-right:0; }
+  .seg button[aria-pressed="true"] { background:var(--accent); color:var(--ground); }
+  .seg button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .seg button:hover:not([aria-pressed="true"]) { background:var(--accent-tint); color:var(--ink); }
+
+  /* ---- terminal specimen ---- */
+  .stage { padding:32px 0 12px; }
+  .chrome {
+    border:1px solid var(--t-line);
+    background:var(--t-ground);
+    overflow-x:auto;
+    box-shadow:var(--shadow);
+  }
+  .chrome .bar {
+    display:flex; align-items:center; gap:8px;
+    padding:8px 12px; border-bottom:1px solid var(--t-line);
+    background:var(--t-surface2);
+  }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--t-line-strong); }
+  .bar .who {
+    font-family:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+    font-size:11px; color:var(--t-ink-soft); margin-left:6px;
+  }
+  pre.term {
+    margin:0; padding:18px 20px;
+    font-family:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+    font-size:13px; line-height:1.55;
+    color:var(--t-ink);
+    font-variant-numeric:tabular-nums;
+    white-space:pre;
+  }
+
+  /* terminal palette — the generated Ranex theme, verbatim */
+  .chrome[data-t="dark"] {
+    --t-ground:#0E151D; --t-surface:#16202A; --t-surface2:#121B24;
+    --t-ink:#E9EDF1; --t-ink-soft:#9DACB9;
+    --t-line:#26333F; --t-line-strong:#3A4B59;
+    --t-accent:#7FB0DC; --t-accent-strong:#9CC3E8;
+    --t-pass:#4FB27E; --t-pass-bg:#14281E;
+    --t-fail:#E07B6F; --t-fail-bg:#33201D;
+    --t-warn:#D9A441; --t-info:#6FC3C8; --t-highlight:#A99BE0;
+  }
+  .chrome[data-t="light"] {
+    --t-ground:#F4F6F7; --t-surface:#FFFFFF; --t-surface2:#EDF1F3;
+    --t-ink:#1B2733; --t-ink-soft:#52616E;
+    --t-line:#D9E0E4; --t-line-strong:#B9C4CC;
+    --t-accent:#2B5C8A; --t-accent-strong:#234C73;
+    --t-pass:#1E7A45; --t-pass-bg:#E7F2EB;
+    --t-fail:#B23A32; --t-fail-bg:#F7E9E7;
+    --t-warn:#8A6114; --t-info:#1F6E73; --t-highlight:#6A4FB0;
+  }
+
+  .k-pass  { color:var(--t-pass); font-weight:600; }
+  .k-fail  { color:var(--t-fail); font-weight:600; }
+  .k-warn  { color:var(--t-warn); }
+  .k-info  { color:var(--t-info); }
+  .k-acc   { color:var(--t-accent); }
+  .k-accs  { color:var(--t-accent-strong); font-weight:600; }
+  .k-hl    { color:var(--t-highlight); }
+  .k-dim   { color:var(--t-ink-soft); }
+  .k-line  { color:var(--t-line-strong); }
+  .k-addbg { color:var(--t-pass); background:var(--t-pass-bg); }
+  .k-delbg { color:var(--t-fail); background:var(--t-fail-bg); }
+
+  /* raw mode: identical text, every colour drained. nothing re-renders. */
+  .chrome[data-raw="on"] pre.term span { color:var(--t-ink); background:transparent; font-weight:400; }
+
+  .cause-row { cursor:pointer; }
+  .cause-row:hover span { text-decoration:underline; text-underline-offset:3px; }
+  .cause-row.sel { background:var(--t-surface); }
+
+  /* ---- prose + panels ---- */
+  h2 {
+    font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    font-weight:600; font-size:24px; margin:56px 0 6px; letter-spacing:-.005em;
+  }
+  .sub { color:var(--ink-soft); margin:0 0 22px; max-width:66ch; }
+  p { max-width:66ch; }
+
+  .readout {
+    margin-top:14px; border:1px solid var(--line); background:var(--surface);
+    padding:16px 18px; min-height:96px;
+  }
+  .readout .tag {
+    display:inline-block; font-family:ui-monospace,Menlo,monospace; font-size:11px;
+    letter-spacing:.06em; padding:2px 8px; border:1px solid currentColor; margin-bottom:9px;
+  }
+  .readout h3 { margin:0 0 6px; font-size:16px; font-weight:600; }
+  .readout p { margin:0; color:var(--ink-soft); font-size:15px; }
+  .readout .do { margin-top:9px; font-size:14px; color:var(--ink); }
+  .readout .do b { font-weight:600; }
+
+  table.cmp { width:100%; border-collapse:collapse; margin-top:8px; font-size:14.5px; }
+  table.cmp th, table.cmp td {
+    text-align:left; vertical-align:top; padding:12px 14px 12px 0;
+    border-bottom:1px solid var(--line);
+  }
+  table.cmp th {
+    font-size:10px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--ink-faint); font-weight:500; border-bottom:1px solid var(--line-strong);
+  }
+  table.cmp td:first-child { font-weight:600; white-space:nowrap; padding-right:24px; }
+  .tblwrap { overflow-x:auto; }
+
+  .note {
+    border-left:2px solid var(--accent); padding:2px 0 2px 18px;
+    margin:22px 0; color:var(--ink-soft); max-width:64ch;
+  }
+  .note b { color:var(--ink); }
+
+  code.inl {
+    font-family:ui-monospace,Menlo,monospace; font-size:.9em;
+    background:var(--surface-2); padding:1px 5px; border:1px solid var(--line);
+  }
+
+  footer.end { margin-top:64px; padding-top:22px; border-top:1px solid var(--line); color:var(--ink-soft); font-size:14.5px; }
+
+  @media (prefers-reduced-motion:no-preference) {
+    .seg button { transition:background .12s ease, color .12s ease; }
+  }
+  @media (max-width:640px) {
+    .controls { gap:14px; }
+    pre.term { font-size:11px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <p class="eyebrow">Ranex harness · TUI redesign · provisional</p>
+    <h1>What do you see when Ranex opens?</h1>
+    <p class="standfirst">
+      Three front doors, drawn with the real palette and real output from this repository.
+      Pick one — or tell me what to change. <strong>Everything downstream depends on this:</strong>
+      ADR-018, the milestone, and every issue.
+    </p>
+  </header>
+
+  <div class="controls">
+    <div class="cgroup">
+      <span class="clabel">Front door</span>
+      <div class="seg" id="seg-screen">
+        <button data-v="board"  aria-pressed="true">A · Board</button>
+        <button data-v="chat"   aria-pressed="false">B · Chat</button>
+        <button data-v="owner"  aria-pressed="false">C · Owner</button>
+      </div>
+    </div>
+    <div class="cgroup">
+      <span class="clabel">Theme</span>
+      <div class="seg" id="seg-theme">
+        <button data-v="dark"  aria-pressed="true">Dark</button>
+        <button data-v="light" aria-pressed="false">Light</button>
+      </div>
+    </div>
+    <div class="cgroup">
+      <span class="clabel">Output</span>
+      <div class="seg" id="seg-raw">
+        <button data-v="off" aria-pressed="true">Terminal</button>
+        <button data-v="on"  aria-pressed="false">Piped / CI</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="chrome" id="chrome" data-t="dark" data-raw="off">
+      <div class="bar">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="who" id="whobar">ranex — 80×24</span>
+      </div>
+      <pre class="term" id="term"></pre>
+    </div>
+    <div class="readout" id="readout">
+      <span class="tag">Cause</span>
+      <h3>Click a failing gate</h3>
+      <p>Screen A lists two failures that look alike and are not. Selecting one shows which of the seven causes it is, and what it asks you to do.</p>
+    </div>
+  </div>
+
+  <h2>What you are actually choosing</h2>
+  <p class="sub">Not a skin. The three differ in what the screen is <em>for</em>, and in how much of the existing 27k&nbsp;LOC survives.</p>
+  <div class="tblwrap">
+    <table class="cmp">
+      <thead>
+        <tr><th>Option</th><th>The screen's job</th><th>Survives</th><th>New to build</th><th>Cost &amp; risk</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>A · Board</td>
+          <td>Answer “is this work acceptable, and why not”. The transcript becomes a pane you open.</td>
+          <td>Session route, diff viewer, dialogs, plugin slots</td>
+          <td>Board route, gate/evidence model, actions, export</td>
+          <td>Highest design work. Matches MAP §17.1 — <em>the operator reads verdicts, not dashboards</em> — and the project thesis.</td>
+        </tr>
+        <tr>
+          <td>B · Chat</td>
+          <td>Keep the coding-agent transcript; report governance at the edges.</td>
+          <td>Nearly all of it</td>
+          <td>Status line, gate strip, verdict footer</td>
+          <td>Lowest risk. But the screen still reads as a chat tool, which is the product Ranex explicitly is not.</td>
+        </tr>
+        <tr>
+          <td>C · Owner</td>
+          <td>Ask a non-technical owner one decision in plain language.</td>
+          <td>Everything, behind a second front door</td>
+          <td>Everything in A, plus a translator and a second IA</td>
+          <td>Widest scope. This is the “Translator” MAP §15.2 lists as <strong>absent</strong> — it may not evaluate, mutate or issue permits.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note">
+    <b>These are not exclusive.</b> C contains A. The real question is sequencing — whether the owner view is built now
+    or after the board works. My recommendation is <b>A first, C as a mode later</b>: the translator has no verdict to
+    translate until the board exists.
+  </div>
+
+  <h2>The toggle marked “Piped / CI”</h2>
+  <p class="sub">It is not a preview mode. It is the invariant, made visible.</p>
+  <p>
+    Flip it and the colour drains but not one character moves. That is deliberate: the toggle changes CSS custom
+    properties only — no text node is rewritten, nothing re-renders. It is the same mechanism the product must use.
+    A verdict that reads differently in CI than on your desk is not evidence.
+  </p>
+  <p>
+    Measured on this repository today: the same <code class="inl">gate evaluate</code> run into a pipe and under a real
+    pty produced captures hashing to the identical
+    <code class="inl">3b12542229cf67a5…</code>, with zero escape bytes in either. The rule holds now because nothing is
+    styled yet — the redesign is exactly what puts it at risk.
+  </p>
+
+  <h2>Why two failures are not the same failure</h2>
+  <p class="sub">Seven distinct causes reach the screen as “this claim is not satisfied”. Only one of them is work never done.</p>
+  <p>
+    The kernel already separates them with care, and says why: reporting a forgery under the phrasing reserved for
+    honest absence lets <em>an attacker choose the wording of the report by choosing which field to tamper with</em>.
+    On screen A, <code class="inl">tests-executed</code> failed because two records were <b>refused</b> — that is an
+    attack surface. <code class="inl">diff-reviewed</code> failed because nothing was ever produced. Same verdict,
+    opposite response.
+  </p>
+  <p>
+    They are unordered. <code class="inl">absent</code> is not a worse <code class="inl">failed</code>. Any design that
+    ranks them by severity and colours by rank destroys the distinction — which is why the redesign needs a structured
+    cause on <code class="inl">Evaluation</code> rather than a renderer parsing prose.
+  </p>
+
+  <footer class="end">
+    Palette is the generated Ranex theme — 19 semantic tokens per mode, 60 WCAG checks passing.
+    Gate output is real, from <code class="inl">HEAD</code> of this repository.
+    Screens are mockups: no board route exists yet.
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  var W = 74;
+
+  function pad(s, n) { s = String(s); return s.length >= n ? s.slice(0, n) : s + " ".repeat(n - s.length); }
+  function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+  // seg: array of [text, class] — class "" means plain
+  function line(seg) {
+    var raw = seg.map(function (p) { return p[0]; }).join("");
+    var fill = Math.max(0, W - raw.length);
+    return seg.map(function (p) {
+      return p[1] ? '<span class="' + p[1] + '">' + esc(p[0]) + "</span>" : "<span>" + esc(p[0]) + "</span>";
+    }).join("") + "<span>" + " ".repeat(fill) + "</span>";
+  }
+  function rule(ch) { return '<span class="k-line">' + (ch || "─").repeat(W) + "</span>"; }
+  function blank() { return "<span>" + " ".repeat(W) + "</span>"; }
+
+  var DIGEST = "15d70fd2b7bf9f19";
+
+  var CAUSES = {
+    refused: {
+      tag: "refused",
+      title: "Two records were refused before the kernel saw them",
+      body: "Both evidence records were rejected as malformed — missing command_digest, executable_path and suite_results. No verifying evidence remains for this claim. A malformed record is how a forgery arrives, so this is never reported as absence.",
+      act: "Investigate what produced those records. Do not re-run until you know."
+    },
+    absent: {
+      tag: "absent",
+      title: "Nothing was ever recorded for this claim",
+      body: "No record names diff-reviewed at all. This is the only one of the seven causes that means work never done — and the absence sentence is spent only here.",
+      act: "Have someone independent read the diff, then record it. Absence blocks; it is never a default."
+    }
+  };
+
+  var SCREENS = {
+    board: { who: "ranex — board", build: buildBoard },
+    chat:  { who: "ranex — session", build: buildChat },
+    owner: { who: "ranex — owner view", build: buildOwner }
+  };
+
+  function gateRow(name, ev, verdict, cause) {
+    var vc = verdict === "PASS" ? "k-pass" : "k-fail";
+    return line([
+      ["  ", ""], [pad(name, 18), ""], [pad(ev, 30), "k-dim"],
+      [pad(verdict, 6), vc], [cause || "", "k-warn"]
+    ]);
+  }
+
+  function buildBoard() {
+    var L = [];
+    L.push(line([["  SPEC-014", "k-accs"], ["  rate-limit the login route", ""]]));
+    L.push(line([["  subject ", "k-dim"], ["sha256:" + DIGEST + "…", "k-dim"], ["   lane PRE_READINESS", "k-dim"]]));
+    L.push(rule());
+    L.push(line([["  ", ""], [pad("GATE", 18), "k-dim"], [pad("EVIDENCE", 30), "k-dim"], [pad("VERDICT", 6), "k-dim"], ["CAUSE", "k-dim"]]));
+    L.push(gateRow("tests-frozen", "manifest @" + DIGEST.slice(0, 8), "PASS"));
+    L.push(gateRow("red-then-green", "run 2 of 2", "PASS"));
+    L.push({ h: gateRow("tests-executed", "2 records refused", "FAIL", "refused"), cause: "refused" });
+    L.push({ h: gateRow("diff-reviewed", "—", "FAIL", "absent"), cause: "absent" });
+    L.push(gateRow("no-self-approve", "approver=owner", "PASS"));
+    L.push(rule());
+    L.push(line([["  VERDICT  ", ""], ["FAIL", "k-fail"], ["    rule=", "k-dim"], ["TESTS_EXECUTED", ""]]));
+    L.push(blank());
+    L.push(line([["  ▾ diff     ", "k-dim"], ["src/auth/login.ts", ""], ["  ", ""], ["+24", "k-addbg"], [" ", ""], ["−3", "k-delbg"]]));
+    L.push(line([["  ▸ session  ", "k-dim"], ["24 messages · 3 tools · 1 worktree", ""]]));
+    L.push(blank());
+    L.push(rule());
+    L.push(line([["  a", "k-accs"], [" approve   ", "k-dim"], ["r", "k-accs"], [" rerun   ", "k-dim"],
+                 ["d", "k-accs"], [" diff   ", "k-dim"], ["e", "k-accs"], [" export   ", "k-dim"],
+                 ["⏎", "k-accs"], [" session", "k-dim"]]));
+    return L;
+  }
+
+  function buildChat() {
+    var L = [];
+    L.push(line([["  › ", "k-accs"], ["add rate limiting to the login route", ""]]));
+    L.push(blank());
+    L.push(line([["  ⏺ ", "k-dim"], [pad("read", 6), "k-hl"], ["src/auth/login.ts", ""]]));
+    L.push(line([["  ⏺ ", "k-dim"], [pad("edit", 6), "k-hl"], ["src/auth/login.ts   ", ""], ["+24", "k-addbg"], [" ", ""], ["−3", "k-delbg"]]));
+    L.push(line([["  ⏺ ", "k-dim"], [pad("bash", 6), "k-hl"], ["uv run pytest -q    ", ""], ["412 passed", "k-pass"]]));
+    L.push(blank());
+    L.push(line([["  I added a token-bucket limiter keyed on the client", ""]]));
+    L.push(line([["  address, with the window read from config.", ""]]));
+    L.push(blank()); L.push(blank()); L.push(blank());
+    L.push(rule());
+    L.push(line([["  gates ", "k-dim"], ["3", "k-pass"], ["/", "k-dim"], ["5", ""],
+                 ["   evidence ", "k-dim"], ["2 refused", "k-fail"],
+                 ["   verdict ", "k-dim"], ["FAIL", "k-fail"]]));
+    L.push(line([["  subject sha256:" + DIGEST + "…", "k-dim"]]));
+    L.push(rule());
+    L.push(line([["  ⏎", "k-accs"], [" send   ", "k-dim"], ["^p", "k-accs"], [" palette   ", "k-dim"],
+                 ["^g", "k-accs"], [" gates   ", "k-dim"], ["^d", "k-accs"], [" diff", "k-dim"]]));
+    return L;
+  }
+
+  function buildOwner() {
+    var L = [];
+    L.push(blank());
+    L.push(line([["  Something needs your decision.", "k-accs"]]));
+    L.push(blank());
+    L.push(line([["  The agent finished ", ""], ["“rate-limit the login route”", ""], [".", ""]]));
+    L.push(line([["  Every test it was given passes.", ""]]));
+    L.push(blank());
+    L.push(line([["  ⚑ ", "k-warn"], ["Two of its receipts were rejected as malformed,", ""]]));
+    L.push(line([["    so nothing proves the tests actually ran.", ""]]));
+    L.push(line([["  ⚑ ", "k-warn"], ["Nobody independent has read the change.", ""]]));
+    L.push(blank());
+    L.push(line([["  Ranex will not call this done until both are settled.", "k-dim"]]));
+    L.push(blank());
+    L.push(line([["   [ Show me the change ]   [ Ask someone to review ]", "k-accs"]]));
+    L.push(blank());
+    L.push(rule());
+    L.push(line([["  ⇥", "k-accs"], [" operator view   ", "k-dim"], ["?", "k-accs"], [" what is a receipt?", "k-dim"]]));
+    return L;
+  }
+
+  var termEl = document.getElementById("term");
+  var chromeEl = document.getElementById("chrome");
+  var whoEl = document.getElementById("whobar");
+  var readEl = document.getElementById("readout");
+  var current = "board";
+
+  function paint(name) {
+    current = name;
+    var spec = SCREENS[name];
+    whoEl.textContent = "ranex — " + spec.who.split("— ")[1];
+    var rows = spec.build();
+    termEl.innerHTML = rows.map(function (r, i) {
+      if (r && r.h) return '<div class="cause-row" data-cause="' + r.cause + '" data-i="' + i + '" tabindex="0" role="button">' + r.h + "</div>";
+      return "<div>" + r + "</div>";
+    }).join("");
+    resetReadout(name);
+  }
+
+  function resetReadout(name) {
+    if (name === "board") {
+      readEl.innerHTML = '<span class="tag">Cause</span><h3>Click a failing gate</h3>' +
+        "<p>Screen A lists two failures that look alike and are not. Selecting one shows which of the seven causes it is, and what it asks you to do.</p>";
+    } else if (name === "chat") {
+      readEl.innerHTML = '<span class="tag">Trade-off</span><h3>The cause never reaches the screen</h3>' +
+        "<p>The footer can show <em>FAIL</em> and a count. It has nowhere to say that two records were refused rather than never produced — the distinction that separates an attack from unfinished work.</p>";
+    } else {
+      readEl.innerHTML = '<span class="tag">Constraint</span><h3>This view may not judge</h3>' +
+        "<p>The translator is a read-only projection. It may not evaluate, mutate, issue permits, or treat an agent's prose as canonical — it renders what the kernel already decided, in words the owner uses.</p>";
+    }
+  }
+
+  termEl.addEventListener("click", onPick);
+  termEl.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.key === " ") { onPick(e); e.preventDefault(); }
+  });
+
+  function onPick(e) {
+    var row = e.target.closest ? e.target.closest(".cause-row") : null;
+    if (!row) return;
+    Array.prototype.forEach.call(termEl.querySelectorAll(".cause-row"), function (r) { r.classList.remove("sel"); });
+    row.classList.add("sel");
+    var c = CAUSES[row.getAttribute("data-cause")];
+    readEl.innerHTML =
+      '<span class="tag">Cause · ' + c.tag + "</span>" +
+      "<h3>" + c.title + "</h3>" +
+      "<p>" + c.body + "</p>" +
+      '<p class="do"><b>What it asks of you:</b> ' + c.act + "</p>";
+  }
+
+  function wire(id, fn) {
+    var el = document.getElementById(id);
+    el.addEventListener("click", function (e) {
+      var b = e.target.closest("button");
+      if (!b) return;
+      Array.prototype.forEach.call(el.querySelectorAll("button"), function (x) {
+        x.setAttribute("aria-pressed", String(x === b));
+      });
+      fn(b.getAttribute("data-v"));
+    });
+  }
+
+  wire("seg-screen", paint);
+  wire("seg-theme", function (v) { chromeEl.setAttribute("data-t", v); });
+  wire("seg-raw", function (v) { chromeEl.setAttribute("data-raw", v); });
+
+  paint("board");
+})();
+</script>

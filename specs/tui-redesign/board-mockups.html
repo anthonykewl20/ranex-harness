@@ -1,0 +1,1025 @@
+<title>Ranex board — build spec</title>
+
+<style>
+  :root {
+    --ground:#F4F6F7; --surface:#FFFFFF; --surface-2:#EDF1F3;
+    --ink:#1B2733; --ink-soft:#52616E; --ink-faint:#8496A5;
+    --line:#D9E0E4; --line-strong:#B9C4CC;
+    --accent:#2B5C8A; --accent-tint:#E7EEF5;
+    --pass:#1E7A45; --fail:#B23A32; --warn:#8A6114;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:#0E151D; --surface:#16202A; --surface-2:#121B24;
+      --ink:#E9EDF1; --ink-soft:#9DACB9; --ink-faint:#6B7C8B;
+      --line:#26333F; --line-strong:#3A4B59;
+      --accent:#7FB0DC; --accent-tint:#1A2836;
+      --pass:#4FB27E; --fail:#E07B6F; --warn:#D9A441;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0E151D; --surface:#16202A; --surface-2:#121B24;
+    --ink:#E9EDF1; --ink-soft:#9DACB9; --ink-faint:#6B7C8B;
+    --line:#26333F; --line-strong:#3A4B59;
+    --accent:#7FB0DC; --accent-tint:#1A2836;
+    --pass:#4FB27E; --fail:#E07B6F; --warn:#D9A441;
+  }
+
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+    font-size:16px; line-height:1.6; -webkit-font-smoothing:antialiased;
+  }
+  .wrap { max-width:1200px; margin:0 auto; padding:0 24px 96px; }
+
+  header.mast { padding:52px 0 26px; border-bottom:1px solid var(--line); }
+  .eyebrow { font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-faint); margin:0 0 14px; }
+  h1 {
+    font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    font-weight:600; font-size:clamp(28px,4.2vw,44px); line-height:1.12;
+    margin:0 0 14px; text-wrap:balance; letter-spacing:-.01em;
+  }
+  .standfirst { max-width:64ch; margin:0; color:var(--ink-soft); font-size:17px; }
+  .standfirst strong { color:var(--ink); font-weight:600; }
+
+  .controls {
+    position:sticky; top:0; z-index:20; background:var(--ground);
+    border-bottom:1px solid var(--line); padding:13px 0;
+    display:flex; flex-wrap:wrap; gap:18px; align-items:flex-start;
+  }
+  .cgroup { display:flex; align-items:center; gap:9px; }
+  .clabel { font-size:10px; letter-spacing:.13em; text-transform:uppercase; color:var(--ink-faint); white-space:nowrap; }
+  .seg { display:flex; flex-wrap:wrap; border:1px solid var(--line-strong); }
+  .seg button {
+    appearance:none; border:0; background:var(--surface); color:var(--ink-soft);
+    font:inherit; font-size:12.5px; padding:6px 10px; cursor:pointer;
+    border-right:1px solid var(--line-strong);
+  }
+  .seg button:last-child { border-right:0; }
+  .seg button[aria-pressed="true"] { background:var(--accent); color:var(--ground); }
+  .seg button:hover:not([aria-pressed="true"]) { background:var(--accent-tint); color:var(--ink); }
+  .seg button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+  .stage { padding:30px 0 8px; display:grid; grid-template-columns:minmax(0,1fr) 320px; gap:22px; align-items:start; }
+  @media (max-width:1000px) { .stage { grid-template-columns:minmax(0,1fr); } }
+
+  .chrome { border:1px solid var(--t-line); background:var(--t-ground); overflow-x:auto; }
+  .chrome .bar {
+    display:flex; align-items:center; gap:8px; padding:8px 12px;
+    border-bottom:1px solid var(--t-line); background:var(--t-surface2);
+  }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--t-line-strong); }
+  .bar .who { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:11px; color:var(--t-ink-soft); margin-left:6px; }
+  pre.term {
+    margin:0; padding:16px 18px;
+    font-family:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+    font-size:12.5px; line-height:1.6; color:var(--t-ink);
+    font-variant-numeric:tabular-nums; white-space:pre;
+  }
+
+  .chrome[data-t="dark"][data-render="true"] {
+    --t-ground:#0E151D; --t-surface:#16202A; --t-surface2:#121B24;
+    --t-ink:#E9EDF1; --t-ink-soft:#9DACB9; --t-line:#26333F; --t-line-strong:#3A4B59;
+    --t-accent:#7FB0DC; --t-accent-strong:#9CC3E8; --t-pass:#4FB27E; --t-pass-bg:#14281E;
+    --t-fail:#E07B6F; --t-fail-bg:#33201D; --t-warn:#D9A441; --t-info:#6FC3C8; --t-highlight:#A99BE0;
+  }
+  .chrome[data-t="light"][data-render="true"] {
+    --t-ground:#F4F6F7; --t-surface:#FFFFFF; --t-surface2:#EDF1F3;
+    --t-ink:#1B2733; --t-ink-soft:#52616E; --t-line:#D9E0E4; --t-line-strong:#B9C4CC;
+    --t-accent:#2B5C8A; --t-accent-strong:#234C73; --t-pass:#1E7A45; --t-pass-bg:#E7F2EB;
+    --t-fail:#B23A32; --t-fail-bg:#F7E9E7; --t-warn:#8A6114; --t-info:#1F6E73; --t-highlight:#6A4FB0;
+  }
+  .chrome[data-t="dark"][data-render="ansi16"] {
+    --t-ground:#000000; --t-surface:#000000; --t-surface2:#000000;
+    --t-ink:#C0C0C0; --t-ink-soft:#808080; --t-line:#808080; --t-line-strong:#C0C0C0;
+    --t-accent:#00FFFF; --t-accent-strong:#FFFFFF; --t-pass:#00FF00; --t-pass-bg:#000000;
+    --t-fail:#FF0000; --t-fail-bg:#000000; --t-warn:#FFFF00; --t-info:#00FFFF; --t-highlight:#FF00FF;
+  }
+  .chrome[data-t="light"][data-render="ansi16"] {
+    --t-ground:#FFFFFF; --t-surface:#FFFFFF; --t-surface2:#FFFFFF;
+    --t-ink:#000000; --t-ink-soft:#808080; --t-line:#808080; --t-line-strong:#000000;
+    --t-accent:#000080; --t-accent-strong:#000000; --t-pass:#008000; --t-pass-bg:#FFFFFF;
+    --t-fail:#800000; --t-fail-bg:#FFFFFF; --t-warn:#808000; --t-info:#008080; --t-highlight:#800080;
+  }
+  .chrome[data-t="dark"][data-render="none"], .chrome[data-t="dark"][data-render="ascii"] {
+    --t-ground:#0E151D; --t-surface:#0E151D; --t-surface2:#0E151D;
+    --t-ink:#E9EDF1; --t-ink-soft:#E9EDF1; --t-line:#E9EDF1; --t-line-strong:#E9EDF1;
+    --t-accent:#E9EDF1; --t-accent-strong:#E9EDF1; --t-pass:#E9EDF1; --t-pass-bg:transparent;
+    --t-fail:#E9EDF1; --t-fail-bg:transparent; --t-warn:#E9EDF1; --t-info:#E9EDF1; --t-highlight:#E9EDF1;
+  }
+  .chrome[data-t="light"][data-render="none"], .chrome[data-t="light"][data-render="ascii"] {
+    --t-ground:#FFFFFF; --t-surface:#FFFFFF; --t-surface2:#FFFFFF;
+    --t-ink:#1B2733; --t-ink-soft:#1B2733; --t-line:#1B2733; --t-line-strong:#1B2733;
+    --t-accent:#1B2733; --t-accent-strong:#1B2733; --t-pass:#1B2733; --t-pass-bg:transparent;
+    --t-fail:#1B2733; --t-fail-bg:transparent; --t-warn:#1B2733; --t-info:#1B2733; --t-highlight:#1B2733;
+  }
+  .chrome[data-render="none"] pre.term span,
+  .chrome[data-render="ascii"] pre.term span { font-weight:400 !important; }
+
+  .k-pass{color:var(--t-pass);font-weight:600}.k-fail{color:var(--t-fail);font-weight:600}
+  .k-warn{color:var(--t-warn)}.k-info{color:var(--t-info)}.k-acc{color:var(--t-accent)}
+  .k-accs{color:var(--t-accent-strong);font-weight:600}.k-hl{color:var(--t-highlight)}
+  .k-dim{color:var(--t-ink-soft)}.k-line{color:var(--t-line-strong)}
+  .k-addbg{color:var(--t-pass);background:var(--t-pass-bg)}
+  .k-delbg{color:var(--t-fail);background:var(--t-fail-bg)}
+
+  aside.notes { border:1px solid var(--line); background:var(--surface); padding:18px; position:sticky; top:78px; }
+  aside.notes .issue {
+    display:inline-block; font-family:ui-monospace,Menlo,monospace; font-size:11px;
+    letter-spacing:.05em; padding:2px 8px; border:1px solid var(--accent); color:var(--accent); margin-bottom:11px;
+  }
+  aside.notes h3 { margin:0 0 8px; font-size:16.5px; font-weight:600; line-height:1.3; }
+  aside.notes p { margin:0 0 11px; color:var(--ink-soft); font-size:14.5px; max-width:none; }
+  aside.notes ul { margin:0; padding-left:17px; color:var(--ink-soft); font-size:14px; }
+  aside.notes li { margin-bottom:6px; }
+  aside.notes li b { color:var(--ink); font-weight:600; }
+  aside.notes code { font-family:ui-monospace,Menlo,monospace; font-size:.88em; }
+
+  h2 {
+    font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    font-weight:600; font-size:23px; margin:52px 0 6px; letter-spacing:-.005em;
+  }
+  .sub { color:var(--ink-soft); margin:0 0 20px; max-width:66ch; }
+  p { max-width:66ch; }
+  code.inl { font-family:ui-monospace,Menlo,monospace; font-size:.9em; background:var(--surface-2); padding:1px 5px; border:1px solid var(--line); }
+  .rule { border-left:2px solid var(--accent); padding:2px 0 2px 18px; margin:20px 0; max-width:64ch; }
+  .rule b { color:var(--ink); }
+  .tblwrap { overflow-x:auto; }
+  table.cmp { width:100%; border-collapse:collapse; margin-top:8px; font-size:14.5px; }
+  table.cmp th, table.cmp td { text-align:left; vertical-align:top; padding:11px 14px 11px 0; border-bottom:1px solid var(--line); }
+  table.cmp th { font-size:10px; letter-spacing:.13em; text-transform:uppercase; color:var(--ink-faint); font-weight:500; border-bottom:1px solid var(--line-strong); }
+  table.cmp td:first-child { font-weight:600; white-space:nowrap; padding-right:22px; }
+  footer.end { margin-top:60px; padding-top:20px; border-top:1px solid var(--line); color:var(--ink-soft); font-size:14.5px; }
+  @media (prefers-reduced-motion:no-preference) { .seg button { transition:background .12s ease,color .12s ease; } }
+  @media (max-width:640px) { pre.term { font-size:10px; } }
+</style>
+
+<div class="wrap">
+  <header class="mast">
+    <p class="eyebrow">ADR-018 · milestone “the board is the front door” · provisional</p>
+    <h1>The board, pane by pane</h1>
+    <p class="standfirst">
+      Every surface in the milestone, drawn with the generated Ranex palette and built on
+      <strong>opencode's existing sidebar slot registry</strong> rather than a new layout.
+      Switch <strong>Rendering</strong> to see each screen as CI, a 16-colour terminal, and a
+      terminal without Unicode will see it.
+    </p>
+  </header>
+
+  <div class="controls">
+    <div class="cgroup">
+      <span class="clabel">Pane</span>
+      <div class="seg" id="seg-screen">
+        <button data-v="board" aria-pressed="true">Board</button>
+        <button data-v="empty" aria-pressed="false">First run</button>
+        <button data-v="evidence" aria-pressed="false">Evidence</button>
+        <button data-v="spec" aria-pressed="false">Spec</button>
+        <button data-v="run" aria-pressed="false">Run</button>
+        <button data-v="diff" aria-pressed="false">Diff</button>
+        <button data-v="journal" aria-pressed="false">Journal</button>
+        <button data-v="stopped" aria-pressed="false">Stopped</button>
+        <button data-v="orchestrator" aria-pressed="false">Orchestrator</button>
+        <button data-v="parallel" aria-pressed="false">Parallel</button>
+        <button data-v="workflow" aria-pressed="false">Workflow</button>
+        <button data-v="processes" aria-pressed="false">Processes</button>
+        <button data-v="rules" aria-pressed="false">Rules</button>
+        <button data-v="policy" aria-pressed="false">Policy</button>
+      </div>
+    </div>
+    <div class="cgroup">
+      <span class="clabel">Sidebar</span>
+      <div class="seg" id="seg-side">
+        <button data-v="on" aria-pressed="true">Wide</button>
+        <button data-v="off" aria-pressed="false">Narrow</button>
+      </div>
+    </div>
+    <div class="cgroup">
+      <span class="clabel">Theme</span>
+      <div class="seg" id="seg-theme">
+        <button data-v="dark" aria-pressed="true">Dark</button>
+        <button data-v="light" aria-pressed="false">Light</button>
+      </div>
+    </div>
+    <div class="cgroup">
+      <span class="clabel">Rendering</span>
+      <div class="seg" id="seg-render">
+        <button data-v="true" aria-pressed="true">Truecolor</button>
+        <button data-v="ansi16" aria-pressed="false">16 colours</button>
+        <button data-v="none" aria-pressed="false">No colour</button>
+        <button data-v="ascii" aria-pressed="false">No Unicode</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="chrome" id="chrome" data-t="dark" data-render="true">
+      <div class="bar">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="who" id="whobar">ranex</span>
+      </div>
+      <pre class="term" id="term"></pre>
+    </div>
+    <aside class="notes" id="notes"></aside>
+  </div>
+
+  <h2>Yes — the sidebar is the mechanism</h2>
+  <p class="sub">It already exists, and it is exactly what ADR-018 asks for.</p>
+  <p>
+    <code class="inl">packages/tui/src/feature-plugins/sidebar/</code> registers each panel independently through
+    <code class="inl">api.slots.register({ order, slots: { sidebar_content } })</code>. That is a slot registry:
+    ordered, themed, and additive. ADR-018 requires the board be built as “a new route plus feature-plugin
+    slots”, and this is that mechanism, already proven in the fork.
+  </p>
+  <p>
+    An earlier draft of these mockups collapsed evidence, spec and run into <code class="inl">▸</code> rows in
+    the main pane. That was a hand-rolled and worse version of a sidebar that already ships. The sidebar now
+    carries the state that is <b>true regardless of which pane you are in</b>, and the main pane is the
+    drill-down.
+  </p>
+
+  <div class="tblwrap">
+    <table class="cmp">
+      <thead><tr><th>opencode slot</th><th>Ranex board</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>Context</td><td>Subject</td><td>Digest, lane, worktree. Every pane is about one subject; it must never be off screen.</td></tr>
+        <tr><td>—</td><td>Verdict</td><td>The answer, persistent. Drilling into evidence must not hide it.</td></tr>
+        <tr><td>—</td><td>Gates</td><td>Counts plus the failing causes by name.</td></tr>
+        <tr><td>—</td><td>Approval</td><td>A / B / C and expiry. Who approved is not a detail.</td></tr>
+        <tr><td>—</td><td>Attempts</td><td>Proximity to the three-miss stop, visible before it fires.</td></tr>
+        <tr><td>Context ($ spent)</td><td>Budget</td><td>The honest analogue of opencode's cost line — and <code class="inl">MAP</code> §15.2 lists budget as absent.</td></tr>
+        <tr><td>Todo, Files</td><td>kept</td><td>The agent's plan and changed files still matter.</td></tr>
+        <tr><td>LSP, MCP</td><td>dropped here</td><td>Neither bears on whether work is acceptable. Still available in the session route.</td></tr>
+        <tr><td>Footer</td><td>rewritten</td><td>It currently ships “OpenCode includes free models…” and “Connect from 75+ providers”. That is the front-door problem in text.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Where each feature lives, and why</h2>
+  <p class="sub">Placement is the design. Fourteen surfaces sorted into three kinds, not fourteen tabs.</p>
+  <div class="tblwrap">
+    <table class="cmp">
+      <thead><tr><th>Kind</th><th>Surfaces</th><th>Rule</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Sidebar</td>
+          <td>Subject, Verdict, Gates, Approval, Attempts, Budget, Children</td>
+          <td>True <b>regardless of which pane you are in</b>. Docked and in-flow — it collapses, it never floats over content.</td>
+        </tr>
+        <tr>
+          <td>Route</td>
+          <td>Board, Evidence, Spec, Run, Diff, Journal, Stopped, Orchestrator, Parallel, Workflow, Processes</td>
+          <td>A place you go to <b>read one thing deeply</b>. Each opens fullscreen; each keeps the sidebar.</td>
+        </tr>
+        <tr>
+          <td>Dialog</td>
+          <td>Rules, Policy, command palette, help</td>
+          <td><b>Reference, consulted and dismissed.</b> Never a destination — you do not live in the gate catalog.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The split that matters most is <b>Rules against Policy</b>. Rules are the handbook agents read, and reading
+    guides block nothing. Policy is <code class="inl">gates.yaml</code>, and every entry in it can stop the
+    work. Merging those two screens would put a suggestion and a constraint side by side looking identical,
+    which is the confusion this whole project exists to remove.
+  </p>
+
+  <h2>What the field already told us</h2>
+  <p class="sub">Searched across gemini-cli, crush, kilocode, aider and opencode. Full citations in <code class="inl">specs/tui-redesign/ux-research.md</code>.</p>
+  <div class="tblwrap">
+    <table class="cmp">
+      <thead><tr><th>Filed by users</th><th>What we did</th></tr></thead>
+      <tbody>
+        <tr><td><b>opencode #41203</b> — sidebar became a floating overlay, “covers the chat area instead of shrinking it… feels very janky”</td><td>Sidebar docks and reflows. No overlay, no hover-peek. Try <b>Narrow</b>.</td></tr>
+        <tr><td><b>opencode #41249</b> — a user shipped a live subagents sidebar as a plugin and asked for it built in: per-row status, live activity, child sessions</td><td>Adopted as the Children panel. Ranex adds each child's <b>approved scope</b> and whether its result was accepted.</td></tr>
+        <tr><td><b>kilocode #7024</b> — “indicator that a general agent task is already finished. Maybe a green border”</td><td>Adopted, changed: state is <b>spelled</b>. A green border alone dies in <code class="inl">NO_COLOR</code> and fails colour-blind users.</td></tr>
+        <tr><td><b>gemini-cli</b> — flicker on render, on resize, on spinner ticks under tmux</td><td>Why lazygit is cited in ADR-018: recompute every frame, <b>diff before writing</b>.</td></tr>
+        <tr><td><b>crush</b> — “avoid continuous scroll on text generation”</td><td>The board is a table and never autoscrolls. Streaming is confined to Processes, which pins when you scroll up.</td></tr>
+        <tr><td><b>crush</b> — terminal shortcuts collide with app shortcuts</td><td>Keymap-as-data (BOARD-10), so remapping is configuration rather than a fork.</td></tr>
+        <tr><td><b>gemini-cli</b> — “no context window % display”; <b>opencode</b> — account usage in the sidebar</td><td>The Budget panel — and it is where the three-miss stop becomes visible <b>before</b> it fires.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    One finding is worth stating plainly: every harness surveyed renders <b>what the agent did</b>. None
+    renders whether the result is acceptable and why not — no gate, no evidence, no cause, no approval
+    identity, no chain. Their prior art is worth copying for how a terminal should behave, and has nothing to
+    say about the thing Ranex is for.
+  </p>
+
+  <h2>What the controls prove</h2>
+  <p>
+    <b>Narrow</b> drops the sidebar, which is BOARD-04's declared collapse order in action: the verdict is the
+    last thing surrendered, and it moves into the main pane rather than disappearing.
+    <b>16 colours</b> uses real xterm values, not softened ones.
+    <b>No colour</b> is <code class="inl">NO_COLOR</code>, a pipe, or a CI log.
+    <b>No Unicode</b> adds glyph fallback.
+  </p>
+
+  <div class="rule">
+    <b>No state is ever carried by a glyph alone.</b> Every verdict is spelled — <code class="inl">PASS</code>,
+    <code class="inl">FAIL</code>, <code class="inl">absent</code>, <code class="inl">refused</code> — and the
+    glyph beside it is redundant. That is why the degraded modes lose nothing: there was never information in
+    the tick. It is also what makes the board readable to someone who cannot distinguish red from green.
+  </div>
+
+  <footer class="end">
+    Fourteen surfaces mapped to BOARD-04 … BOARD-22. Gate output, digests and refusal reasons are real, from
+    <code class="inl">HEAD</code> of the ranex repository; the UX citations are real issues, listed in
+    <code class="inl">specs/tui-redesign/ux-research.md</code>. No board route exists yet — this is the
+    specification, not a screenshot.
+  </footer>
+</div>
+
+<script>
+(function () {
+  var MAIN = 46, SIDE = 25;
+
+  var GLYPH = {
+    unicode: { ok:"✓", no:"✗", warn:"⚠", flag:"⚑", right:"▸", ret:"⏎", dot:"·", rule:"─", vert:"│", arrow:"→" },
+    ascii:   { ok:"+", no:"x", warn:"!", flag:"!", right:">", ret:"^M", dot:".", rule:"-", vert:"|", arrow:"->" }
+  };
+  var g = GLYPH.unicode;
+  var sidebar = true;
+
+  function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+  function pad(s, n) { s = String(s); return s.length >= n ? s.slice(0, n) : s + " ".repeat(n - s.length); }
+
+  function draw(segs, width) {
+    segs = segs || [];
+    var raw = segs.map(function (p) { return p[0]; }).join("");
+    var body = segs.map(function (p) {
+      return p[1] ? '<span class="' + p[1] + '">' + esc(p[0]) + "</span>" : "<span>" + esc(p[0]) + "</span>";
+    }).join("");
+    return body + "<span>" + " ".repeat(Math.max(0, width - raw.length)) + "</span>";
+  }
+
+  function row(main, side) {
+    if (!sidebar) return draw(main, MAIN + 3 + SIDE);
+    return draw(main, MAIN) + '<span class="k-line"> ' + g.vert + " </span>" + draw(side, SIDE);
+  }
+  function ruleRow() {
+    if (!sidebar) return '<span class="k-line">' + g.rule.repeat(MAIN + 3 + SIDE) + "</span>";
+    return '<span class="k-line">' + g.rule.repeat(MAIN) + " " + g.vert + " " + g.rule.repeat(SIDE) + "</span>";
+  }
+  function keys(pairs) {
+    var s = [["  ", ""]];
+    pairs.forEach(function (p) { s.push([p[0], "k-accs"], [" " + p[1] + "  ", "k-dim"]); });
+    return s;
+  }
+
+  var DIG = "15d70fd2b7bf9f19";
+
+  /* The persistent governance sidebar. Identical across panes — that is the point. */
+  function sideGovernance() {
+    return [
+      [["Subject", "k-accs"]],
+      [[DIG + "…", ""]],
+      [["lane PRE_READINESS", "k-dim"]],
+      [["wt task-014", "k-dim"]],
+      [],
+      [["Verdict", "k-accs"]],
+      [["FAIL", "k-fail"]],
+      [["rule TESTS_EXECUTED", "k-dim"]],
+      [],
+      [["Gates", "k-accs"]],
+      [["3 pass ", "k-pass"], [g.dot + " ", "k-dim"], ["2 fail", "k-fail"]],
+      [["refused ", "k-warn"], ["tests-executed", "k-dim"]],
+      [["absent  ", "k-warn"], ["diff-reviewed", "k-dim"]],
+      [],
+      [["Approval", "k-accs"]],
+      [["A " + g.ok + "  B " + g.ok + "  C signed", ""]],
+      [["owner " + g.dot + " exp 08-17", "k-dim"]],
+      [],
+      [["Attempts", "k-accs"]],
+      [["2 of 3", "k-warn"]],
+      [],
+      [["Budget", "k-accs"]],
+      [["302,461 tokens " + g.dot + " 30%", "k-dim"]],
+      [["$1.42 spent", "k-dim"]],
+      [],
+      [],
+      [["~/devtony/ranex:", "k-dim"]],
+      [["task-014", "k-accs"]],
+      [[g.dot + " Ranex 0.1.0", "k-dim"]]
+    ];
+  }
+
+  /* Batch variant. opencode #41249 asked for exactly this: per-row status and
+     live activity for child sessions. Ranex adds the approved scope. */
+  function sideBatch() {
+    return [
+      [["Subject", "k-accs"]],
+      [[DIG + "…", ""]],
+      [["batch b7f21c", "k-dim"]],
+      [],
+      [["Verdict", "k-accs"]],
+      [["pending", "k-dim"]],
+      [["1 of 4 accepted", "k-dim"]],
+      [],
+      [["Children", "k-accs"]],
+      [["w1 ", "k-dim"], ["accepted", "k-pass"]],
+      [["w2 ", "k-dim"], ["running", "k-warn"], [" 42s", "k-dim"]],
+      [["   edit limiter.ts", "k-dim"]],
+      [["w3 ", "k-dim"], ["refused", "k-fail"]],
+      [["   out of scope", "k-dim"]],
+      [["w4 ", "k-dim"], ["queued", "k-dim"]],
+      [],
+      [["Pool", "k-accs"]],
+      [["4 of 8 signed max", "k-dim"]],
+      [],
+      [["Approval", "k-accs"]],
+      [["C c015aa93… signed", ""]],
+      [],
+      [["Budget", "k-accs"]],
+      [["1.2M tokens " + g.dot + " 61%", "k-dim"]],
+      [["$4.08 spent", "k-dim"]],
+      [],
+      [["~/devtony/ranex:", "k-dim"]],
+      [["batch/b7f21c", "k-accs"]],
+      [[g.dot + " Ranex 0.1.0", "k-dim"]]
+    ];
+  }
+
+  function sideEmpty() {
+    return [
+      [["Subject", "k-accs"]],
+      [["none", "k-dim"]],
+      [],
+      [["Verdict", "k-accs"]],
+      [["nothing judged", "k-dim"]],
+      [],
+      [["Gates", "k-accs"]],
+      [["5 defined", "k-dim"]],
+      [["0 evaluated", "k-dim"]],
+      [],
+      [["Approval", "k-accs"]],
+      [["no specification", "k-dim"]],
+      [["has been approved", "k-dim"]],
+      [],
+      [["Journal", "k-accs"]],
+      [["seq 1841 " + g.dot + " verified", "k-dim"]],
+      [], [], [], [], [], [], [], [],
+      [["~/devtony/ranex:", "k-dim"]],
+      [["main", "k-accs"]],
+      [[g.dot + " Ranex 0.1.0", "k-dim"]]
+    ];
+  }
+
+  var SCREENS = {
+    board: {
+      who: "ranex — board", issue: "BOARD-04 · BOARD-05 · BOARD-16",
+      title: "The front door",
+      lead: "Answers one question: is this work acceptable, and why not. Persistent state lives in the sidebar.",
+      points: [
+        "<b>Cause is a column</b>, not a footnote. Two FAILs, two different responses.",
+        "Causes are <b>unordered</b> — never sorted or coloured by severity.",
+        "The sidebar carries subject, verdict, approval and attempts, so drilling into a pane never hides them.",
+        "Switch to <b>Narrow</b>: the sidebar collapses and the verdict moves inward. It is the last thing dropped."
+      ],
+      side: sideGovernance,
+      main: function () {
+        var o = [];
+        o.push([["  SPEC-014", "k-accs"], ["  rate-limit the login route", ""]]);
+        o.push([["  ", ""], [pad("GATE", 17), "k-dim"], [pad("EVIDENCE", 17), "k-dim"], ["VERDICT", "k-dim"]]);
+        o.push("rule");
+        o.push([["  ", ""], [pad("tests-frozen", 17), ""], [pad("manifest @15d7", 17), "k-dim"], ["PASS", "k-pass"]]);
+        o.push([["  ", ""], [pad("red-then-green", 17), ""], [pad("red then green", 17), "k-dim"], ["PASS", "k-pass"]]);
+        o.push([["  ", ""], [pad("tests-executed", 17), ""], [pad("2 refused", 17), "k-dim"], ["FAIL ", "k-fail"], ["refused", "k-warn"]]);
+        o.push([["  ", ""], [pad("diff-reviewed", 17), ""], [pad("none recorded", 17), "k-dim"], ["FAIL ", "k-fail"], ["absent", "k-warn"]]);
+        o.push([["  ", ""], [pad("no-self-approve", 17), ""], [pad("approver=owner", 17), "k-dim"], ["PASS", "k-pass"]]);
+        o.push("rule");
+        o.push([["  VERDICT  ", ""], ["FAIL", "k-fail"], ["   rule=TESTS_EXECUTED", "k-dim"]]);
+        o.push([]);
+        o.push([["  " + g.right + " evidence  ", "k-dim"], ["2 admitted " + g.dot + " 2 refused", ""]]);
+        o.push([["  " + g.right + " run       ", "k-dim"], ["pytest -q " + g.dot + " confined", ""]]);
+        o.push([["  " + g.right + " diff      ", "k-dim"], ["src/auth/login.ts ", ""], ["+24", "k-addbg"], [" ", ""], ["-3", "k-delbg"]]);
+        o.push([]);
+        o.push("rule");
+        o.push(keys([["a", "approve"], ["r", "rerun"], ["d", "diff"], ["e", "export"], [g.ret, "session"]]));
+        return o;
+      }
+    },
+
+    empty: {
+      who: "ranex — first run", issue: "BOARD-14 · BOARD-16",
+      title: "Nothing to judge yet",
+      lead: "The screen a new user meets. It is not a chat, and it never falls back to one.",
+      points: [
+        "<b>This is the issue the milestone exists for.</b> No path lands on the opencode home route.",
+        "If the board fails to load it shows the error — a fallback would restore the very screen being removed and hide the failure.",
+        "The sidebar still answers <b>what is true right now</b>: no subject, nothing approved, chain verified.",
+        "<code>sidebar/footer.tsx</code> currently ships opencode marketing copy. It is rewritten here."
+      ],
+      side: sideEmpty,
+      main: function () {
+        var o = [];
+        o.push([]);
+        o.push([["  ranex", "k-accs"]]);
+        o.push([]);
+        o.push([["  Nothing to judge yet.", ""]]);
+        o.push([]);
+        o.push([["  This board shows whether work is", "k-dim"]]);
+        o.push([["  acceptable, and why not. It is empty", "k-dim"]]);
+        o.push([["  because no specification has been", "k-dim"]]);
+        o.push([["  approved for this repository.", "k-dim"]]);
+        o.push([]);
+        o.push([["  To begin", "k-accs"]]);
+        o.push([["  ranex gate evaluate <ref>", ""]]);
+        o.push([["    --approver <you>", ""]]);
+        o.push([]);
+        o.push([["  or open a session and describe", "k-dim"]]);
+        o.push([["  what you want built.", "k-dim"]]);
+        o.push([]);
+        o.push("rule");
+        o.push(keys([["s", "session"], ["g", "gates"], ["j", "journal"], ["?", "help"]]));
+        return o;
+      }
+    },
+
+    evidence: {
+      who: "ranex — evidence", issue: "BOARD-06",
+      title: "Evidence and admission",
+      lead: "A verdict without its evidence is an opinion. Refused records show whatever the verdict.",
+      points: [
+        "<b>Refused is not absent.</b> A forgery arrives as a malformed record and must never be filed as work never done.",
+        "Shown on PASS too — a forgery a gate happened to pass without is still a forgery.",
+        "A rejection with no usable <code>claim_id</code> is <b>unattributable</b>, and withholds the absence sentence from the rest.",
+        "The sidebar keeps the verdict on screen while you read the cause."
+      ],
+      side: sideGovernance,
+      main: function () {
+        var o = [];
+        o.push([["  EVIDENCE", "k-accs"], ["   SPEC-014", "k-dim"]]);
+        o.push("rule");
+        o.push([["  ADMITTED", "k-pass"]]);
+        o.push([["  ", ""], [pad("claim", 18), "k-dim"], [pad("producer", 10), "k-dim"], ["subject", "k-dim"]]);
+        o.push([["  ", ""], [pad("tests-frozen", 18), ""], [pad("owner", 10), ""], ["15d70fd2", ""]]);
+        o.push([["  ", ""], [pad("no-self-approve", 18), ""], [pad("owner", 10), ""], ["15d70fd2", ""]]);
+        o.push([]);
+        o.push([["  REFUSED", "k-fail"], ["  2 records", "k-dim"]]);
+        o.push([["  #0 malformed-record", ""]]);
+        o.push([["     claim=tests-executed", "k-dim"]]);
+        o.push([["     missing: command_digest,", "k-dim"]]);
+        o.push([["     executable_path, suite_results", "k-dim"]]);
+        o.push([["  #1 malformed-record", ""]]);
+        o.push([["     claim=tests-executed", "k-dim"]]);
+        o.push([["     missing: suite_results", "k-dim"]]);
+        o.push([]);
+        o.push([["  " + g.arrow + " no verifying evidence remains", "k-fail"]]);
+        o.push([["    for: tests-executed", "k-fail"]]);
+        o.push([["    Refused, not absent.", "k-warn"]]);
+        o.push("rule");
+        o.push(keys([["0-9", "record"], ["f", "filter"], ["q", "back"]]));
+        return o;
+      }
+    },
+
+    spec: {
+      who: "ranex — specification", issue: "BOARD-07",
+      title: "What was approved",
+      lead: "The root of trust: SpecPacket A, artifact manifest B, signed envelope C, plus the frozen suite.",
+      points: [
+        "An operator can finally see <b>what was approved and by whom</b>.",
+        "<b>No self-approval</b> — producer and approver side by side, flagged if equal.",
+        "A suite manifest not matching the committed one is a <b>mismatch</b>, not a detail.",
+        "Red-then-green unobserved renders <b>unproven</b>, never passed.",
+        "This pane holds no key and approves nothing."
+      ],
+      side: sideGovernance,
+      main: function () {
+        var o = [];
+        o.push([["  SPECIFICATION", "k-accs"], ["   SPEC-014", "k-dim"]]);
+        o.push("rule");
+        o.push([["  A SpecPacket ", "k-hl"], ["8f2c91a0… ", "k-dim"], ["approved", "k-pass"]]);
+        o.push([["    scope   src/auth/**", ""]]);
+        o.push([["    outcome over-window gets 429", ""]]);
+        o.push([["    non-goal session handling", "k-dim"]]);
+        o.push([]);
+        o.push([["  B Manifest   ", "k-hl"], ["3d77be14…", "k-dim"]]);
+        o.push([["    generated tests/security/…", ""]]);
+        o.push([["    protected src/auth/login.ts", ""]]);
+        o.push([]);
+        o.push([["  C Envelope   ", "k-hl"], ["c015aa93… ", "k-dim"], ["signed", "k-pass"]]);
+        o.push([["    approver owner", ""]]);
+        o.push([["    producer agent-014", ""]]);
+        o.push([["    expires  2026-08-17", "k-dim"]]);
+        o.push("rule");
+        o.push([["  FROZEN SUITE   ", ""], ["matches " + g.ok, "k-pass"]]);
+        o.push([["  RED THEN GREEN ", ""], ["observed " + g.ok, "k-pass"]]);
+        o.push("rule");
+        o.push(keys([["a", "packet"], ["b", "manifest"], ["c", "envelope"], ["q", "back"]]));
+        return o;
+      }
+    },
+
+    run: {
+      who: "ranex — run", issue: "BOARD-08",
+      title: "What actually ran, and where",
+      lead: "The bound command, its confinement, and the worktree it touched.",
+      points: [
+        "<b>An unconfined run renders unconfined, loudly.</b> Never confined-by-default.",
+        "Killed by a watchdog is a <b>third state</b>, distinct from a clean non-zero exit.",
+        "A command digest not matching the claim's bound command is <code>mismatched</code> — one of the seven causes.",
+        "Truncated output says so. Truncation is never silent."
+      ],
+      side: sideGovernance,
+      main: function () {
+        var o = [];
+        o.push([["  RUN", "k-accs"], ["   attempt 2 of 3", "k-dim"]]);
+        o.push("rule");
+        o.push([["  command   ", "k-dim"], ["uv run --frozen pytest -q", ""]]);
+        o.push([["  digest    ", "k-dim"], ["sha256:7be4c1d0…", ""]]);
+        o.push([["  exit      ", "k-dim"], ["1", "k-fail"], ["   duration 41.8s", "k-dim"]]);
+        o.push([["  worktree  ", "k-dim"], [".ranex/wt/task-014", ""]]);
+        o.push([]);
+        o.push([["  CONFINEMENT  ", "k-accs"], ["applied", "k-pass"]]);
+        o.push([["  filesystem ", "k-dim"], ["Landlock", ""]]);
+        o.push([["             ro / , rw wt", "k-dim"]]);
+        o.push([["  network    ", "k-dim"], ["denied", "k-pass"]]);
+        o.push([["  cgroup     ", "k-dim"], ["mem 2G " + g.dot + " pids 512", ""]]);
+        o.push([]);
+        o.push([["  " + g.warn + " output truncated at 1 MiB", "k-warn"]]);
+        o.push([["    3412 lines withheld", "k-warn"]]);
+        o.push([]);
+        o.push("rule");
+        o.push(keys([["o", "output"], ["w", "worktree"], ["r", "rerun"], ["q", "back"]]));
+        return o;
+      }
+    },
+
+    diff: {
+      who: "ranex — diff", issue: "BOARD-09",
+      title: "The change itself",
+      lead: "The existing diff viewer, bound to the subject digest. Reviewing is not approving.",
+      points: [
+        "The viewer <b>always names the digest</b> it is showing.",
+        "A diff against a different digest than the verdict is refused as the reviewed change.",
+        "A moved working tree renders stale — never a fresh diff under an old verdict.",
+        "Reuses <code>feature-plugins/system/diff-viewer</code>. No second implementation."
+      ],
+      side: sideGovernance,
+      main: function () {
+        var o = [];
+        o.push([["  DIFF", "k-accs"], ["  src/auth/login.ts", "k-dim"]]);
+        o.push("rule");
+        o.push([["  28   ", "k-dim"], ["async function login(req) {", ""]]);
+        o.push([["  29 ", "k-dim"], ["+ ", "k-addbg"], ["const ok = await limiter", "k-addbg"]]);
+        o.push([["  30 ", "k-dim"], ["+ ", "k-addbg"], ["  .take(clientKey(req))", "k-addbg"]]);
+        o.push([["  31 ", "k-dim"], ["+ ", "k-addbg"], ["if (!ok) return r429()", "k-addbg"]]);
+        o.push([["  32   ", "k-dim"], ["const body = await req.json()", ""]]);
+        o.push([["  33 ", "k-dim"], ["- ", "k-delbg"], ["lookup(body.email)", "k-delbg"]]);
+        o.push([["  34 ", "k-dim"], ["+ ", "k-addbg"], ["lookup(norm(body.email))", "k-addbg"]]);
+        o.push([]);
+        o.push([["  ", ""], ["+24", "k-addbg"], ["  ", ""], ["-3", "k-delbg"], ["  1 file", "k-dim"]]);
+        o.push([]);
+        o.push([["  " + g.flag + " diff-reviewed is ABSENT", "k-fail"]]);
+        o.push([["    nobody independent has read", "k-dim"]]);
+        o.push([["    this. Reading it here does", "k-dim"]]);
+        o.push([["    not approve it.", "k-dim"]]);
+        o.push("rule");
+        o.push(keys([["j/k", "hunk"], ["R", "request review"], ["q", "back"]]));
+        return o;
+      }
+    },
+
+    journal: {
+      who: "ranex — journal", issue: "BOARD-12",
+      title: "The chain",
+      lead: "Append-only and hash-chained. A journal nobody can inspect is a request for trust.",
+      points: [
+        "<b>Unverified is not verified.</b> Absence blocks here too.",
+        "A broken chain names the sequence it breaks at, and is never softened to a warning.",
+        "An unreadable journal is an <b>operational refusal</b>, distinct from a gate verdict.",
+        "No code path in the TUI appends to the journal."
+      ],
+      side: sideGovernance,
+      main: function () {
+        var o = [];
+        o.push([["  JOURNAL", "k-accs"], ["  verified " + g.ok, "k-pass"]]);
+        o.push("rule");
+        o.push([["  ", ""], [pad("seq", 6), "k-dim"], [pad("kind", 19), "k-dim"], ["digest", "k-dim"]]);
+        o.push([["  ", ""], [pad("1841", 6), ""], [pad("gate.evaluated", 19), "k-accs"], ["a3f9c2e1…", ""]]);
+        o.push([["  ", ""], [pad("1840", 6), ""], [pad("evidence.refused", 19), "k-fail"], ["7be4c1d0…", ""]]);
+        o.push([["  ", ""], [pad("1839", 6), ""], [pad("evidence.refused", 19), "k-fail"], ["5c2ba918…", ""]]);
+        o.push([["  ", ""], [pad("1838", 6), ""], [pad("run.completed", 19), ""], ["91e0df44…", ""]]);
+        o.push([["  ", ""], [pad("1837", 6), ""], [pad("run.started", 19), ""], ["2d7a6b03…", ""]]);
+        o.push([]);
+        o.push([["  this evaluation  a3f9c2e1…", "k-dim"]]);
+        o.push([["  ranex journal verify", ""]]);
+        o.push([["    " + g.arrow + " OK, 1841 entries", "k-pass"]]);
+        o.push([]); o.push([]);
+        o.push("rule");
+        o.push(keys([["v", "verify"], ["/", "filter"], ["q", "back"]]));
+        return o;
+      }
+    },
+
+    stopped: {
+      who: "ranex — stopped", issue: "BOARD-13",
+      title: "Three misses stops the game",
+      lead: "“Cannot hit this” is a legal outcome, not a failure to route around.",
+      points: [
+        "<b>Stopped is its own state</b> — not failed, not running.",
+        "Durable: it survives a restart, because you may not be at the desk.",
+        "Scope is unchanged across attempts. A retry keeps the same scope and tests; <b>widening needs a new approval</b>.",
+        "The TUI displays escalation. It decides no threshold and enforces no budget."
+      ],
+      side: function () {
+        var s = sideGovernance();
+        s[19] = [["3 of 3 " + g.dot + " stopped", "k-fail"]];
+        return s;
+      },
+      main: function () {
+        var o = [];
+        o.push([["  STOPPED", "k-fail"], ["  3 attempts, none accepted", "k-dim"]]);
+        o.push("rule");
+        o.push([["  1  ", "k-dim"], ["tests-executed FAIL", "k-fail"]]);
+        o.push([["     bound command observed failing", "k-dim"]]);
+        o.push([["  2  ", "k-dim"], ["tests-executed FAIL", "k-fail"]]);
+        o.push([["     2 records refused", "k-dim"]]);
+        o.push([["  3  ", "k-dim"], ["tests-executed FAIL", "k-fail"]]);
+        o.push([["     2 records refused", "k-dim"]]);
+        o.push("rule");
+        o.push([["  Ranex has stopped and is asking you.", "k-accs"]]);
+        o.push([]);
+        o.push([["  \"The tests will not run inside the", ""]]);
+        o.push([["   confined environment. Every attempt", ""]]);
+        o.push([["   produced malformed evidence records.", ""]]);
+        o.push([["   This may need a change to what was", ""]]);
+        o.push([["   approved.\"", ""]]);
+        o.push([]);
+        o.push([["  Scope unchanged across all three.", "k-dim"]]);
+        o.push("rule");
+        o.push(keys([["o", "question"], ["s", "attempts"], [g.ret, "session"]]));
+        return o;
+      }
+    },
+
+    orchestrator: {
+      who: "ranex — orchestrator", issue: "BOARD-17",
+      title: "Foreman, supervisors, workers",
+      lead: "Who delegated what, to whom, under which grant. Validated by opencode #41249 — users built this themselves.",
+      points: [
+        "<b>Every child holds parent ∩ request</b>, never more. The tree shows the grant, not just the task.",
+        "No child may approve, integrate, merge or publish. One key-exclusive integrator consumes accepted children.",
+        "kilocode asked for a green border to mean done. We <b>spell</b> the state — colour-only dies in <code>NO_COLOR</code>.",
+        "A child that silently ran a different model than approved is <b>shown</b>, never inferred (kilocode's silent-fallback bug)."
+      ],
+      side: sideBatch,
+      main: function () {
+        var o = [];
+        o.push([["  ORCHESTRATOR", "k-accs"], ["  batch b7f21c", "k-dim"]]);
+        o.push("rule");
+        o.push([["  FOREMAN", "k-hl"], ["  plan approved", ""]]);
+        o.push([["  " + g.vert + "        C c015aa93…", "k-dim"]]);
+        o.push([["  ├─ ", "k-line"], ["SUPERVISOR security", "k-accs"]]);
+        o.push([["  " + g.vert + "  ├─ ", "k-line"], ["w1 test_login_rate", ""]]);
+        o.push([["  " + g.vert + "  " + g.vert + "     ", "k-line"], ["accepted", "k-pass"]]);
+        o.push([["  " + g.vert + "  └─ ", "k-line"], ["w2 test_lockout", ""]]);
+        o.push([["  " + g.vert + "        ", "k-line"], ["running", "k-warn"], [" 42s", "k-dim"]]);
+        o.push([["  └─ ", "k-line"], ["SUPERVISOR api", "k-accs"]]);
+        o.push([["     ├─ ", "k-line"], ["w3 limiter.ts", ""]]);
+        o.push([["     " + g.vert + "     ", "k-line"], ["refused", "k-fail"], [" out of scope", "k-dim"]]);
+        o.push([["     └─ ", "k-line"], ["w4 routes.ts", ""]]);
+        o.push([["           ", ""], ["queued", "k-dim"]]);
+        o.push([]);
+        o.push([["  Each child receives parent " + g.dot + " request.", "k-dim"]]);
+        o.push([["  None may approve, merge or publish.", "k-dim"]]);
+        o.push("rule");
+        o.push(keys([["1-9", "child"], ["g", "grant"], ["k", "cancel"], ["q", "back"]]));
+        return o;
+      }
+    },
+
+    parallel: {
+      who: "ranex — parallel", issue: "BOARD-18",
+      title: "Fanout across worktrees",
+      lead: "One approved batch, disjoint scopes, isolated worktrees. Mutation fanout is not authorised until SLICE-044.",
+      points: [
+        "Scopes are <b>pairwise disjoint exact paths</b>. w3 is refused for writing outside its own.",
+        "Results report in <b>canonical task order, not finish order</b> — otherwise the same batch reads differently each run.",
+        "<code>--pool</code> may only narrow the signed maximum, never widen it.",
+        "A retry keeps the same scope and tests. Widening means a new approval, shown as a new batch."
+      ],
+      side: sideBatch,
+      main: function () {
+        var o = [];
+        o.push([["  PARALLEL", "k-accs"], ["  base 15d70fd2 " + g.dot + " pool 4/8", "k-dim"]]);
+        o.push("rule");
+        o.push([["  ", ""], [pad("ID", 4), "k-dim"], [pad("SCOPE", 22), "k-dim"], ["STATE", "k-dim"]]);
+        o.push([["  ", ""], [pad("w1", 4), ""], [pad("tests/security/**", 22), ""], ["accepted", "k-pass"]]);
+        o.push([["  ", ""], [pad("w2", 4), ""], [pad("tests/security/**", 22), ""], ["running", "k-warn"]]);
+        o.push([["  ", ""], [pad("w3", 4), ""], [pad("src/auth/limiter.ts", 22), ""], ["refused", "k-fail"]]);
+        o.push([["  ", ""], [pad("w4", 4), ""], [pad("src/auth/routes.ts", 22), ""], ["queued", "k-dim"]]);
+        o.push([]);
+        o.push([["  w3 refused", "k-fail"], [" wrote outside its scope", ""]]);
+        o.push([["     attempted src/session/store.ts", "k-dim"]]);
+        o.push([["     grant covered src/auth/limiter.ts", "k-dim"]]);
+        o.push([]);
+        o.push([["  worktrees wt/b7f21c-1 … -4", "k-dim"]]);
+        o.push([["  integration serialized, canonical order", "k-dim"]]);
+        o.push([]);
+        o.push([["  " + g.warn + " mutation fanout unauthorised", "k-warn"]]);
+        o.push([["    until SLICE-044 " + g.dot + " this is read-only", "k-dim"]]);
+        o.push("rule");
+        o.push(keys([["1-9", "child"], ["d", "diff"], ["k", "cancel"], ["q", "back"]]));
+        return o;
+      }
+    },
+
+    workflow: {
+      who: "ranex — workflow", issue: "BOARD-19",
+      title: "The chain from intake to gates",
+      lead: "Graph → paths → scenarios → contract tests → gates. The approved graph is the root of trust.",
+      points: [
+        "<b>The non-technical owner approves the graph</b>, not the code. Everything below it is derived.",
+        "A derived step can never be edited in place — changing it means re-approving the graph.",
+        "Tests are frozen here and read-only to implementers from this point on.",
+        "This is the one screen that explains <b>why</b> a gate exists, which no other harness surveyed shows at all."
+      ],
+      side: sideGovernance,
+      main: function () {
+        var o = [];
+        o.push([["  WORKFLOW", "k-accs"], ["  SPEC-014", "k-dim"]]);
+        o.push("rule");
+        o.push([["  intake       ", ""], ["approved by owner", "k-dim"], ["  " + g.ok, "k-pass"]]);
+        o.push([["    " + g.vert, "k-line"]]);
+        o.push([["  flow graph   ", ""], ["7 nodes " + g.dot + " 3 outcomes", "k-dim"], [" " + g.ok, "k-pass"]]);
+        o.push([["    " + g.vert, "k-line"]]);
+        o.push([["  paths        ", ""], ["12 enumerated", "k-dim"], ["      " + g.ok, "k-pass"]]);
+        o.push([["    " + g.vert, "k-line"]]);
+        o.push([["  scenarios    ", ""], ["12 mapped", "k-dim"], ["          " + g.ok, "k-pass"]]);
+        o.push([["    " + g.vert, "k-line"]]);
+        o.push([["  contract     ", ""], ["12 frozen, read-only", "k-dim"]]);
+        o.push([["  tests        ", ""], ["manifest 3d77be14…", "k-dim"], [" " + g.ok, "k-pass"]]);
+        o.push([["    " + g.vert, "k-line"]]);
+        o.push([["  gates        ", ""], ["5 bound", "k-dim"], ["            ", ""], ["2 FAIL", "k-fail"]]);
+        o.push([]);
+        o.push([["  The approved graph is the root of trust.", "k-dim"]]);
+        o.push([["  Steps below it are derived, never re-decided.", "k-dim"]]);
+        o.push("rule");
+        o.push(keys([["g", "graph"], ["p", "paths"], ["t", "tests"], ["q", "back"]]));
+        return o;
+      }
+    },
+
+    processes: {
+      who: "ranex — processes", issue: "BOARD-20",
+      title: "What is running right now",
+      lead: "Confined processes, their watchdogs, and their budgets. The one pane that streams.",
+      points: [
+        "<b>The board is a table and never autoscrolls</b> — crush filed exactly that complaint. Streaming lives here.",
+        "Scrolling up pins the view; new output does not yank you back to the bottom.",
+        "Watchdog state is shown as idle-vs-absolute, because those two failures are not the same.",
+        "A known limit is printed, not hidden: a provider that connects and never sends a first chunk is bounded only by the absolute budget."
+      ],
+      side: sideGovernance,
+      main: function () {
+        var o = [];
+        o.push([["  PROCESSES", "k-accs"], ["  1 running " + g.dot + " 2 exited", "k-dim"]]);
+        o.push("rule");
+        o.push([["  ", ""], [pad("PID", 8), "k-dim"], [pad("COMMAND", 20), "k-dim"], ["STATE", "k-dim"]]);
+        o.push([["  ", ""], [pad("48213", 8), ""], [pad("pytest -q", 20), ""], ["running", "k-warn"]]);
+        o.push([["  ", ""], [pad("48090", 8), ""], [pad("git worktree add", 20), ""], ["exit 0", "k-pass"]]);
+        o.push([["  ", ""], [pad("47755", 8), ""], [pad("uv sync --frozen", 20), ""], ["exit 0", "k-pass"]]);
+        o.push([]);
+        o.push([["  48213  ", "k-accs"], ["confined " + g.dot + " net denied " + g.dot + " 2G", "k-dim"]]);
+        o.push([["         watchdog idle 4s / 120s", ""]]);
+        o.push([["         absolute 24m of 30m left", ""]]);
+        o.push([]);
+        o.push([["  tests/security/test_login_rate.py .", "k-dim"]]);
+        o.push([["  tests/security/test_lockout.py F", "k-dim"]]);
+        o.push([]);
+        o.push([["  " + g.warn + " a provider that never sends a first", "k-warn"]]);
+        o.push([["    chunk is bounded only by the absolute", "k-dim"]]);
+        o.push([["    budget. Known limit, not a bug.", "k-dim"]]);
+        o.push("rule");
+        o.push(keys([["f", "follow"], ["k", "kill"], ["o", "output"], ["q", "back"]]));
+        return o;
+      }
+    },
+
+    rules: {
+      who: "ranex — rules", issue: "BOARD-21",
+      title: "The handbook agents read",
+      lead: "governance/ as the library every agent reads. Reading guides — only the kernel enforces.",
+      points: [
+        "<b>A rule an agent can read is a suggestion.</b> This pane must never imply otherwise.",
+        "Shows which rules were actually loaded into which workers, and the digest of what they got.",
+        "A rule not loaded into a worker is shown as not loaded — never assumed.",
+        "This is a dialog, not a route: it is reference material, consulted and dismissed."
+      ],
+      side: sideGovernance,
+      main: function () {
+        var o = [];
+        o.push([["  RULES", "k-accs"], ["  governance/handbook", "k-dim"]]);
+        o.push("rule");
+        o.push([["  testing.md     ", ""], ["frozen before BUILD", "k-dim"]]);
+        o.push([["  review.md      ", ""], ["independent reader", "k-dim"]]);
+        o.push([["  commits.md     ", ""], ["conventional, scoped", "k-dim"]]);
+        o.push([["  delegation.md  ", ""], ["foreman " + g.arrow + " supervisor", "k-dim"]]);
+        o.push([]);
+        o.push([["  loaded into  ", "k-dim"], ["4 of 4 workers", "k-pass"]]);
+        o.push([["  digest       ", "k-dim"], ["9a1f77c2…", ""]]);
+        o.push([]);
+        o.push("rule");
+        o.push([["  A rule an agent can read is a", "k-accs"]]);
+        o.push([["  suggestion. Only the kernel enforces.", "k-accs"]]);
+        o.push([]);
+        o.push([["  These are reading guides. Nothing on", "k-dim"]]);
+        o.push([["  this screen blocks anything.", "k-dim"]]);
+        o.push([]);
+        o.push("rule");
+        o.push(keys([["/", "search"], [g.ret, "open"], ["q", "close"]]));
+        return o;
+      }
+    },
+
+    policy: {
+      who: "ranex — policy", issue: "BOARD-22",
+      title: "The gate catalog",
+      lead: "governance/gates.yaml — what blocks, on what, bound to which command.",
+      points: [
+        "<b>A gate that cannot block is refused at construction.</b> The count of non-blocking gates is always zero, and shown.",
+        "Every gate names its bound command, so an operator can see what evidence would even satisfy it.",
+        "The catalog digest is part of the verdict record — changing policy changes the verdict's provenance.",
+        "Contrast with the Rules pane: <b>this one blocks, that one does not.</b> Never merge the two screens."
+      ],
+      side: sideGovernance,
+      main: function () {
+        var o = [];
+        o.push([["  POLICY", "k-accs"], ["  gates.yaml " + g.dot + " 4c8e10bb…", "k-dim"]]);
+        o.push("rule");
+        o.push([["  ", ""], [pad("GATE", 17), "k-dim"], ["BLOCKS ON", "k-dim"]]);
+        o.push([["  ", ""], [pad("tests-frozen", 17), ""], ["manifest mismatch", "k-dim"]]);
+        o.push([["  ", ""], [pad("red-then-green", 17), ""], ["no red observed", "k-dim"]]);
+        o.push([["  ", ""], [pad("tests-executed", 17), ""], ["non-zero exit", "k-dim"]]);
+        o.push([["  ", ""], [pad("diff-reviewed", 17), ""], ["no reviewer record", "k-dim"]]);
+        o.push([["  ", ""], [pad("no-self-approve", 17), ""], ["producer = approver", "k-dim"]]);
+        o.push([]);
+        o.push([["  tests-executed", "k-accs"]]);
+        o.push([["    bound  uv run --frozen pytest -q", ""]]);
+        o.push([["    claim  tests-executed", "k-dim"]]);
+        o.push([]);
+        o.push([["  5 gates " + g.dot + " ", "k-dim"], ["0 non-blocking", "k-pass"], [" " + g.dot + " signed", "k-dim"]]);
+        o.push([]);
+        o.push([["  A gate that cannot block is refused", "k-accs"]]);
+        o.push([["  at construction.", "k-accs"]]);
+        o.push("rule");
+        o.push(keys([["1-9", "gate"], ["c", "catalog"], ["q", "close"]]));
+        return o;
+      }
+    }
+  };
+
+  var termEl = document.getElementById("term");
+  var chromeEl = document.getElementById("chrome");
+  var whoEl = document.getElementById("whobar");
+  var notesEl = document.getElementById("notes");
+  var current = "board";
+
+  function paint() {
+    var s = SCREENS[current];
+    whoEl.textContent = s.who + (sidebar ? "  80x30" : "  56x30");
+    var main = s.main();
+    var side = sidebar ? s.side() : [];
+    var n = Math.max(main.length, side.length);
+    var out = [];
+    for (var i = 0; i < n; i++) {
+      var m = main[i];
+      if (m === "rule") { out.push(ruleRow()); continue; }
+      out.push(row(m, side[i]));
+    }
+    termEl.innerHTML = out.map(function (r) { return "<div>" + r + "</div>"; }).join("");
+    notesEl.innerHTML =
+      '<span class="issue">' + s.issue + "</span><h3>" + s.title + "</h3><p>" + s.lead + "</p><ul>" +
+      s.points.map(function (p) { return "<li>" + p + "</li>"; }).join("") + "</ul>";
+  }
+
+  function wire(id, fn) {
+    var el = document.getElementById(id);
+    el.addEventListener("click", function (e) {
+      var b = e.target.closest("button");
+      if (!b) return;
+      Array.prototype.forEach.call(el.querySelectorAll("button"), function (x) {
+        x.setAttribute("aria-pressed", String(x === b));
+      });
+      fn(b.getAttribute("data-v"));
+    });
+  }
+
+  wire("seg-screen", function (v) { current = v; paint(); });
+  wire("seg-side", function (v) { sidebar = v === "on"; paint(); });
+  wire("seg-theme", function (v) { chromeEl.setAttribute("data-t", v); });
+  wire("seg-render", function (v) {
+    chromeEl.setAttribute("data-render", v);
+    g = v === "ascii" ? GLYPH.ascii : GLYPH.unicode;
+    paint();
+  });
+
+  paint();
+})();
+</script>

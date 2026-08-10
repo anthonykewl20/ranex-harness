@@ -3,6 +3,7 @@
 - Keep runtime dependencies directed from Schema to Core and Protocol, then from Core and Protocol to Server. Client runtime code may depend on Schema and Protocol but never Core or Server; `sdk-next` composes Client, Core, and Server.
 - The default branch in this repo is `dev`.
 - Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
+- Before designing or changing anything in `packages/tui`, read `specs/tui-redesign/design-references.md`. It indexes vendored, pinned prior art under `specs/tui-redesign/references/` and records, per source, what to copy and what not to. Do not design terminal UI from memory.
 
 ## Branch Names
 
