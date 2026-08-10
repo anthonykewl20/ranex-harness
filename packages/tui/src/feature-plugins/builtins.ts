@@ -1,4 +1,5 @@
 import type { TuiPlugin, TuiPluginModule } from "@ranex/plugin/tui"
+import Board from "./board"
 import HomeFooter from "./home/footer"
 import HomeTips from "./home/tips"
 import SidebarContext from "./sidebar/context"
@@ -32,5 +33,6 @@ export function createBuiltinPlugins(options: { experimentalEventSystem: boolean
     PluginManager,
     WhichKey,
     DiffViewer,
+    Board,
   ]
 }
