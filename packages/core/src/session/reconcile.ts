@@ -4,6 +4,7 @@ import { DateTime, Effect, Exit, Layer } from "effect"
 import { makeGlobalNode } from "../effect/app-node"
 import { EventV2 } from "../event"
 import { SessionEvent } from "./event"
+import { ExecutionOwner } from "./execution-owner"
 import { SessionProjector } from "./projector"
 import { SessionSchema } from "./schema"
 import { SessionStore } from "./store"
@@ -60,22 +61,14 @@ export const reconcileInterruptedTools = Effect.fn("Session.reconcileInterrupted
  * inbox, so without this sweep those tools stay projected `running` forever.
  *
  * The sweep runs once when the application graph is built (before the server
- * accepts work), so it cannot race with a `run()` in THIS process and needs no
+ * accepts work), so it cannot race with a `run()` in this process and needs no
  * mutex. Each session is error-isolated: one bad session never aborts the sweep.
  *
- * UNSAFE UNDER CONCURRENT PROCESSES, and this is not theoretical. The sweep is
- * DB-global — `store.list()` returns every session in a database that is shared
- * process-wide (`database.ts`) — so a second process booting will mark tools that
- * a first, live process is actively running as interrupted. SLICE-011 claim 5
- * reproduced exactly that two-process double-drain before refusing it, so the
- * precondition is demonstrated rather than assumed.
- *
- * It is shipped anyway because the harness runs one daemon in normal operation
- * (ADR-014: one process, many tasks) and because closing it properly means a
- * durable owner claim — the fencing work ADR-015 defers to a later slice. A
- * reviewer raised this as a blocker; it was accepted as scope, not dismissed.
- * The fencing slice MUST gate this sweep on ownership before this harness is
- * run as more than one process against one database.
+ * Because `store.list()` is DB-global, each session is fenced by its durable
+ * `session.execution_owner` claim and its boot/process identity. An absent owner,
+ * this process's owner, or a definitively dead other process is reconciled. A
+ * session owned by a different live or undecidable process is skipped so its
+ * running tools are not falsely marked interrupted.
  */
 const sweepLayer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -91,6 +84,17 @@ const sweepLayer = Layer.effectDiscard(
     }
     yield* Effect.forEach(listExit.value, (session) =>
       Effect.gen(function* () {
+        const owner = yield* store.executionOwner(session.id)
+        if (
+          owner !== undefined &&
+          owner !== ExecutionOwner.ownerID &&
+          (yield* Effect.promise(() => ExecutionOwner.isLive(owner)))
+        ) {
+          yield* Effect.logInfo("Session reconcile sweep: skipping session owned by a live process").pipe(
+            Effect.annotateLogs({ sessionID: session.id }),
+          )
+          return
+        }
         const exit = yield* reconcileInterruptedTools({ events, store, sessionID: session.id }).pipe(Effect.exit)
         if (Exit.isFailure(exit)) {
           yield* Effect.logError("Session reconcile sweep failed", exit.cause).pipe(
