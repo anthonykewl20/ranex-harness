@@ -14,6 +14,8 @@ import { fromRow } from "./info"
 export interface Interface {
   readonly get: (sessionID: SessionSchema.ID) => Effect.Effect<SessionSchema.Info | undefined>
   readonly list: () => Effect.Effect<ReadonlyArray<SessionSchema.Info>>
+  readonly claimExecution: (sessionID: SessionSchema.ID, owner: string) => Effect.Effect<void>
+  readonly executionOwner: (sessionID: SessionSchema.ID) => Effect.Effect<string | undefined>
   readonly context: (sessionID: SessionSchema.ID) => Effect.Effect<SessionMessage.Message[], MessageDecodeError>
   readonly runnerContext: (
     sessionID: SessionSchema.ID,
@@ -40,6 +42,23 @@ const layer = Layer.effect(
       list: Effect.fn("SessionStore.list")(function* () {
         const rows = yield* db.select().from(SessionTable).all().pipe(Effect.orDie)
         return rows.map(fromRow)
+      }),
+      claimExecution: Effect.fn("SessionStore.claimExecution")(function* (sessionID, owner) {
+        yield* db
+          .update(SessionTable)
+          .set({ execution_owner: owner })
+          .where(eq(SessionTable.id, sessionID))
+          .run()
+          .pipe(Effect.orDie)
+      }),
+      executionOwner: Effect.fn("SessionStore.executionOwner")(function* (sessionID) {
+        const row = yield* db
+          .select({ execution_owner: SessionTable.execution_owner })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, sessionID))
+          .get()
+          .pipe(Effect.orDie)
+        return row?.execution_owner ?? undefined
       }),
       context: Effect.fn("SessionStore.context")(function* (sessionID) {
         return yield* SessionHistory.load(db, sessionID)
