@@ -45,6 +45,17 @@ describe("the board plugin", () => {
     expect(calls.commands.map((command) => command.slashName)).toContain("board")
   })
 
+  test("every route it opens can be left again", () => {
+    // Shipped without this once: the route registered, the command opened it,
+    // and nothing bound a way back. A route you can enter and not leave is a
+    // trap, and the operator found it before the tests did.
+    const source = readFileSync(path.join(ROOT, "src/feature-plugins/board/index.tsx"), "utf8")
+    expect(source).toContain("board.close")
+    expect(source).toMatch(/key:\s*"escape[^"]*"/)
+    // And it must be visible. A keybinding nobody can see is not an exit.
+    expect(source).toMatch(/>esc</)
+  })
+
   test("is registered as a builtin", () => {
     const ids = createBuiltinPlugins({ experimentalEventSystem: false }).map((plugin) => plugin.id)
     expect(ids).toContain("ranex-board")

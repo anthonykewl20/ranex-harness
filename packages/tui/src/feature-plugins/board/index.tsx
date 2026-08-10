@@ -1,6 +1,7 @@
 import type { TuiPlugin, TuiPluginApi } from "@ranex/plugin/tui"
 import type { BuiltinTuiPlugin } from "../builtins"
 import { Show, createMemo } from "solid-js"
+import { useBindings } from "../../keymap"
 import { detectGlyphs } from "../../theme/glyphs"
 
 /**
@@ -33,6 +34,38 @@ const glyphs = detectGlyphs()
  */
 function Board(props: { api: TuiPluginApi }) {
   const theme = () => props.api.theme.current
+
+  const params = () =>
+    "params" in props.api.route.current
+      ? (props.api.route.current.params as { returnRoute?: { name: string } } | undefined)
+      : undefined
+
+  /**
+   * A route you can enter and not leave is a trap, and this one was: the route
+   * registered, the command opened it, and nothing bound a way back. Escape and
+   * `q` both return, and the footer says so on screen — a keybinding nobody can
+   * see is not an exit.
+   */
+  const commands = [
+    {
+      name: "board.close",
+      title: "Close the board",
+      category: "Ranex",
+      run() {
+        const back = params()?.returnRoute
+        props.api.ui.dialog.clear()
+        props.api.route.navigate(
+          back?.name ?? "home",
+          back && "params" in back ? (back as { params?: Record<string, unknown> }).params : undefined,
+        )
+      },
+    },
+  ]
+
+  useBindings(() => ({
+    commands,
+    bindings: [{ key: "escape,q", cmd: "board.close", desc: "Close the board" }],
+  }))
 
   /**
    * There is no verdict, and there is no way to read one yet.
@@ -78,6 +111,17 @@ function Board(props: { api: TuiPluginApi }) {
             <box>
               <text fg={theme().text}>Until then, judge from the CLI:</text>
               <text fg={theme().textMuted}> ranex gate evaluate {"<ref>"} --approver {"<you>"}</text>
+            </box>
+
+            <box flexDirection="row" gap={1}>
+              <text fg={theme().primary}>
+                <b>esc</b>
+              </text>
+              <text fg={theme().textMuted}>back</text>
+              <text fg={theme().primary}>
+                <b>q</b>
+              </text>
+              <text fg={theme().textMuted}>back</text>
             </box>
           </box>
         }
