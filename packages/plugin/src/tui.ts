@@ -470,6 +470,16 @@ export type TuiHostSlotMap = {
   session_prompt_right: {
     session_id: string
   }
+  // CHAT-01 / ADR-022. Exactly two slots, and no more without a successor ADR:
+  // the transcript body, and the blocker region where a permission or question
+  // docks in flow instead of taking the screen. The composer needs none —
+  // `session_prompt` above already is one.
+  session_transcript: {
+    session_id: string
+  }
+  session_blocker: {
+    session_id: string
+  }
   home_bottom: {}
   home_footer: {}
   sidebar_title: {

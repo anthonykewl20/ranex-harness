@@ -1165,6 +1165,10 @@ export function Session() {
         <box flexDirection="row" flexGrow={1} minHeight={0}>
           <box flexGrow={1} minHeight={0} paddingBottom={1} paddingLeft={2} paddingRight={2} gap={1}>
             <Show when={session()}>
+              {/* CHAT-01: the transcript body seam. `replace` with the upstream
+                  scrollbox as children, so an unfilled slot renders exactly what
+                  it renders today rather than a blank pane. */}
+              <pluginRuntime.Slot name="session_transcript" session_id={route.sessionID} mode="replace">
               <scrollbox
                 ref={(r) => (scroll = r)}
                 viewportOptions={{
@@ -1279,7 +1283,13 @@ export function Session() {
                   )}
                 </For>
               </scrollbox>
+              </pluginRuntime.Slot>
               <box flexShrink={0}>
+                {/* CHAT-01: the blocker seam. Today this shows only the first
+                    permission and hides questions entirely while one exists,
+                    and PermissionPrompt renders fullscreen. CHAT-09 replaces
+                    that through this slot; unfilled, behaviour is unchanged. */}
+                <pluginRuntime.Slot name="session_blocker" session_id={route.sessionID} mode="replace">
                 <Show when={permissions().length > 0}>
                   <PermissionPrompt
                     request={permissions()[0]}
@@ -1292,6 +1302,7 @@ export function Session() {
                     directory={sync.session.get(questions()[0].sessionID)?.directory}
                   />
                 </Show>
+                </pluginRuntime.Slot>
                 <Show when={session()?.parentID}>
                   <SubagentFooter />
                 </Show>
