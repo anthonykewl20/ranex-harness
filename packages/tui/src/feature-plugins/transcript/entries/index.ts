@@ -1,4 +1,8 @@
 import { assertEntries, type AnyTranscriptEntry } from "../entry"
+import { AssistantEntry } from "./assistant"
+import { ReasoningEntry } from "./reasoning"
+import { ToolEntry } from "./tool"
+import { UserEntry } from "./user"
 
 /**
  * The transcript's entries, in one list.
@@ -29,4 +33,9 @@ import { assertEntries, type AnyTranscriptEntry } from "../entry"
  * is the chrome's problem, and it renders the raw payload labelled `unrendered`
  * rather than dropping it.
  */
-export const ENTRIES: readonly AnyTranscriptEntry[] = assertEntries([])
+export const ENTRIES: readonly AnyTranscriptEntry[] = assertEntries([
+  UserEntry,
+  AssistantEntry,
+  ReasoningEntry,
+  ToolEntry,
+])
