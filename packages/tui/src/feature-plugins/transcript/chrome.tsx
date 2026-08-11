@@ -4,7 +4,7 @@ import { detectGlyphs } from "../../theme/glyphs"
 import { EntryFrame } from "./frame"
 import { ENTRIES, } from "./entries"
 import { resolveEntry, type TranscriptItem } from "./entry"
-import { projectItems } from "./items"
+import { createProjection } from "./items"
 import { cycleDensity, readDensity, shows } from "./density"
 import { useBindings } from "../../keymap"
 import { useClipboard } from "../../context/clipboard"
@@ -42,6 +42,8 @@ function Unrendered(props: { api: TuiPluginApi; item: TranscriptItem }) {
  */
 export function Transcript(props: { api: TuiPluginApi; session_id: string }) {
   const density = createMemo(() => readDensity(props.api))
+  // One projection per mounted transcript, so item identity survives renders.
+  const project = createProjection()
 
   // The title states the current mode, so the palette says what pressing it will
   // change rather than only that something is changeable. A displayed command
@@ -94,7 +96,7 @@ export function Transcript(props: { api: TuiPluginApi; session_id: string }) {
     // bindable in config, which is keymap-as-data doing its job.
   }))
 
-  const items = createMemo(() => projectItems(props.api, props.session_id).filter((item) => shows(density(), item.kind)))
+  const items = createMemo(() => project(props.api, props.session_id).filter((item) => shows(density(), item.kind)))
 
   return (
     <box flexDirection="column">
