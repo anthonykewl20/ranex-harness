@@ -19,7 +19,7 @@ export function EntryFrame(props: {
   detail?: string
   outcome?: string
   /**
-   * Fills the entry's whole block with the panel colour, marking it as the
+   * Fills the entry's **label row** with the panel colour, marking it as the
    * human's turn.
    *
    * This is how the two sides are told apart, and it is deliberately not how
@@ -28,10 +28,16 @@ export function EntryFrame(props: {
    * enough — `→ you` and `· ranex` are the same shape two lines apart, which is
    * what the owner reported after running it.
    *
-   * A filled block is unmissable while scrolling, gives the transcript an
-   * alternating rhythm, and costs the copy buffer nothing: a background colour
-   * is not part of the text. It also survives NO_COLOR losing nothing, because
-   * the label still spells whose turn it is.
+   * Filling the label row rather than the whole entry is deliberate. A
+   * full-bleed block put body text hard against the tint's left edge while every
+   * other entry sat at column 0, so the two no longer lined up — and padding it
+   * back would have put spaces in front of every copied line
+   * (claude-code #75221). A filled bar spans the width, is unmissable while
+   * scrolling, and leaves the body on the same left edge as everything else.
+   *
+   * It costs the copy buffer nothing — a background colour is not part of the
+   * text — and survives NO_COLOR losing nothing, because the label still spells
+   * whose turn it is.
    */
   tinted?: boolean
   children?: JSXElement
@@ -39,19 +45,12 @@ export function EntryFrame(props: {
   const theme = () => props.api.theme.current
 
   return (
-    <box
-      gap={0}
-      marginTop={1}
-      flexShrink={0}
-      backgroundColor={props.tinted ? theme().backgroundPanel : undefined}
-      // Vertical padding only. Horizontal padding would put spaces in front of
-      // every line of the body, which is the copy defect the tint exists to
-      // avoid (claude-code #75221) — a full-width block is already unmistakable
-      // without indenting its content.
-      paddingTop={props.tinted ? 1 : 0}
-      paddingBottom={props.tinted ? 1 : 0}
-    >
-      <box flexDirection="row" gap={1}>
+    <box gap={0} marginTop={1} flexShrink={0}>
+      <box
+        flexDirection="row"
+        gap={1}
+        backgroundColor={props.tinted ? theme().backgroundPanel : undefined}
+      >
         <Show when={props.glyph}>
           <text fg={theme().textMuted}>{props.glyph}</text>
         </Show>

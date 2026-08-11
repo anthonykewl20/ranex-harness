@@ -93,3 +93,22 @@ describe("CHAT-02: the shipped registry", () => {
     expect(resolveEntry(ENTRIES, item)).toBeUndefined()
   })
 })
+
+describe("CHAT-04: a turn that only ran tools prints no empty header", () => {
+  // A bare `ranex` label with nothing under it, once per tool-calling turn, is
+  // what a long task produced. The tool entries already carry that turn's work.
+  test("an assistant message with no text yields no assistant item", () => {
+    const speak = (text: string) => [{ type: "text", text }]
+    const cases: Array<[string, unknown[], boolean]> = [
+      ["only tool calls", [], false],
+      ["whitespace only", speak("   \n "), false],
+      ["real text", speak("here is the summary"), true],
+    ]
+    for (const [name, parts, expected] of cases) {
+      const spoke = (parts as Array<{ type: string; text?: string }>)
+        .filter((p) => p.type === "text")
+        .some((p) => typeof p.text === "string" && p.text.trim().length > 0)
+      expect(`${name}:${spoke}`).toBe(`${name}:${expected}`)
+    }
+  })
+})

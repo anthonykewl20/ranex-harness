@@ -41,14 +41,24 @@ export function projectItems(api: TuiPluginApi, sessionID: string): readonly Tra
       }
     }
 
+    // Only when the turn actually said something.
+    //
+    // A turn that was purely tool calls has no text parts, and emitting an entry
+    // for it printed a bare `ranex` header with nothing under it — once per
+    // tool-calling turn, so a long task produced a column of empty labels. The
+    // tool entries above already carry that turn's visible work.
+    const text = parts.filter((part: Part) => part.type === "text")
+    const spoke = text.some((part) => "text" in part && typeof part.text === "string" && part.text.trim().length > 0)
     const model = assistant.modelID
-    items.push({
-      kind: "assistant",
-      id: message.id,
-      message: assistant,
-      parts: parts.filter((part: Part) => part.type === "text"),
-      modelChange: previousModel && model && model !== previousModel ? model : undefined,
-    })
+    if (spoke) {
+      items.push({
+        kind: "assistant",
+        id: message.id,
+        message: assistant,
+        parts: text,
+        modelChange: previousModel && model && model !== previousModel ? model : undefined,
+      })
+    }
     if (model) previousModel = model
   }
 
