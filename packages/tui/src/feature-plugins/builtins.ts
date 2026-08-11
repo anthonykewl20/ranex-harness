@@ -14,7 +14,6 @@ import SidebarMcp from "./sidebar/mcp"
 import SidebarSubject from "./sidebar/subject"
 import SidebarTodo from "./sidebar/todo"
 import SidebarVerdict from "./sidebar/verdict"
-import Transcript from "./transcript"
 import DiffViewer from "./system/diff-viewer"
 import Notifications from "./system/notifications"
 import PluginManager from "./system/plugins"
@@ -30,7 +29,6 @@ export function createBuiltinPlugins(options: { experimentalEventSystem: boolean
   return [
     HomeFooter,
     HomeTips,
-    Transcript,
     SidebarMcp,
     SidebarLsp,
     SidebarTodo,

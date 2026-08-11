@@ -73,6 +73,10 @@ describe("CHAT-01: the transcript slots", () => {
   //
   // What still matters is that every slot rendered is declared, so a typo'd name
   // silently renders nothing forever.
+  // The slots stay cut and stay declared while the plugin that filled them is
+  // unregistered — which is the whole point of `replace` with upstream's
+  // rendering as children. Unregistering restored stock opencode in one line,
+  // and re-registering restores the redesign in one line.
   test("every slot the session route renders is declared in the host map", () => {
     const rendered = [...readFileSync(SESSION, "utf8").matchAll(/name="(session_[a-z_]+)"/g)].map((m) => m[1])
     const map = readFileSync(SLOT_MAP, "utf8")
