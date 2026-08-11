@@ -7,6 +7,8 @@ import { resolveEntry, type TranscriptItem } from "./entry"
 import { projectItems } from "./items"
 import { cycleDensity, readDensity, shows } from "./density"
 import { useBindings } from "../../keymap"
+import { useClipboard } from "../../context/clipboard"
+import { copyText, lastCopyable } from "./copy"
 
 const glyphs = detectGlyphs()
 
@@ -39,8 +41,35 @@ export function Transcript(props: { api: TuiPluginApi; session_id: string }) {
   // change rather than only that something is changeable. A displayed command
   // that does not dispatch is opencode #41732, and the same applies to one whose
   // label does not describe what it does.
+  const clipboard = useClipboard()
+
   useBindings(() => ({
     commands: [
+      {
+        name: "transcript.copy",
+        title: "Copy the last message",
+        category: "Ranex",
+        namespace: "palette",
+        async run() {
+          const item = lastCopyable(items())
+          const text = item ? copyText(item) : undefined
+          // Never report success for an empty copy — claude-code #56298 is
+          // "Copy message" silently writing an empty string.
+          if (!text) {
+            props.api.ui.toast({ variant: "info", message: "Nothing to copy" })
+            props.api.ui.dialog.clear()
+            return
+          }
+          if (!clipboard.write) {
+            props.api.ui.toast({ variant: "error", message: "Clipboard unavailable" })
+            props.api.ui.dialog.clear()
+            return
+          }
+          await clipboard.write(text)
+          props.api.ui.toast({ variant: "info", message: `Copied ${text.length} characters` })
+          props.api.ui.dialog.clear()
+        },
+      },
       {
         name: "transcript.density",
         title: `Transcript density: ${density()}`,
@@ -53,6 +82,10 @@ export function Transcript(props: { api: TuiPluginApi; session_id: string }) {
       },
     ],
     bindings: props.api.tuiConfig.keybinds.get("transcript.density"),
+    // `transcript.copy` intentionally ships with no default binding: crush's
+    // shortcut-collision complaint (ux-research.md §7) is what happens when a
+    // tool claims keys users already own. It is reachable from the palette and
+    // bindable in config, which is keymap-as-data doing its job.
   }))
 
   const items = createMemo(() => projectItems(props.api, props.session_id).filter((item) => shows(density(), item.kind)))
