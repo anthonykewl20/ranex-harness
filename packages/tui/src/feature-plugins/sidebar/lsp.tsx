@@ -51,6 +51,7 @@ const tui: TuiPlugin = async (api) => {
     order: 300,
     slots: {
       sidebar_content() {
+        if (api.route.current.name === "ranex.board") return null
         return <View api={api} />
       },
     },
