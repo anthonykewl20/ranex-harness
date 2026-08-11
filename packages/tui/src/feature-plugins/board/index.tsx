@@ -7,6 +7,7 @@ import { PaneFrame, type BoardData } from "./pane"
 import { BOARD_ACTIONS, boardActionState, dispatchAction, performExport, type BoardActionOutcome } from "./actions"
 import { BoardActions } from "./actions-view"
 import { PANES } from "./panes"
+import { OwnerView } from "./owner-view"
 
 export const ROUTE = "ranex.board"
 
@@ -28,6 +29,7 @@ function Board(props: { api: TuiPluginApi }) {
       : undefined
 
   const [outcome, setOutcome] = createSignal<BoardActionOutcome | undefined>(undefined)
+  const [viewMode, setViewMode] = createSignal<"operator" | "owner">("operator")
 
   const actionCommands = BOARD_ACTIONS.map((action) => ({
     name: `board.${action.id}`,
@@ -53,6 +55,14 @@ function Board(props: { api: TuiPluginApi }) {
 
   const commands = [
     ...actionCommands,
+    {
+      name: "board.view.owner",
+      title: "Toggle owner view",
+      category: "Ranex",
+      run() {
+        setViewMode((current) => (current === "operator" ? "owner" : "operator"))
+      },
+    },
     /**
      * A route you can enter and not leave is a trap, and this one was: the route
      * registered, the command opened it, and nothing bound a way back. Escape and
@@ -78,6 +88,7 @@ function Board(props: { api: TuiPluginApi }) {
     commands,
     bindings: [
       { key: "escape,q", cmd: "board.close", desc: "Close the board" },
+      { key: "o", cmd: "board.view.owner", desc: "Toggle owner view" },
       ...BOARD_ACTIONS.map((action) => ({
         key: action.key,
         cmd: `board.${action.id}`,
@@ -111,26 +122,39 @@ function Board(props: { api: TuiPluginApi }) {
         <b>ranex</b>
       </text>
 
-      <Show when={data().state === "read"} fallback={<Unread api={props.api} why={unreadWhy(data())} />}>
-        {/*
-          The read state renders nothing of its own. Every field belongs to a
-          pane, and a pane that has not been built yet must not be stubbed here —
-          a placeholder in the shell is how the shell quietly becomes the board.
-        */}
-        <box />
+      <Show
+        when={viewMode() === "owner"}
+        fallback={
+          <>
+            <Show when={data().state === "read"} fallback={<Unread api={props.api} why={unreadWhy(data())} />}>
+              {/*
+                The read state renders nothing of its own. Every field belongs to a
+                pane, and a pane that has not been built yet must not be stubbed here —
+                a placeholder in the shell is how the shell quietly becomes the board.
+              */}
+              <box />
+            </Show>
+
+            <For each={panes()}>
+              {(pane) => (
+                <PaneFrame api={props.api} title={pane.title}>
+                  {pane.render({ api: props.api, data: data() })}
+                </PaneFrame>
+              )}
+            </For>
+
+            <BoardActions api={props.api} state={boardActionState(data().state === "read")} outcome={outcome()} />
+          </>
+        }
+      >
+        <OwnerView api={props.api} data={data()} />
       </Show>
 
-      <For each={panes()}>
-        {(pane) => (
-          <PaneFrame api={props.api} title={pane.title}>
-            {pane.render({ api: props.api, data: data() })}
-          </PaneFrame>
-        )}
-      </For>
-
-      <BoardActions api={props.api} state={boardActionState(data().state === "read")} outcome={outcome()} />
-
       <box flexDirection="row" gap={1}>
+        <text fg={theme().primary}>
+          <b>o</b>
+        </text>
+        <text fg={theme().textMuted}>{viewMode()} view (toggle)</text>
         <text fg={theme().primary}>
           <b>esc</b>
         </text>
