@@ -47,6 +47,7 @@ import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
 import { DialogAlert } from "../../ui/dialog-alert"
 import { TodoItem } from "../../component/todo-item"
+import { ThoughtPanel } from "../../component/thought-panel"
 import { DialogMessage } from "./dialog-message"
 import type { PromptInfo } from "../../component/prompt/history"
 import { DialogConfirm } from "../../ui/dialog-confirm"
@@ -1603,6 +1604,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   })
   const summary = createMemo(() => reasoningSummary(content()))
   const syntax = createSyntaxStyleMemo(() => generateSubtleSyntax(theme))
+  const pluginRuntime = usePluginRuntime()
 
   const toggle = () => {
     if (!inMinimal()) return
@@ -1611,36 +1613,13 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
 
   return (
     <Show when={content()}>
-      <box
-        ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
-        paddingLeft={3}
-        marginTop={1}
-        flexDirection="column"
-        flexShrink={0}
-      >
-        <box onMouseUp={toggle}>
-          <ReasoningHeader
-            toggleable={inMinimal()}
-            open={!inMinimal() || expanded()}
-            done={isDone()}
-            title={summary().title}
-            duration={isDone() ? Locale.duration(duration()) : undefined}
-          />
-        </box>
-        <Show when={(!inMinimal() || expanded()) && summary().body}>
-          <box paddingLeft={inMinimal() ? 2 : 0} marginTop={1}>
-            <code
-              filetype="markdown"
-              drawUnstyledText={false}
-              streaming={true}
-              syntaxStyle={syntax()}
-              content={summary().body}
-              conceal={ctx.conceal()}
-              fg={theme.textMuted}
-            />
-          </box>
-        </Show>
-      </box>
+      <ThoughtPanel
+        theme={{ border: theme.border, text: theme.text, textMuted: theme.textMuted }}
+        text={summary().body}
+        title={summary().title ?? undefined}
+        duration={isDone() ? Locale.duration(duration()) : undefined}
+        done={isDone()}
+      />
     </Show>
   )
 }
