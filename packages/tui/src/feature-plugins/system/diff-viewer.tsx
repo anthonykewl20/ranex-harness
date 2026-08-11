@@ -34,8 +34,15 @@ import {
   singlePatchFileIndex,
   toggleFileTreeDirectory,
 } from "./diff-viewer-file-tree-utils"
+import {
+  SubjectBindingNotice,
+  SubjectRefusalNotice,
+  subjectDiffBindingState,
+  subjectDiffFiles,
+  type SubjectDiffBinding,
+} from "../board/diff-binding"
 
-const ROUTE = "diff"
+export const DIFF_VIEWER_ROUTE = "diff"
 const MIN_SPLIT_WIDTH = 100
 const FILE_TREE_WIDTH = 32
 const PLAIN_TEXT_FILETYPE = "opencode-plain-text"
@@ -51,6 +58,7 @@ type SelectedHunk = { readonly fileIndex: number; readonly hunkIndex: number; re
 type DiffFile = {
   readonly file: string
   readonly patch?: string
+  readonly patchNotice?: string
   readonly additions: number
   readonly deletions: number
   readonly status: "added" | "deleted" | "modified"
@@ -99,6 +107,7 @@ function DiffViewer(props: { api: TuiPluginApi }) {
           sessionID?: string
           messageID?: string
           returnRoute?: TuiRouteCurrent
+          subjectBinding?: SubjectDiffBinding
         }
       | undefined
   const mode = () => params()?.mode ?? "git"
@@ -109,9 +118,11 @@ function DiffViewer(props: { api: TuiPluginApi }) {
       sessionID,
       messageID: params()?.messageID,
       directory: sessionID ? props.api.state.session.get(sessionID)?.directory : undefined,
+      subjectBinding: params()?.subjectBinding,
     }
   })
   const [diff] = createResource(diffInput, async (input) => {
+    if (input.subjectBinding) return subjectDiffFiles(input.subjectBinding)
     if (input.mode === "last-turn") {
       const sessionID = input.sessionID
       if (!sessionID) return []
@@ -129,6 +140,7 @@ function DiffViewer(props: { api: TuiPluginApi }) {
     return normalizeDiffs(result.data ?? [])
   })
   const files = createMemo(() => diff() ?? [])
+  const subjectBinding = () => params()?.subjectBinding
   const [focus, setFocus] = createSignal<DiffViewerFocus>("patches")
   const [fileTreeEnabled, setFileTreeEnabled] = createSignal(
     props.api.kv.get<boolean>(KV_SHOW_FILE_TREE, true) !== false,
@@ -416,6 +428,7 @@ function DiffViewer(props: { api: TuiPluginApi }) {
   }
 
   const toggleSelectedFileReviewed = () => {
+    if (subjectBinding()) return
     const fileIndex =
       focus() === "files"
         ? fileRows().find((row) => row.id === highlightedFileNode())?.fileIndex
@@ -656,6 +669,7 @@ function DiffViewer(props: { api: TuiPluginApi }) {
       title: "Switch diff viewer source",
       category: "VCS",
       run() {
+        if (subjectBinding()) return
         openSwitchDiffDialog()
       },
     },
@@ -717,7 +731,7 @@ function DiffViewer(props: { api: TuiPluginApi }) {
           ...option,
           onSelect(dialog) {
             dialog.clear()
-            props.api.route.navigate(ROUTE, {
+            props.api.route.navigate(DIFF_VIEWER_ROUTE, {
               mode: option.value,
               sessionID: params()?.sessionID,
               messageID: params()?.messageID,
@@ -761,8 +775,14 @@ function DiffViewer(props: { api: TuiPluginApi }) {
           </text>
         </Panel>
 
+        <Show when={subjectBinding()}>{(binding) => <SubjectBindingNotice api={props.api} binding={binding()} />}</Show>
+
         <box flexGrow={1} minHeight={0}>
           <Switch>
+            <Match when={subjectBinding() && subjectDiffBindingState(subjectBinding()!) === "mismatched"}>
+              <Separator axis="x" />
+              <SubjectRefusalNotice api={props.api} />
+            </Match>
             <Match when={diff.loading}>
               <Separator axis="x" />
               <box flexGrow={1} paddingLeft={1}>
@@ -772,7 +792,9 @@ function DiffViewer(props: { api: TuiPluginApi }) {
             <Match when={!diff.loading && files().length === 0}>
               <Separator axis="x" />
               <box flexGrow={1} paddingLeft={1}>
-                <text fg={theme().textMuted}>No diff!</text>
+                <text fg={theme().textMuted}>
+                  {subjectBinding() ? "no change — the bound subject contains no changed files." : "No diff!"}
+                </text>
               </box>
             </Match>
             <Match when={!diff.loading && diff.error}>
@@ -836,7 +858,11 @@ function DiffViewer(props: { api: TuiPluginApi }) {
                             <Separator axis="x" start={showFileTree() ? "edge" : undefined} />
                             <Show
                               when={entry.file.patch}
-                              fallback={<text fg={theme().textMuted}>No patch available for this file.</text>}
+                              fallback={
+                                <text fg={entry.file.patchNotice ? theme().warning : theme().textMuted}>
+                                  {entry.file.patchNotice ?? "No patch available for this file."}
+                                </text>
+                              }
                             >
                               {(patch) => (
                                 <box border={patchLeftBorder()} borderColor={theme().border}>
@@ -916,14 +942,14 @@ function DiffViewer(props: { api: TuiPluginApi }) {
               </text>
             )}
           </Show>
-          <Show when={switchSourceShortcut()}>
+          <Show when={!subjectBinding() && switchSourceShortcut()}>
             {(shortcut) => (
               <text fg={theme().text}>
                 {shortcut()} <span style={{ fg: theme().textMuted }}>switch source</span>
               </text>
             )}
           </Show>
-          <Show when={markReviewedShortcut()}>
+          <Show when={!subjectBinding() && markReviewedShortcut()}>
             {(shortcut) => (
               <text fg={theme().text}>
                 {shortcut()} <span style={{ fg: theme().textMuted }}>mark reviewed</span>
@@ -1045,7 +1071,7 @@ function DiffViewerHelpDialog() {
 const tui: TuiPlugin = async (api) => {
   api.route.register([
     {
-      name: ROUTE,
+      name: DIFF_VIEWER_ROUTE,
       render: () => <DiffViewer api={api} />,
     },
   ])
@@ -1059,7 +1085,7 @@ const tui: TuiPlugin = async (api) => {
         category: "VCS",
         namespace: "palette",
         run() {
-          api.route.navigate(ROUTE, {
+          api.route.navigate(DIFF_VIEWER_ROUTE, {
             mode: "git",
             sessionID: "params" in api.route.current ? api.route.current.params?.sessionID : undefined,
             returnRoute: api.route.current,
