@@ -31,11 +31,17 @@ export function projectItems(api: TuiPluginApi, sessionID: string): readonly Tra
     // the assistant's, so each collapses, streams and is copied on its own.
     // ADR-018's rule holds here: a state a renderer cannot distinguish is shown
     // as undistinguished, never folded into the nearest familiar one.
+    // One thought per turn, not one per reasoning part.
+    //
+    // A turn emits several reasoning parts and rendering each as its own entry
+    // put `thought` four or five times down a single turn, at the same weight as
+    // the tool calls between them. Upstream shows one collapsed block per turn,
+    // and it is right: the reasoning is one thing the model did, not four.
+    const reasoning = parts.filter((part) => part.type === "reasoning")
+    if (reasoning[0]) {
+      items.push({ kind: "reasoning", id: reasoning[0].id, part: reasoning[0] as ReasoningPart, message: assistant })
+    }
     for (const part of parts) {
-      if (part.type === "reasoning") {
-        items.push({ kind: "reasoning", id: part.id, part: part as ReasoningPart, message: assistant })
-        continue
-      }
       if (part.type === "tool") {
         items.push({ kind: "tool", id: part.id, part: part as ToolPart, message: assistant })
       }

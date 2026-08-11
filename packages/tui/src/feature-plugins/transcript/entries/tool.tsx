@@ -43,13 +43,17 @@ export function toolSubject(input: Record<string, unknown> | undefined): string 
  * says so in words, which is what keeps it legible under NO_COLOR and to a
  * screen reader (ux-research.md §10).
  */
-export function toolOutcome(state: { status?: string; error?: unknown } | undefined): string {
+export function toolOutcome(state: { status?: string; error?: unknown } | undefined): string | undefined {
   const status = state?.status
-  if (status === "completed") return "done"
+  // Success is silent. `done` on every line is a column of the same word
+  // repeated down the screen: it distinguishes nothing, because everything says
+  // it, and it drowns the one line that says something else. What earns a word
+  // is the exception — and a real measurement (`+2 −1`) still overrides this.
+  if (status === "completed") return undefined
   if (status === "error") return "failed"
   if (status === "running") return "running"
   if (status === "pending") return "queued"
-  return status ?? "unknown"
+  return status
 }
 
 /** The path a change touched, for the diff's syntax highlighting. */
