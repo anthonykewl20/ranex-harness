@@ -21,7 +21,7 @@ const glyphs = detectGlyphs()
  */
 export const GATE_PAGE_SIZE = 10
 
-const KNOWN_CAUSES = [
+export const KNOWN_CAUSES = [
   "contradicted",
   "failed",
   "mismatched",
@@ -183,7 +183,7 @@ function Gates(props: BoardPaneProps) {
   )
 }
 
-function causePresentation(cause: string, theme: Theme, set: GlyphSet): CausePresentation {
+export function causePresentation(cause: string, theme: Theme, set: GlyphSet): CausePresentation {
   if (!KNOWN_CAUSE_SET.has(cause)) {
     return {
       word: "unclassified",

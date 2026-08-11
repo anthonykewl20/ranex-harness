@@ -1,4 +1,5 @@
 import type { BoardPane } from "../pane"
+import { EvidencePane } from "./evidence"
 import { GatesPane } from "./gates"
 import { JournalPane } from "./journal"
 import { RunPane } from "./run"
@@ -28,4 +29,4 @@ import { SpecificationPane } from "./specification"
  * a convention: `BoardData` is a union, so the compiler will not let a pane
  * reach a record that was never read.
  */
-export const PANES: readonly BoardPane[] = [GatesPane, SpecificationPane, RunPane, JournalPane]
+export const PANES: readonly BoardPane[] = [GatesPane, EvidencePane, SpecificationPane, RunPane, JournalPane]
