@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import Board, { ROUTE } from "../src/feature-plugins/board"
+import { PANES } from "../src/feature-plugins/board/panes"
 import { createBuiltinPlugins } from "../src/feature-plugins/builtins"
 
 const ROOT = path.join(import.meta.dir, "..")
@@ -59,6 +60,34 @@ describe("the board plugin", () => {
   test("is registered as a builtin", () => {
     const ids = createBuiltinPlugins({ experimentalEventSystem: false }).map((plugin) => plugin.id)
     expect(ids).toContain("ranex-board")
+  })
+})
+
+describe("the pane registry", () => {
+  // BOARD-05..BOARD-14 are built concurrently in separate worktrees. These two
+  // are the collisions that survive a clean merge: git happily takes both sides
+  // of an array append, so a duplicate id or a shared order number arrives with
+  // no conflict marker and reorders the board for reasons nobody can see.
+  test("no two panes share an id", () => {
+    const ids = PANES.map((pane) => pane.id)
+    expect(ids).toEqual([...new Set(ids)])
+  })
+
+  test("no two panes share an order", () => {
+    const orders = PANES.map((pane) => pane.order)
+    expect(orders).toEqual([...new Set(orders)])
+  })
+
+  test("panes are namespaced, so an id says which pane owns a bug", () => {
+    for (const pane of PANES) expect(pane.id.startsWith("ranex.board.")).toBe(true)
+  })
+
+  test("the shell renders from the registry rather than naming panes", () => {
+    // If the shell ever imports a pane directly, adding one stops being two
+    // edits and every concurrent pane starts conflicting on this file.
+    const source = readFileSync(path.join(ROOT, "src/feature-plugins/board/index.tsx"), "utf8")
+    expect(source).toContain("PANES")
+    expect(source).not.toMatch(/^import .*from "\.\/panes\/(?!index)/m)
   })
 })
 

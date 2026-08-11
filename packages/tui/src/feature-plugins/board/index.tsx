@@ -1,23 +1,10 @@
 import type { TuiPlugin, TuiPluginApi } from "@ranex/plugin/tui"
 import type { BuiltinTuiPlugin } from "../builtins"
-import { Show, createMemo } from "solid-js"
+import { For, Show, createMemo } from "solid-js"
 import { useBindings } from "../../keymap"
 import { detectGlyphs } from "../../theme/glyphs"
-
-/**
- * The fields this shell reads, structurally.
- *
- * Deliberately not imported from `@ranex/schema`: the SDK is the TUI's boundary
- * (`specs/tui-package.md`), and missing backend data belongs in the server API
- * and generated SDK rather than a direct dependency on a backend contract
- * package. `packages/schema/src/verdict.ts` is the authority on the full shape;
- * when BOARD-01's read channel exists, the type arrives with the data path and
- * this local declaration goes away.
- */
-type VerdictRecord = {
-  verdict: "PASS" | "FAIL"
-  subject_digest: string
-}
+import { PaneFrame, type BoardData } from "./pane"
+import { PANES } from "./panes"
 
 export const ROUTE = "ranex.board"
 
@@ -72,12 +59,19 @@ function Board(props: { api: TuiPluginApi }) {
    *
    * The bridge is one-directional: `plugin/ranex.ts` appends
    * `{task_id, worktree, commit}` to `RANEX_EMIT` on session idle, and nothing
-   * comes back. BOARD-01 carries the contract; the channel is kernel-side work.
+   * comes back. ADR-019 decides the return channel; until it is built, every
+   * pane is handed `unread` and must say so in its own terms.
    *
-   * Typed against the real contract so that wiring the channel is a change of
-   * source, not a change of shape.
+   * Carried as a tagged union rather than an optional record so that wiring the
+   * channel is a change of source, not a change of shape — and so no pane can
+   * render as though a verdict arrived when none did.
    */
-  const verdict = createMemo<VerdictRecord | undefined>(() => undefined)
+  const data = createMemo<BoardData>(() => ({
+    state: "unread",
+    why: "no channel exists to read one; the bridge emits to the kernel and nothing returns",
+  }))
+
+  const panes = createMemo(() => [...PANES].sort((a, b) => a.order - b.order))
 
   return (
     <box padding={2} gap={1} flexGrow={1}>
@@ -85,56 +79,69 @@ function Board(props: { api: TuiPluginApi }) {
         <b>ranex</b>
       </text>
 
-      <Show
-        when={verdict()}
-        fallback={
-          <box gap={1}>
-            <text fg={theme().text}>Nothing to judge yet.</text>
-
-            <box>
-              <text fg={theme().textMuted}>This board shows whether work is acceptable, and</text>
-              <text fg={theme().textMuted}>why not. It is empty because no verdict has been</text>
-              <text fg={theme().textMuted}>read for this repository.</text>
-            </box>
-
-            {/*
-              Said plainly rather than dressed as an empty success. A board that
-              renders an encouraging blank screen when it cannot see a verdict is
-              the failure this whole project exists to remove.
-            */}
-            <box>
-              <text fg={theme().warning}>{glyphs.warn} No channel to read one exists yet.</text>
-              <text fg={theme().textMuted}> The bridge emits to the kernel; nothing returns.</text>
-              <text fg={theme().textMuted}> Tracked as BOARD-01.</text>
-            </box>
-
-            <box>
-              <text fg={theme().text}>Until then, judge from the CLI:</text>
-              <text fg={theme().textMuted}> ranex gate evaluate {"<ref>"} --approver {"<you>"}</text>
-            </box>
-
-            <box flexDirection="row" gap={1}>
-              <text fg={theme().primary}>
-                <b>esc</b>
-              </text>
-              <text fg={theme().textMuted}>back</text>
-              <text fg={theme().primary}>
-                <b>q</b>
-              </text>
-              <text fg={theme().textMuted}>back</text>
-            </box>
-          </box>
-        }
-      >
-        {(record) => (
-          <box gap={1}>
-            <text fg={record().verdict === "PASS" ? theme().success : theme().error}>
-              <b>{record().verdict}</b>
-            </text>
-            <text fg={theme().textMuted}>subject {record().subject_digest}</text>
-          </box>
-        )}
+      <Show when={data().state === "read"} fallback={<Unread api={props.api} why={unreadWhy(data())} />}>
+        {/*
+          The read state renders nothing of its own. Every field belongs to a
+          pane, and a pane that has not been built yet must not be stubbed here —
+          a placeholder in the shell is how the shell quietly becomes the board.
+        */}
+        <box />
       </Show>
+
+      <For each={panes()}>
+        {(pane) => (
+          <PaneFrame api={props.api} title={pane.title}>
+            {pane.render({ api: props.api, data: data() })}
+          </PaneFrame>
+        )}
+      </For>
+
+      <box flexDirection="row" gap={1}>
+        <text fg={theme().primary}>
+          <b>esc</b>
+        </text>
+        <text fg={theme().textMuted}>back</text>
+        <text fg={theme().primary}>
+          <b>q</b>
+        </text>
+        <text fg={theme().textMuted}>back</text>
+      </box>
+    </box>
+  )
+}
+
+function unreadWhy(data: BoardData): string {
+  return data.state === "unread" ? data.why : ""
+}
+
+/**
+ * Said plainly rather than dressed as an empty success. A board that renders an
+ * encouraging blank screen when it cannot see a verdict is the failure this
+ * whole project exists to remove.
+ */
+function Unread(props: { api: TuiPluginApi; why: string }) {
+  const theme = () => props.api.theme.current
+
+  return (
+    <box gap={1}>
+      <text fg={theme().text}>Nothing to judge yet.</text>
+
+      <box>
+        <text fg={theme().textMuted}>This board shows whether work is acceptable, and</text>
+        <text fg={theme().textMuted}>why not. It is empty because no verdict has been</text>
+        <text fg={theme().textMuted}>read for this repository.</text>
+      </box>
+
+      <box>
+        <text fg={theme().warning}>{glyphs.warn} No verdict was read.</text>
+        <text fg={theme().textMuted}> {props.why}</text>
+        <text fg={theme().textMuted}> Tracked as BOARD-01; the channel is ADR-019.</text>
+      </box>
+
+      <box>
+        <text fg={theme().text}>Until then, judge from the CLI:</text>
+        <text fg={theme().textMuted}> ranex gate evaluate {"<ref>"} --approver {"<you>"}</text>
+      </box>
     </box>
   )
 }
