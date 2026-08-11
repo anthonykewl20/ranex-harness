@@ -6,6 +6,7 @@ import { GatesPane } from "./gates"
 import { JournalPane } from "./journal"
 import { RunPane } from "./run"
 import { SpecificationPane } from "./specification"
+import { WorkflowPane } from "./workflow"
 
 /**
  * The board's panes, in one list.
@@ -26,6 +27,7 @@ import { SpecificationPane } from "./specification"
  *   500  BOARD-09  diff, bound to the subject digest
  *   600  BOARD-12  journal and chain verification
  *   700  BOARD-13  escalation
+ *   800  BOARD-19  workflow chain
  *
  * A pane must render something honest for `data.state === "unread"`. That is not
  * a convention: `BoardData` is a union, so the compiler will not let a pane
@@ -39,4 +41,5 @@ export const PANES: readonly BoardPane[] = [
   DiffPane,
   JournalPane,
   EscalationPane,
+  WorkflowPane,
 ]
