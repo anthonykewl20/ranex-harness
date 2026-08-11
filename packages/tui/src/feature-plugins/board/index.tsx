@@ -15,11 +15,9 @@ const glyphs = detectGlyphs()
 /**
  * The governance board — ADR-018, BOARD-04.
  *
- * Registered as a plugin route rather than a new `Route` variant, so `app.tsx`
- * and `context/route.tsx` are untouched. `packages/tui` sits about 163
- * insertions from the opencode fork base, and every upstream file this avoids
- * editing is one that keeps merging cleanly. Deleting this directory returns
- * the harness to stock behaviour, which is what makes ADR-018 a two-way door.
+ * Registered as a plugin route rather than a new `Route` variant. The app shell
+ * only selects that route as its front door; the board and its data remain
+ * removable without deleting the inherited home or session routes.
  */
 function Board(props: { api: TuiPluginApi }) {
   const theme = () => props.api.theme.current
@@ -58,7 +56,7 @@ function Board(props: { api: TuiPluginApi }) {
         const back = params()?.returnRoute
         props.api.ui.dialog.clear()
         props.api.route.navigate(
-          back?.name ?? "home",
+          back?.name ?? ROUTE,
           back && "params" in back ? (back as { params?: Record<string, unknown> }).params : undefined,
         )
       },
