@@ -541,6 +541,9 @@ function pluginApi(runtime: RuntimeState, plugin: PluginEntry, scope: PluginScop
     navigate(name, params) {
       api.route.navigate(name, params)
     },
+    newSession() {
+      api.route.newSession()
+    },
     get current() {
       return api.route.current
     },

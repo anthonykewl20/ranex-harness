@@ -251,6 +251,7 @@ export function createTuiPluginApi(opts: Opts = {}): HostPluginApi {
         }
       },
       navigate: () => {},
+      newSession: () => {},
       get current() {
         return { name: "home" }
       },
