@@ -200,6 +200,9 @@ export function createTuiApiAdapters(input: Input): Omit<TuiPluginApi, "lifecycl
       navigate(name, params) {
         routeNavigate(input.route, name, params)
       },
+      newSession() {
+        input.route.newSession()
+      },
       get current() {
         return routeCurrent(input.route)
       },

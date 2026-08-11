@@ -66,8 +66,15 @@ function Board(props: { api: TuiPluginApi }) {
     /**
      * A route you can enter and not leave is a trap, and this one was: the route
      * registered, the command opened it, and nothing bound a way back. Escape and
-     * `q` both return, and the footer says so on screen — a keybinding nobody can
+     * `q` both leave, and the footer says so on screen — a keybinding nobody can
      * see is not an exit.
+     *
+     * With the board as the front door (BOARD-14) there is often no route to
+     * return to. Falling back to ROUTE left `esc`/`q` navigating to the board
+     * itself — a no-op, and the trap again. The exit goes to the transcript
+     * instead: newSession reaches home without the home→board redirect, so the
+     * board is always leaveable. The transcript is reached from the board; the
+     * board is reached from the transcript via the palette (`/board`).
      */
     {
       name: "board.close",
@@ -76,9 +83,13 @@ function Board(props: { api: TuiPluginApi }) {
       run() {
         const back = params()?.returnRoute
         props.api.ui.dialog.clear()
+        if (!back) {
+          props.api.route.newSession()
+          return
+        }
         props.api.route.navigate(
-          back?.name ?? ROUTE,
-          back && "params" in back ? (back as { params?: Record<string, unknown> }).params : undefined,
+          back.name,
+          "params" in back ? (back as { params?: Record<string, unknown> }).params : undefined,
         )
       },
     },

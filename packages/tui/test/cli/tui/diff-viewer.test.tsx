@@ -148,6 +148,7 @@ async function renderDiffViewer(vcsDiff: unknown[], height = 20, initialRoute?: 
         navigate(name, params) {
           current = params ? { name, params } : { name }
         },
+        newSession() {},
         get current() {
           return current
         },

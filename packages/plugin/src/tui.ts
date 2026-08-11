@@ -594,6 +594,10 @@ export type TuiPluginApi = {
   route: {
     register: (routes: TuiRouteDefinition[]) => () => void
     navigate: (name: string, params?: Record<string, unknown>) => void
+    // The one path that reaches the retired home (transcript) route without the
+    // home→board redirect. The board's exit uses it so the front door is never
+    // a trap: a bare navigate("home") is an inherited fallback and is redirected.
+    newSession: () => void
     readonly current: TuiRouteCurrent
   }
   ui: {
