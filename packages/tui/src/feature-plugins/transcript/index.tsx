@@ -1,6 +1,7 @@
 import type { TuiPlugin, TuiPluginApi } from "@ranex/plugin/tui"
 import type { BuiltinTuiPlugin } from "../builtins"
 import { Transcript } from "./chrome"
+import { StatusRow } from "./status-view"
 
 const id = "internal:transcript"
 
@@ -19,6 +20,11 @@ const tui: TuiPlugin = async (api: TuiPluginApi) => {
     slots: {
       session_transcript(_ctx, props) {
         return <Transcript api={api} session_id={props.session_id} />
+      },
+      // `app_bottom` already existed at the app level, so the status row needed
+      // no new opening in the session route.
+      app_bottom() {
+        return <StatusRow api={api} />
       },
     },
   })
