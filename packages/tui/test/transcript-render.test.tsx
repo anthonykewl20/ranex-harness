@@ -66,19 +66,28 @@ describe("CHAT-05: reasoning is labelled by content, for every provider", () => 
 })
 
 describe("CHAT-02: the shipped registry", () => {
-  test("the four visible entries are registered in reserved order", () => {
+  test("every entry is registered in reserved order", () => {
     expect(ENTRIES.map((e) => `${e.order} ${e.kind}`)).toEqual([
       "100 user",
       "200 assistant",
       "300 reasoning",
       "400 tool",
+      "500 permission",
+      "600 error",
     ])
   })
 
-  test("an item kind with no entry yet resolves to undefined, not to a near match", () => {
-    // `permission` and `error` are CHAT-09 and unbuilt. Until then the chrome
-    // renders them as `unrendered` — visible and honest, rather than dropped.
-    const item: TranscriptItem = { kind: "error", id: "e1", why: "provider aborted" }
+  test("the closed item set is fully covered, so nothing renders as unrendered", () => {
+    // `unrendered` is the honest fallback, not a resting state. Once every kind
+    // has an entry, reaching it means a kind was added without a renderer.
+    const kinds: TranscriptItem["kind"][] = ["user", "assistant", "reasoning", "tool", "permission", "error"]
+    for (const kind of kinds) {
+      expect(ENTRIES.some((e) => e.kind === kind)).toBe(true)
+    }
+  })
+
+  test("an item kind outside the set still resolves to undefined, never a near match", () => {
+    const item = { kind: "future", id: "x1" } as unknown as TranscriptItem
     expect(resolveEntry(ENTRIES, item)).toBeUndefined()
   })
 })

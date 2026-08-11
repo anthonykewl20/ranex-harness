@@ -1,5 +1,6 @@
 import { detectGlyphs } from "../../../theme/glyphs"
 import { EntryFrame } from "../chrome"
+import { Markdown } from "../render/markdown"
 import type { TranscriptEntry } from "../entry"
 
 const glyphs = detectGlyphs()
@@ -7,17 +8,16 @@ const glyphs = detectGlyphs()
 /**
  * CHAT-04 — the assistant entry.
  *
- * The label line carries agent and model, and the outcome column carries
- * duration. Markdown rendering proper is CHAT-04's second half; until it lands
- * the text renders as text, which is honest — opencode #38828 is markdown shown
- * as raw text *while claiming otherwise*, and this claims nothing.
+ * The label line carries agent and model; the body is markdown, rendered with
+ * the generated theme's syntax palette. opencode #15141 (headings with no
+ * hierarchy) and #38828 (markdown shown as raw text) are what a transcript
+ * looks like without this.
  */
 export const AssistantEntry: TranscriptEntry<"assistant"> = {
   id: "ranex.transcript.assistant",
   kind: "assistant",
   order: 200,
   render: (props) => {
-    const theme = () => props.api.theme.current
     const message = props.item.message
     const text = props.item.parts
       .map((part) => ("text" in part && typeof part.text === "string" ? part.text : ""))
@@ -31,9 +31,7 @@ export const AssistantEntry: TranscriptEntry<"assistant"> = {
 
     return (
       <EntryFrame api={props.api} glyph={glyphs.dot} label="ranex" detail={detail}>
-        <text fg={theme().text} wrapMode="word">
-          {text}
-        </text>
+        <Markdown content={text} />
       </EntryFrame>
     )
   },

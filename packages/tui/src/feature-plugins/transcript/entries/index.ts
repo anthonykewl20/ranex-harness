@@ -1,5 +1,6 @@
 import { assertEntries, type AnyTranscriptEntry } from "../entry"
 import { AssistantEntry } from "./assistant"
+import { ErrorEntry, PermissionEntry } from "./permission"
 import { ReasoningEntry } from "./reasoning"
 import { ToolEntry } from "./tool"
 import { UserEntry } from "./user"
@@ -38,4 +39,6 @@ export const ENTRIES: readonly AnyTranscriptEntry[] = assertEntries([
   AssistantEntry,
   ReasoningEntry,
   ToolEntry,
+  PermissionEntry,
+  ErrorEntry,
 ])

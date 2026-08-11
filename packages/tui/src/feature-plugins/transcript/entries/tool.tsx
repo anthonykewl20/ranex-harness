@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js"
 import { detectGlyphs } from "../../../theme/glyphs"
 import { EntryFrame } from "../chrome"
+import { Markdown } from "../render/markdown"
 import type { TranscriptEntry } from "../entry"
 
 const glyphs = detectGlyphs()
@@ -55,7 +56,6 @@ export const ToolEntry: TranscriptEntry<"tool"> = {
   order: 400,
   render: (props) => {
     const [open, setOpen] = createSignal(false)
-    const theme = () => props.api.theme.current
     const part = () => props.item.part as unknown as { tool?: string; state?: Record<string, unknown> }
     const state = () => part().state as { status?: string; input?: Record<string, unknown>; output?: unknown }
 
@@ -69,9 +69,7 @@ export const ToolEntry: TranscriptEntry<"tool"> = {
           outcome={toolOutcome(state())}
         >
           {open() ? (
-            <text fg={theme().textMuted} wrapMode="word">
-              {typeof state()?.output === "string" ? (state().output as string) : ""}
-            </text>
+            <Markdown content={typeof state()?.output === "string" ? (state().output as string) : ""} muted />
           ) : null}
         </EntryFrame>
       </box>

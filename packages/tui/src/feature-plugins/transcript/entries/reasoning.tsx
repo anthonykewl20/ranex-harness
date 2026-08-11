@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js"
 import { detectGlyphs } from "../../../theme/glyphs"
 import { EntryFrame } from "../chrome"
+import { Markdown } from "../render/markdown"
 import type { TranscriptEntry } from "../entry"
 
 const glyphs = detectGlyphs()
@@ -36,7 +37,6 @@ export const ReasoningEntry: TranscriptEntry<"reasoning"> = {
   order: 300,
   render: (props) => {
     const [open, setOpen] = createSignal(false)
-    const theme = () => props.api.theme.current
     const body = () => {
       const part = props.item.part
       return "text" in part && typeof part.text === "string" ? part.text : ""
@@ -50,11 +50,7 @@ export const ReasoningEntry: TranscriptEntry<"reasoning"> = {
           label="thought"
           detail={reasoningLabel(body())}
         >
-          {open() ? (
-            <text fg={theme().textMuted} wrapMode="word">
-              {body()}
-            </text>
-          ) : null}
+          {open() ? <Markdown content={body()} muted /> : null}
         </EntryFrame>
       </box>
     )
