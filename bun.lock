@@ -399,6 +399,7 @@
         "opentui-spinner": "catalog:",
         "remeda": "catalog:",
         "solid-js": "catalog:",
+        "string-width": "7",
         "strip-ansi": "7.1.2",
       },
       "devDependencies": {
