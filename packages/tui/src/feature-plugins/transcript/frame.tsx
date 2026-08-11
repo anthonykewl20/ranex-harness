@@ -18,12 +18,28 @@ export function EntryFrame(props: {
   label: string
   detail?: string
   outcome?: string
+  /**
+   * Draws a full-width rule above the entry, marking the start of a turn.
+   *
+   * This is how the two sides are told apart, and it is deliberately not how
+   * opencode does it. A per-message left bar colours every line of every
+   * message, which is loud, and it is copied along with the text
+   * (claude-code #75221). A rule is drawn once per exchange, touches no line of
+   * content, and chunks the transcript into turns you can find by eye while
+   * scrolling — which is the thing a colour on the left never gave you.
+   */
+  divider?: boolean
   children?: JSXElement
 }) {
   const theme = () => props.api.theme.current
 
   return (
     <box gap={0} marginTop={1}>
+      <Show when={props.divider}>
+        <text fg={theme().border} wrapMode="none">
+          {"─".repeat(200)}
+        </text>
+      </Show>
       <box flexDirection="row" gap={1}>
         <Show when={props.glyph}>
           <text fg={theme().textMuted}>{props.glyph}</text>

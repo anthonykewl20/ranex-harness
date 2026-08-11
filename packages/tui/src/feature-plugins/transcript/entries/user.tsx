@@ -24,7 +24,7 @@ export const UserEntry: TranscriptEntry<"user"> = {
       .trim()
 
     return (
-      <EntryFrame api={props.api} glyph={glyphs.arrow} label="you">
+      <EntryFrame api={props.api} glyph={glyphs.arrow} label="you" divider>
         {/* An empty message renders an explicit marker rather than a blank gap,
             which would read as a rendering fault rather than as an empty turn. */}
         <text fg={theme().text} wrapMode="word">

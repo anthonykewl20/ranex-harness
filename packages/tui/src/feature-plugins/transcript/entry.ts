@@ -40,6 +40,12 @@ export type TranscriptItem =
       readonly id: string
       readonly message: AssistantMessage
       readonly parts: readonly Part[]
+      /**
+       * Set only when this turn ran under a different model than the turn
+       * before it. Absent is the common case and renders nothing — the model is
+       * not repeated down the screen.
+       */
+      readonly modelChange?: string
     }
   | { readonly kind: "reasoning"; readonly id: string; readonly part: ReasoningPart; readonly message: AssistantMessage }
   | { readonly kind: "tool"; readonly id: string; readonly part: ToolPart; readonly message: AssistantMessage }

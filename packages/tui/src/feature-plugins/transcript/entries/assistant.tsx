@@ -8,29 +8,28 @@ const glyphs = detectGlyphs()
 /**
  * CHAT-04 — the assistant entry.
  *
- * The label line carries agent and model; the body is markdown, rendered with
- * the generated theme's syntax palette. opencode #15141 (headings with no
- * hierarchy) and #38828 (markdown shown as raw text) are what a transcript
- * looks like without this.
+ * **The model is not on every message.** Repeating it every turn is noise — the
+ * same value fifty times down the screen — and it put the *provider id*, the
+ * literal string `opencode`, onto every reply in a product that is not opencode.
+ *
+ * It appears only when it **changes**, which is the case that matters.
+ * `ux-research.md` §3 adopted kilocode's "silent fallback to default model"
+ * complaint: a turn that ran under a different model than the one before it must
+ * be visible. Always-on and on-change carry the same information; only the
+ * second is legible, and only the second makes a change stand out.
  */
 export const AssistantEntry: TranscriptEntry<"assistant"> = {
   id: "ranex.transcript.assistant",
   kind: "assistant",
   order: 200,
   render: (props) => {
-    const message = props.item.message
     const text = props.item.parts
       .map((part) => ("text" in part && typeof part.text === "string" ? part.text : ""))
       .join("")
       .trim()
 
-    // Model identity is shown, never inferred. A turn that silently ran under a
-    // different model than approved must be visible — the "silent fallback"
-    // complaint ux-research.md §3 adopted from kilocode.
-    const detail = [message.modelID, message.providerID].filter(Boolean).join(" · ")
-
     return (
-      <EntryFrame api={props.api} glyph={glyphs.dot} label="ranex" detail={detail}>
+      <EntryFrame api={props.api} glyph={glyphs.dot} label="ranex" detail={props.item.modelChange}>
         <Markdown content={text} />
       </EntryFrame>
     )

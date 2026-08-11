@@ -13,6 +13,10 @@ import type { TranscriptItem } from "./entry"
  */
 export function projectItems(api: TuiPluginApi, sessionID: string): readonly TranscriptItem[] {
   const items: TranscriptItem[] = []
+  // The model of the previous assistant turn, so a change can be spotted. The
+  // provider id is deliberately not part of this: it is an internal identifier
+  // (`opencode`) and naming another product on every reply is not information.
+  let previousModel: string | undefined
 
   for (const message of api.state.session.messages(sessionID)) {
     const parts = api.state.part(message.id)
@@ -37,12 +41,15 @@ export function projectItems(api: TuiPluginApi, sessionID: string): readonly Tra
       }
     }
 
+    const model = assistant.modelID
     items.push({
       kind: "assistant",
       id: message.id,
       message: assistant,
       parts: parts.filter((part: Part) => part.type === "text"),
+      modelChange: previousModel && model && model !== previousModel ? model : undefined,
     })
+    if (model) previousModel = model
   }
 
   // Permissions are deliberately **not** projected here yet.

@@ -22,17 +22,19 @@ export function StatusRow(props: { api: TuiPluginApi }) {
 
   const sessionID = createMemo(() => (route.data.type === "session" ? route.data.sessionID : undefined))
 
+  // Only what no other row already says, and only while it is true.
+  //
+  // The route's own footer already carries the directory, the context figure and
+  // the command hint. Adding session title and branch beneath it produced a
+  // second permanent row saying things the screen said twice — the clutter the
+  // owner reported on first run. What is genuinely missing is the live state, so
+  // that is all this row is, and when the session is idle it is nothing at all.
   const fields = createMemo(() => {
     const id = sessionID()
     if (!id) return []
-    const state = props.api.state
-    const branch = state.vcs?.branch
-    const session = state.session.get(id)
-    return [
-      session?.title ? session.title.slice(0, 40) : undefined,
-      branch,
-      statusLabel(state.session.status(id)),
-    ].filter((field): field is string => Boolean(field))
+    const status = props.api.state.session.status(id)
+    if (!status || status.type === "idle") return []
+    return [statusLabel(status)]
   })
 
   // The row reserves no space when it has nothing to say — claude-code #83402
