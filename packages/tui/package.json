@@ -48,12 +48,12 @@
     "./component/register-spinner": "./src/component/register-spinner.ts"
   },
   "dependencies": {
-    "@ranex/core": "workspace:*",
-    "@ranex/plugin": "workspace:*",
-    "@ranex/sdk": "workspace:*",
     "@opentui/core": "catalog:",
     "@opentui/keymap": "catalog:",
     "@opentui/solid": "catalog:",
+    "@ranex/core": "workspace:*",
+    "@ranex/plugin": "workspace:*",
+    "@ranex/sdk": "workspace:*",
     "clipboardy": "4.0.0",
     "diff": "catalog:",
     "effect": "catalog:",
@@ -61,8 +61,9 @@
     "open": "10.1.2",
     "opentui-spinner": "catalog:",
     "remeda": "catalog:",
-    "strip-ansi": "7.1.2",
-    "solid-js": "catalog:"
+    "solid-js": "catalog:",
+    "string-width": "7",
+    "strip-ansi": "7.1.2"
   },
   "devDependencies": {
     "@tsconfig/bun": "catalog:",

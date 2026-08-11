@@ -1,11 +1,8 @@
 import { createSignal } from "solid-js"
-import { detectGlyphs } from "../../../theme/glyphs"
 import { EntryFrame } from "../frame"
 import { Markdown } from "../render/markdown"
 import type { TranscriptEntry } from "../entry"
 import { readDensity, startsOpen } from "../density"
-
-const glyphs = detectGlyphs()
 
 /**
  * CHAT-05 — the reasoning entry.
@@ -47,7 +44,6 @@ export const ReasoningEntry: TranscriptEntry<"reasoning"> = {
       <box onMouseDown={() => setOpen((x) => !x)}>
         <EntryFrame
           api={props.api}
-          glyph={open() ? glyphs.down : glyphs.right}
           label="thought"
           quiet
           detail={reasoningLabel(body())}

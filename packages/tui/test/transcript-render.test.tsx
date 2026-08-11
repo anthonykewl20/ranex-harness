@@ -4,6 +4,7 @@ import { ENTRIES } from "../src/feature-plugins/transcript/entries"
 import { reasoningLabel } from "../src/feature-plugins/transcript/entries/reasoning"
 import { toolOutcome, toolSubject, truncateMiddle } from "../src/feature-plugins/transcript/entries/tool"
 import { resolveEntry, type TranscriptItem } from "../src/feature-plugins/transcript/entry"
+import { LABEL_COLUMN_MAX, labelColumnWidth } from "../src/feature-plugins/transcript/columns"
 
 /**
  * CHAT-03..06 — the visible entries.
@@ -115,5 +116,30 @@ describe("CHAT-04: a turn that only ran tools prints no empty header", () => {
         .some((p) => typeof p.text === "string" && p.text.trim().length > 0)
       expect(`${name}:${spoke}`).toBe(`${name}:${expected}`)
     }
+  })
+})
+
+describe("cliui: the label column is measured, not guessed", () => {
+  // The vendored reference sizes a column to its widest cell (`#storeColumnSize`
+  // in cliui-table.ts). Hand-rolled rows let each verb set its own width, so
+  // every subject began at a different x — the raggedness the owner reported.
+  test("the column takes the widest label", () => {
+    expect(labelColumnWidth(["read", "thought", "bash"])).toBe(7)
+  })
+
+  test("it is bounded, so one long label cannot push every path sideways", () => {
+    // `approval required` appears rarely; sizing the column to it would indent
+    // every file path on screen to accommodate a row that is usually absent.
+    expect(labelColumnWidth(["read", "approval required"])).toBe(LABEL_COLUMN_MAX)
+  })
+
+  test("width is measured in display columns, not characters", () => {
+    // CJK occupies two columns per character. `.length` would report 2 and
+    // misalign every row containing one — the reference records this exactly.
+    expect(labelColumnWidth(["読む"])).toBe(4)
+  })
+
+  test("an empty transcript needs no column", () => {
+    expect(labelColumnWidth([])).toBe(0)
   })
 })

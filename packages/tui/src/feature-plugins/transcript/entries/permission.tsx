@@ -1,8 +1,5 @@
-import { detectGlyphs } from "../../../theme/glyphs"
 import { EntryFrame } from "../frame"
 import type { TranscriptEntry } from "../entry"
-
-const glyphs = detectGlyphs()
 
 /**
  * CHAT-09 — the permission entry.
@@ -31,8 +28,7 @@ export const PermissionEntry: TranscriptEntry<"permission"> = {
     return (
       <EntryFrame
         api={props.api}
-        glyph={glyphs.warn}
-        label="approval required"
+        label="approval required" tone={props.api.theme.current.warning}
         detail={props.item.request.title}
         outcome="waiting"
       >
@@ -60,7 +56,7 @@ export const ErrorEntry: TranscriptEntry<"error"> = {
   kind: "error",
   order: 600,
   render: (props) => (
-    <EntryFrame api={props.api} glyph={glyphs.no} label="error" outcome="stopped">
+    <EntryFrame api={props.api} label="error" tone={props.api.theme.current.error} outcome="stopped">
       <text fg={props.api.theme.current.error} wrapMode="word">
         {props.item.why}
       </text>

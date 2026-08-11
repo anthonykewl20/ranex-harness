@@ -1,10 +1,7 @@
 import { Show } from "solid-js"
-import { detectGlyphs } from "../../../theme/glyphs"
 import { EntryFrame } from "../frame"
 import { Markdown } from "../render/markdown"
 import type { TranscriptEntry } from "../entry"
-
-const glyphs = detectGlyphs()
 
 /**
  * CHAT-04 — the assistant entry.
@@ -42,7 +39,7 @@ export const AssistantEntry: TranscriptEntry<"assistant"> = {
     }
 
     return (
-      <EntryFrame api={props.api} glyph={glyphs.dot} label="ranex">
+      <EntryFrame api={props.api} label="ranex" tone={props.api.theme.current.primary}>
         <Markdown content={text} />
         <Show when={elapsed()}>
           <box flexDirection="row" gap={1} marginTop={1} flexShrink={0}>

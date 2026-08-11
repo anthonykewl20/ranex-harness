@@ -1,16 +1,14 @@
 import type { TuiPluginApi } from "@ranex/plugin/tui"
 import { createMemo, For } from "solid-js"
-import { detectGlyphs } from "../../theme/glyphs"
 import { EntryFrame } from "./frame"
 import { ENTRIES, } from "./entries"
 import { resolveEntry, type TranscriptItem } from "./entry"
 import { createProjection } from "./items"
 import { cycleDensity, readDensity, shows } from "./density"
+import { labelColumnWidth, labelOf } from "./columns"
 import { useBindings } from "../../keymap"
 import { useClipboard } from "../../context/clipboard"
 import { copyText, lastCopyable } from "./copy"
-
-const glyphs = detectGlyphs()
 
 /**
  * An item no entry claimed.
@@ -21,7 +19,7 @@ const glyphs = detectGlyphs()
  */
 function Unrendered(props: { api: TuiPluginApi; item: TranscriptItem }) {
   return (
-    <EntryFrame api={props.api} glyph={glyphs.warn} label="unrendered" detail={props.item.kind}>
+    <EntryFrame api={props.api} label="unrendered" detail={props.item.kind}>
       <text fg={props.api.theme.current.textMuted}>{props.item.id}</text>
     </EntryFrame>
   )
@@ -97,6 +95,10 @@ export function Transcript(props: { api: TuiPluginApi; session_id: string }) {
   }))
 
   const items = createMemo(() => project(props.api, props.session_id).filter((item) => shows(density(), item.kind)))
+  // One measured column for the whole transcript, so every subject starts at the
+  // same x no matter which verb precedes it. cliui sizes a column to its widest
+  // cell; this is that, over the labels actually on screen.
+  const labelWidth = createMemo(() => labelColumnWidth(items().map(labelOf)))
 
   return (
     <box flexDirection="column">
@@ -107,7 +109,7 @@ export function Transcript(props: { api: TuiPluginApi; session_id: string }) {
           // The registry guarantees kind matches, so the payload the entry
           // receives is the one its renderer declared. `assertEntries` is what
           // makes that true at construction rather than by convention.
-          return entry.render({ api: props.api, item } as never)
+          return entry.render({ api: props.api, item, labelWidth: labelWidth() } as never)
         }}
       </For>
     </box>

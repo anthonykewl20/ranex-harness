@@ -1,5 +1,6 @@
 import type { TuiPluginApi } from "@ranex/plugin/tui"
 import { Show, type JSXElement } from "solid-js"
+import type { RGBA } from "@opentui/core"
 
 /**
  * The shared chrome, so entries look like one surface rather than six.
@@ -14,7 +15,6 @@ import { Show, type JSXElement } from "solid-js"
  */
 export function EntryFrame(props: {
   api: TuiPluginApi
-  glyph?: string
   label: string
   detail?: string
   outcome?: string
@@ -43,6 +43,23 @@ export function EntryFrame(props: {
    * decoration, it is the hierarchy doing its job.
    */
   quiet?: boolean
+  /** Colour of the label text, by category. Brackets stay dim regardless. */
+  tone?: RGBA
+  /**
+   * Width of the label column, so every subject starts at the same x.
+   *
+   * This is `cliui-table.ts`'s column algorithm, vendored at
+   * `specs/tui-redesign/references/` and cited in ADR-022 — and then not used.
+   * It measures the widest cell in a column and sizes the column to it. Hand
+   * rolling the rows instead meant `thought`, `read` and `bash` each set their
+   * own width, so every subject began at a different x and the whole list read
+   * as ragged. One measured column is the difference between a list and a table.
+   *
+   * Measured with `string-width`, not `.length`, for the reason the reference
+   * records: CJK and emoji occupy more columns than they have characters, and
+   * `.length` misaligns every row that contains one.
+   */
+  labelWidth?: number
   children?: JSXElement
 }) {
   const theme = () => props.api.theme.current
@@ -61,18 +78,30 @@ export function EntryFrame(props: {
       paddingBottom={props.tinted ? 1 : 0}
     >
       <box flexDirection="row" gap={1}>
-        <Show when={props.glyph}>
-          <text fg={theme().textMuted}>{props.glyph}</text>
-        </Show>
-        {props.quiet ? (
-          <text fg={theme().textMuted} wrapMode="none">
-            {props.label}
+        {/*
+          `[ read    ]` — cliui's logger vocabulary, which is what the owner
+          pointed at twice. The brackets are constant and dim, the label is
+          coloured by category, and the cell is padded to one measured width so
+          every subject after it starts at the same x. Hand-rolled rows let each
+          verb set its own width, which is what made the list read as ragged.
+
+          The category is carried by the WORD, and colour only reinforces it —
+          the same rule the board uses, and what keeps this legible under
+          NO_COLOR and to a screen reader.
+        */}
+        <box flexDirection="row" flexShrink={0} gap={0}>
+          <text fg={theme().border} wrapMode="none">
+            [{" "}
           </text>
-        ) : (
-          <text fg={theme().text} wrapMode="none">
-            <b>{props.label}</b>
+          <box flexShrink={0} minWidth={props.labelWidth}>
+            <text fg={props.tone ?? (props.quiet ? theme().textMuted : theme().text)} wrapMode="none">
+              {props.quiet ? props.label : <b>{props.label}</b>}
+            </text>
+          </box>
+          <text fg={theme().border} wrapMode="none">
+            {" "}]
           </text>
-        )}
+        </box>
         <Show when={props.detail}>
           {/* One line, always. A label that wraps stops being a label: it
               reflows the row, pushes the outcome column out of alignment, and

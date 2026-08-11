@@ -57,6 +57,8 @@ export type TranscriptItemKind = TranscriptItem["kind"]
 export type TranscriptEntryProps<K extends TranscriptItemKind> = {
   readonly api: TuiPluginApi
   readonly item: Extract<TranscriptItem, { kind: K }>
+  /** Width of the shared label column, measured across the visible transcript. */
+  readonly labelWidth?: number
 }
 
 export type TranscriptEntry<K extends TranscriptItemKind = TranscriptItemKind> = {

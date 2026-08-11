@@ -1,8 +1,5 @@
-import { detectGlyphs } from "../../../theme/glyphs"
 import { EntryFrame } from "../frame"
 import type { TranscriptEntry } from "../entry"
-
-const glyphs = detectGlyphs()
 
 /**
  * CHAT-03 — the user entry.
@@ -24,7 +21,7 @@ export const UserEntry: TranscriptEntry<"user"> = {
       .trim()
 
     return (
-      <EntryFrame api={props.api} glyph={glyphs.arrow} label="you" tinted>
+      <EntryFrame api={props.api} label="you" tone={props.api.theme.current.accent} tinted>
         {/* An empty message renders an explicit marker rather than a blank gap,
             which would read as a rendering fault rather than as an empty turn. */}
         <text fg={theme().text} wrapMode="word">

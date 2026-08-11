@@ -1,12 +1,9 @@
 import { createSignal } from "solid-js"
-import { detectGlyphs } from "../../../theme/glyphs"
 import { EntryFrame } from "../frame"
 import { Diff, toolDiff } from "../render/diff"
 import { Code, Output } from "../render/output"
 import type { TranscriptEntry } from "../entry"
 import { readDensity, startsOpen } from "../density"
-
-const glyphs = detectGlyphs()
 
 /**
  * CHAT-06 — the tool entry, and the largest complaint class in the field.
@@ -101,7 +98,6 @@ export const ToolEntry: TranscriptEntry<"tool"> = {
       <box onMouseDown={() => setOpen((x) => !x)}>
         <EntryFrame
           api={props.api}
-          glyph={open() ? glyphs.down : glyphs.right}
           label={part().tool ?? "tool"}
           quiet
           detail={toolSubject(state()?.input)}
