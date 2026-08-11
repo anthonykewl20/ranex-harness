@@ -18,7 +18,12 @@ import { TestTuiContexts } from "./fixture/tui-environment"
 import { EscalationPane } from "../src/feature-plugins/board/panes/escalation"
 import { WorkflowPane } from "../src/feature-plugins/board/panes/workflow"
 import { GatesPane } from "../src/feature-plugins/board/panes/gates"
-import type { BoardData } from "../src/feature-plugins/board/pane"
+import { EvidencePane } from "../src/feature-plugins/board/panes/evidence"
+import { SpecificationPane } from "../src/feature-plugins/board/panes/specification"
+import { RunPane } from "../src/feature-plugins/board/panes/run"
+import { DiffPane } from "../src/feature-plugins/board/panes/diff"
+import { JournalPane } from "../src/feature-plugins/board/panes/journal"
+import type { BoardData, BoardPane } from "../src/feature-plugins/board/pane"
 import type { BuiltinTuiPlugin } from "../src/feature-plugins/builtins"
 import SidebarVerdict from "../src/feature-plugins/sidebar/verdict"
 import SidebarGates from "../src/feature-plugins/sidebar/gates"
@@ -178,5 +183,30 @@ describe("BOARD-05: gates pane render flow (control — proves the harness)", ()
 
     const read = await frame(() => GatesPane.render({ api: createTuiPluginApi(), data: READ }))
     expect(read).toContain("sha256:abc123")
+  })
+})
+
+// The merged-but-unclosed panes (BOARD-06/07/08/09/12), held to the same
+// render-flow bar: each mounts through its public Pane.render and must paint the
+// honest "unavailable" + reason for an unread board, and the subject digest for
+// a read one. They share the BoardData contract, so the assertion is uniform.
+const MERGED_PANES: ReadonlyArray<[id: string, pane: BoardPane]> = [
+  ["BOARD-06", EvidencePane],
+  ["BOARD-07", SpecificationPane],
+  ["BOARD-08", RunPane],
+  ["BOARD-09", DiffPane],
+  ["BOARD-12", JournalPane],
+]
+
+describe.each(MERGED_PANES)("%s: merged pane render flow", (id, pane) => {
+  test("unread paints unavailable and the no-channel reason", async () => {
+    const output = await frame(() => pane.render({ api: createTuiPluginApi(), data: UNREAD }))
+    expect(output).toContain("unavailable")
+    expect(output).toContain(UNREAD.why)
+  })
+
+  test("read paints the subject digest", async () => {
+    const output = await frame(() => pane.render({ api: createTuiPluginApi(), data: READ }))
+    expect(output).toContain("sha256:abc123")
   })
 })
