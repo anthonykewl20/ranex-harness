@@ -1006,7 +1006,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
 
   event.on("session.deleted", (evt) => {
     if (route.data.type === "session" && route.data.sessionID === evt.properties.info.id) {
-      route.navigate({ type: "plugin", id: ROUTE })
+      route.newSession()
       toast.show({
         variant: "info",
         message: "The current session was deleted",
@@ -1081,10 +1081,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     const render = pluginRuntime.routes.get(route.data.id)
     if (!render)
       return (
-        <PluginRouteMissing
-          id={route.data.id}
-          onHome={() => route.navigate({ type: "plugin", id: ROUTE })}
-        />
+        <PluginRouteMissing id={route.data.id} onHome={() => route.newSession()} />
       )
     return render({ params: route.data.data })
   })

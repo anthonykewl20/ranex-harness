@@ -128,11 +128,13 @@ describe("BOARD-16: governance sidebar panels render the honest unread state", (
   })
 })
 
-describe("BOARD-14: routing — the board is the front door", () => {
-  // Drive the real RouteProvider store. A spy consumer captures the route
-  // context; the test asserts the default, the home→board rewrite, and the
-  // explicit newSession() path that still reaches the retired landing.
-  test("fresh default is the board, bare home navigations redirect, newSession reaches home", async () => {
+describe("CHAT-19: routing — the transcript is the front door", () => {
+  // Supersedes BOARD-14, which asserted the opposite: the board as the default
+  // and a home→board rewrite on every bare navigation. ADR-022 reverses that —
+  // the transcript is the surface used continuously, the board is opened
+  // deliberately — so this asserts the new contract, and asserts the board is
+  // still reachable, which is the half a reversal is most likely to break.
+  test("fresh default is home, home navigations are not rewritten, the board is still reachable", async () => {
     let route: ReturnType<typeof useRoute> | undefined
     const Spy = () => {
       route = useRoute()
@@ -154,18 +156,32 @@ describe("BOARD-14: routing — the board is the front door", () => {
       await new Promise((resolve) => setTimeout(resolve, 30))
       await app.renderOnce()
 
-      const initial = route!.data
-      expect(initial.type).toBe("plugin")
-      if (initial.type === "plugin") expect(initial.id).toBe("ranex.board")
+      // A fresh start opens the transcript's entry state, not the board.
+      expect(route!.data.type).toBe("home")
 
-      // A bare home navigation is an inherited fallback and is redirected.
+      // A bare home navigation stays home. BOARD-14 rewrote this to the board;
+      // that rewrite is what made the board unleavable and is now gone.
+      route!.navigate({ type: "session", sessionID: "ses_test" })
+      await app.renderOnce()
       route!.navigate({ type: "home" })
       await app.renderOnce()
-      const afterHome = route!.data
-      expect(afterHome.type).toBe("plugin")
-      if (afterHome.type === "plugin") expect(afterHome.id).toBe("ranex.board")
+      expect(route!.data.type).toBe("home")
 
-      // The explicit new-session action is the one path that reaches home.
+      // The transcript proper — a session route survives navigation unrewritten.
+      route!.navigate({ type: "session", sessionID: "ses_test" })
+      await app.renderOnce()
+      const session = route!.data
+      expect(session.type).toBe("session")
+      if (session.type === "session") expect(session.sessionID).toBe("ses_test")
+
+      // The board is demoted, not deleted. Reaching it deliberately still works.
+      route!.navigate({ type: "plugin", id: "ranex.board" })
+      await app.renderOnce()
+      const board = route!.data
+      expect(board.type).toBe("plugin")
+      if (board.type === "plugin") expect(board.id).toBe("ranex.board")
+
+      // And leaving it lands on the transcript, never back on the board.
       route!.newSession()
       await app.renderOnce()
       expect(route!.data.type).toBe("home")

@@ -2,7 +2,6 @@ import { createStore, reconcile } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import type { PromptInfo } from "../prompt/history"
 import { useTuiStartup } from "./runtime"
-import { ROUTE } from "../feature-plugins/board"
 
 export type HomeRoute = {
   type: "home"
@@ -28,7 +27,7 @@ export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
   init: (props: { initialRoute?: Route }) => {
     const startup = useTuiStartup()
     const [store, setStore] = createStore<Route>(
-      props.initialRoute ?? initialRoute(startup.initialRoute) ?? boardRoute(),
+      props.initialRoute ?? initialRoute(startup.initialRoute) ?? { type: "home" },
     )
 
     return {
@@ -36,9 +35,7 @@ export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
         return store
       },
       navigate(route: Route) {
-        // Bare home navigations are inherited fallback paths. Only the explicit
-        // new-session action may open the retired landing route.
-        setStore(reconcile(route.type === "home" ? boardRoute() : route))
+        setStore(reconcile(route))
       },
       newSession() {
         setStore(reconcile({ type: "home" }))
@@ -46,10 +43,6 @@ export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
     }
   },
 })
-
-function boardRoute(): PluginRoute {
-  return { type: "plugin", id: ROUTE }
-}
 
 function initialRoute(value: unknown): Route | undefined {
   if (!value || typeof value !== "object" || !("type" in value)) return
