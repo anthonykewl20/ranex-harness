@@ -1,8 +1,10 @@
 import { createSignal } from "solid-js"
 import { detectGlyphs } from "../../../theme/glyphs"
-import { EntryFrame } from "../chrome"
+import { EntryFrame } from "../frame"
 import { Markdown } from "../render/markdown"
+import { Diff, toolDiff } from "../render/diff"
 import type { TranscriptEntry } from "../entry"
+import { readDensity, startsOpen } from "../density"
 
 const glyphs = detectGlyphs()
 
@@ -50,14 +52,42 @@ export function toolOutcome(state: { status?: string; error?: unknown } | undefi
   return status ?? "unknown"
 }
 
+/** The path a change touched, for the diff's syntax highlighting. */
+function stringInput(input: Record<string, unknown> | undefined): string | undefined {
+  const value = input?.filePath ?? input?.path
+  return typeof value === "string" ? value : undefined
+}
+
+/**
+ * `+N −M` from a unified diff, so the collapsed line says how big the change is.
+ * A change whose size is only visible after expanding is #57060 again.
+ */
+export function diffStat(diff: string | undefined): string | undefined {
+  if (!diff) return undefined
+  let added = 0
+  let removed = 0
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++")) added++
+    else if (line.startsWith("-") && !line.startsWith("---")) removed++
+  }
+  return `+${added} \u2212${removed}`
+}
+
 export const ToolEntry: TranscriptEntry<"tool"> = {
   id: "ranex.transcript.tool",
   kind: "tool",
   order: 400,
   render: (props) => {
-    const [open, setOpen] = createSignal(false)
+    const [open, setOpen] = createSignal(startsOpen(readDensity(props.api)))
     const part = () => props.item.part as unknown as { tool?: string; state?: Record<string, unknown> }
-    const state = () => part().state as { status?: string; input?: Record<string, unknown>; output?: unknown }
+    const state = () =>
+      part().state as {
+        status?: string
+        input?: Record<string, unknown>
+        output?: unknown
+        metadata?: Record<string, unknown>
+      }
+    const diff = () => toolDiff(state())
 
     return (
       <box onMouseDown={() => setOpen((x) => !x)}>
@@ -66,10 +96,16 @@ export const ToolEntry: TranscriptEntry<"tool"> = {
           glyph={open() ? glyphs.down : glyphs.right}
           label={part().tool ?? "tool"}
           detail={toolSubject(state()?.input)}
-          outcome={toolOutcome(state())}
+          outcome={diffStat(diff()) ?? toolOutcome(state())}
         >
           {open() ? (
-            <Markdown content={typeof state()?.output === "string" ? (state().output as string) : ""} muted />
+            diff() ? (
+              // Every tool that changed a file routes here, so Write and Edit
+              // cannot render the same change differently (claude-code #73951).
+              <Diff content={diff()!} path={stringInput(state()?.input)} />
+            ) : (
+              <Markdown content={typeof state()?.output === "string" ? (state().output as string) : ""} muted />
+            )
           ) : null}
         </EntryFrame>
       </box>

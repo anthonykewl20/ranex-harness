@@ -1,57 +1,14 @@
 import type { TuiPluginApi } from "@ranex/plugin/tui"
-import { createMemo, For, Show, type JSXElement } from "solid-js"
+import { createMemo, For } from "solid-js"
 import { detectGlyphs } from "../../theme/glyphs"
+import { EntryFrame } from "./frame"
 import { ENTRIES, } from "./entries"
 import { resolveEntry, type TranscriptItem } from "./entry"
 import { projectItems } from "./items"
+import { cycleDensity, readDensity, shows } from "./density"
+import { useBindings } from "../../keymap"
 
 const glyphs = detectGlyphs()
-
-/**
- * The shared chrome, so entries look like one surface rather than six.
- *
- * The label line lives here and nowhere else. An entry that wants a different
- * one is telling you the label is wrong; change it here for all of them.
- *
- * **Content starts at column 0.** There is no decorative left rule and no
- * persistent indent on a body, because a gutter is copied along with the text —
- * claude-code #75221 is an open request for an option to strip one, and copy is
- * the operation operators perform most. Identity goes above, not beside.
- */
-export function EntryFrame(props: {
-  api: TuiPluginApi
-  glyph?: string
-  label: string
-  detail?: string
-  outcome?: string
-  children?: JSXElement
-}) {
-  const theme = () => props.api.theme.current
-
-  return (
-    <box gap={0} marginTop={1}>
-      <box flexDirection="row" gap={1}>
-        <Show when={props.glyph}>
-          <text fg={theme().textMuted}>{props.glyph}</text>
-        </Show>
-        <text fg={theme().text}>
-          <b>{props.label}</b>
-        </text>
-        <Show when={props.detail}>
-          <text fg={theme().textMuted} flexGrow={1}>
-            {props.detail}
-          </text>
-        </Show>
-        <Show when={props.outcome}>
-          <text fg={theme().textMuted} flexShrink={0}>
-            {props.outcome}
-          </text>
-        </Show>
-      </box>
-      {props.children}
-    </box>
-  )
-}
 
 /**
  * An item no entry claimed.
@@ -76,7 +33,29 @@ function Unrendered(props: { api: TuiPluginApi; item: TranscriptItem }) {
  * autoscroll release; until then the route's behaviour is unchanged.
  */
 export function Transcript(props: { api: TuiPluginApi; session_id: string }) {
-  const items = createMemo(() => projectItems(props.api, props.session_id))
+  const density = createMemo(() => readDensity(props.api))
+
+  // The title states the current mode, so the palette says what pressing it will
+  // change rather than only that something is changeable. A displayed command
+  // that does not dispatch is opencode #41732, and the same applies to one whose
+  // label does not describe what it does.
+  useBindings(() => ({
+    commands: [
+      {
+        name: "transcript.density",
+        title: `Transcript density: ${density()}`,
+        category: "Ranex",
+        namespace: "palette",
+        run() {
+          props.api.ui.toast({ variant: "info", message: `Transcript density: ${cycleDensity(props.api)}` })
+          props.api.ui.dialog.clear()
+        },
+      },
+    ],
+    bindings: props.api.tuiConfig.keybinds.get("transcript.density"),
+  }))
+
+  const items = createMemo(() => projectItems(props.api, props.session_id).filter((item) => shows(density(), item.kind)))
 
   return (
     <box flexDirection="column">

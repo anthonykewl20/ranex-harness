@@ -1,8 +1,9 @@
 import { createSignal } from "solid-js"
 import { detectGlyphs } from "../../../theme/glyphs"
-import { EntryFrame } from "../chrome"
+import { EntryFrame } from "../frame"
 import { Markdown } from "../render/markdown"
 import type { TranscriptEntry } from "../entry"
+import { readDensity, startsOpen } from "../density"
 
 const glyphs = detectGlyphs()
 
@@ -36,7 +37,7 @@ export const ReasoningEntry: TranscriptEntry<"reasoning"> = {
   kind: "reasoning",
   order: 300,
   render: (props) => {
-    const [open, setOpen] = createSignal(false)
+    const [open, setOpen] = createSignal(startsOpen(readDensity(props.api)))
     const body = () => {
       const part = props.item.part
       return "text" in part && typeof part.text === "string" ? part.text : ""

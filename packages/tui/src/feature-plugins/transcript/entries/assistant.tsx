@@ -1,5 +1,5 @@
 import { detectGlyphs } from "../../../theme/glyphs"
-import { EntryFrame } from "../chrome"
+import { EntryFrame } from "../frame"
 import { Markdown } from "../render/markdown"
 import type { TranscriptEntry } from "../entry"
 

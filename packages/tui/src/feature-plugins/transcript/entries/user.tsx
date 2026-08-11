@@ -1,5 +1,5 @@
 import { detectGlyphs } from "../../../theme/glyphs"
-import { EntryFrame } from "../chrome"
+import { EntryFrame } from "../frame"
 import type { TranscriptEntry } from "../entry"
 
 const glyphs = detectGlyphs()
