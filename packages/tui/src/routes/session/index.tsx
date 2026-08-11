@@ -1165,10 +1165,6 @@ export function Session() {
         <box flexDirection="row" flexGrow={1} minHeight={0}>
           <box flexGrow={1} minHeight={0} paddingBottom={1} paddingLeft={2} paddingRight={2} gap={1}>
             <Show when={session()}>
-              {/* CHAT-01: the transcript body seam. `replace` with the upstream
-                  scrollbox as children, so an unfilled slot renders exactly what
-                  it renders today rather than a blank pane. */}
-              <pluginRuntime.Slot name="session_transcript" session_id={route.sessionID} mode="replace">
               <scrollbox
                 ref={(r) => (scroll = r)}
                 viewportOptions={{
@@ -1188,6 +1184,12 @@ export function Session() {
                 scrollAcceleration={scrollAcceleration()}
               >
                 <box height={1} />
+                {/* CHAT-01: the transcript body seam. It sits INSIDE the scrollbox:
+                    scroll position, sticky-to-bottom and acceleration are live behaviour
+                    the route owns, and the `scroll` ref above drives its navigation
+                    commands. Only the message list is rendering, so only that is
+                    replaced. `replace` keeps upstream's list as the fallback. */}
+                <pluginRuntime.Slot name="session_transcript" session_id={route.sessionID} mode="replace">
                 <For each={messages()}>
                   {(message, index) => (
                     <Switch>
@@ -1282,8 +1284,8 @@ export function Session() {
                     </Switch>
                   )}
                 </For>
+                </pluginRuntime.Slot>
               </scrollbox>
-              </pluginRuntime.Slot>
               <box flexShrink={0}>
                 {/* CHAT-01: the blocker seam. Today this shows only the first
                     permission and hides questions entirely while one exists,

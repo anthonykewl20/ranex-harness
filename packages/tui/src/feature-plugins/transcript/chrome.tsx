@@ -30,9 +30,15 @@ function Unrendered(props: { api: TuiPluginApi; item: TranscriptItem }) {
 /**
  * The transcript body, rendered into the `session_transcript` slot.
  *
- * It does not scroll itself: the slot sits inside the route's scrollbox, which
- * already owns scroll position. CHAT-14 takes ownership of the wheel and of
- * autoscroll release; until then the route's behaviour is unchanged.
+ * It does not scroll itself, and must not. The slot sits inside the route's
+ * `<scrollbox>`, which owns scroll position, sticky-to-bottom, acceleration and
+ * the ref every scroll command drives. CHAT-14's requirements — the wheel
+ * scrolls the transcript, and autoscroll releases when the reader scrolls up —
+ * are that scrollbox's `stickyScroll` behaviour, already correct upstream.
+ *
+ * An earlier revision wrapped the scrollbox instead of sitting inside it, and
+ * `replace` therefore deleted it. Nothing failed; long conversations simply
+ * could not be scrolled. `transcript-slots.test.tsx` now pins the placement.
  */
 export function Transcript(props: { api: TuiPluginApi; session_id: string }) {
   const density = createMemo(() => readDensity(props.api))

@@ -80,6 +80,22 @@ describe("CHAT-01: the transcript slots", () => {
     for (const name of new Set(rendered)) expect(map).toContain(`${name}: {`)
   })
 
+  // Regression. The first revision wrapped the <scrollbox> itself, so filling
+  // the slot with `replace` removed it — and with it scroll position, sticky
+  // scroll, acceleration and the `scroll` ref driving every navigation command.
+  // Nothing failed: the transcript rendered, and long conversations simply could
+  // not be scrolled. The seam must sit INSIDE the scrollbox, because scrolling
+  // is live behaviour the route owns and only the message list is rendering.
+  test("the transcript slot is inside the scrollbox, not wrapped around it", () => {
+    const source = readFileSync(SESSION, "utf8")
+    const scrollbox = source.indexOf("<scrollbox")
+    const slot = source.indexOf('name="session_transcript"')
+    const closeScrollbox = source.indexOf("</scrollbox>")
+    expect(scrollbox).toBeGreaterThanOrEqual(0)
+    expect(slot).toBeGreaterThan(scrollbox)
+    expect(slot).toBeLessThan(closeScrollbox)
+  })
+
   test("both new slots are declared in the host slot map", () => {
     const map = readFileSync(SLOT_MAP, "utf8")
     for (const name of ["session_transcript", "session_blocker"]) {
