@@ -103,6 +103,7 @@ export const ToolEntry: TranscriptEntry<"tool"> = {
           api={props.api}
           glyph={open() ? glyphs.down : glyphs.right}
           label={part().tool ?? "tool"}
+          quiet
           detail={toolSubject(state()?.input)}
           outcome={diffStat(diff()) ?? toolOutcome(state())}
         >

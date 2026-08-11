@@ -33,6 +33,16 @@ export function EntryFrame(props: {
    * `transcript-presentation.test.tsx` holds it there.
    */
   tinted?: boolean
+  /**
+   * Renders the label at reduced weight, for entries that are not the point.
+   *
+   * Tool calls and reasoning are what the model did on the way to an answer;
+   * the answer is the reason the operator is reading. Given identical weight
+   * they compete, and a screen of a dozen bold labels buries the one thing
+   * worth reading — which is what the owner saw. Receding them is not
+   * decoration, it is the hierarchy doing its job.
+   */
+  quiet?: boolean
   children?: JSXElement
 }) {
   const theme = () => props.api.theme.current
@@ -54,9 +64,15 @@ export function EntryFrame(props: {
         <Show when={props.glyph}>
           <text fg={theme().textMuted}>{props.glyph}</text>
         </Show>
-        <text fg={theme().text}>
-          <b>{props.label}</b>
-        </text>
+        {props.quiet ? (
+          <text fg={theme().textMuted} wrapMode="none">
+            {props.label}
+          </text>
+        ) : (
+          <text fg={theme().text} wrapMode="none">
+            <b>{props.label}</b>
+          </text>
+        )}
         <Show when={props.detail}>
           {/* One line, always. A label that wraps stops being a label: it
               reflows the row, pushes the outcome column out of alignment, and

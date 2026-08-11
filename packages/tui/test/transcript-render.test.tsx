@@ -14,15 +14,20 @@ import { resolveEntry, type TranscriptItem } from "../src/feature-plugins/transc
 describe("CHAT-06: a collapsed tool line carries the outcome", () => {
   // claude-code #57060 is a collapse toggle that leaves the reader no better
   // off. The outcome column is what makes the collapsed form sufficient.
-  test("every status spells a word, never a colour or a blank", () => {
-    expect(toolOutcome({ status: "completed" })).toBe("done")
+  // Success is silent, and that is the rule rather than an omission. `done` on
+  // every line is one word repeated down the whole screen: it distinguishes
+  // nothing because everything says it, and it drowns the line that says
+  // something else. Every state that is NOT plain success still spells itself.
+  test("success says nothing; every other state spells a word", () => {
+    expect(toolOutcome({ status: "completed" })).toBeUndefined()
     expect(toolOutcome({ status: "error" })).toBe("failed")
     expect(toolOutcome({ status: "running" })).toBe("running")
-    expect(toolOutcome(undefined)).toBe("unknown")
+    expect(toolOutcome({ status: "pending" })).toBe("queued")
   })
 
   test("an unknown status is passed through, never mapped to a familiar one", () => {
     expect(toolOutcome({ status: "rejected" })).toBe("rejected")
+    expect(toolOutcome(undefined)).toBeUndefined()
   })
 
   test("the subject truncates in the middle, because a path identifies by its tail", () => {

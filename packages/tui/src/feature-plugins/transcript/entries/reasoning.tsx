@@ -49,6 +49,7 @@ export const ReasoningEntry: TranscriptEntry<"reasoning"> = {
           api={props.api}
           glyph={open() ? glyphs.down : glyphs.right}
           label="thought"
+          quiet
           detail={reasoningLabel(body())}
         >
           {/* Indented under its own header, so an open thought is visibly a
