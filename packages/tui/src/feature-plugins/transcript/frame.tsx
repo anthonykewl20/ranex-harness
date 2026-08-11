@@ -19,25 +19,18 @@ export function EntryFrame(props: {
   detail?: string
   outcome?: string
   /**
-   * Fills the entry's **label row** with the panel colour, marking it as the
-   * human's turn.
+   * Renders the entry as a panel with an accent bar down its left edge.
    *
-   * This is how the two sides are told apart, and it is deliberately not how
-   * opencode does it. A per-message left bar colours one column, is loud, and is
-   * copied along with the text (claude-code #75221). A label alone was not
-   * enough — `→ you` and `· ranex` are the same shape two lines apart, which is
-   * what the owner reported after running it.
+   * This is the human's turn, and the shape is the one the owner asked for after
+   * seeing the alternatives: a filled block with a coloured rule and inset text,
+   * so the two sides alternate unmistakably while scrolling.
    *
-   * Filling the label row rather than the whole entry is deliberate. A
-   * full-bleed block put body text hard against the tint's left edge while every
-   * other entry sat at column 0, so the two no longer lined up — and padding it
-   * back would have put spaces in front of every copied line
-   * (claude-code #75221). A filled bar spans the width, is unmissable while
-   * scrolling, and leaves the body on the same left edge as everything else.
-   *
-   * It costs the copy buffer nothing — a background colour is not part of the
-   * text — and survives NO_COLOR losing nothing, because the label still spells
-   * whose turn it is.
+   * It does indent the body, which is what claude-code #75221 is about — a
+   * gutter is copied along with the text. That objection is answered by scope
+   * rather than dismissed: this applies to the message the operator wrote, which
+   * they already have. The **assistant's** body, the text people actually copy
+   * into bug reports and commits, stays flush at column 0, and
+   * `transcript-presentation.test.tsx` holds it there.
    */
   tinted?: boolean
   children?: JSXElement
@@ -45,12 +38,19 @@ export function EntryFrame(props: {
   const theme = () => props.api.theme.current
 
   return (
-    <box gap={0} marginTop={1} flexShrink={0}>
-      <box
-        flexDirection="row"
-        gap={1}
-        backgroundColor={props.tinted ? theme().backgroundPanel : undefined}
-      >
+    <box
+      gap={0}
+      marginTop={1}
+      flexShrink={0}
+      border={props.tinted ? ["left"] : undefined}
+      borderColor={props.tinted ? theme().accent : undefined}
+      backgroundColor={props.tinted ? theme().backgroundPanel : undefined}
+      paddingLeft={props.tinted ? 2 : 0}
+      paddingRight={props.tinted ? 1 : 0}
+      paddingTop={props.tinted ? 1 : 0}
+      paddingBottom={props.tinted ? 1 : 0}
+    >
+      <box flexDirection="row" gap={1}>
         <Show when={props.glyph}>
           <text fg={theme().textMuted}>{props.glyph}</text>
         </Show>

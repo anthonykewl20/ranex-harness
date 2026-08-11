@@ -14,9 +14,23 @@ import { PermissionEntry, ErrorEntry } from "../src/feature-plugins/transcript/e
 import { UserEntry } from "../src/feature-plugins/transcript/entries/user"
 import { ToolEntry } from "../src/feature-plugins/transcript/entries/tool"
 import type { TranscriptItem } from "../src/feature-plugins/transcript/entry"
+import { EntryFrame } from "../src/feature-plugins/transcript/frame"
 
 async function frame(node: () => JSX.Element) {
-  const app = await testRender(() => <TestTuiContexts>{node()}</TestTuiContexts>, { width: 100, height: 24 })
+  // Evaluated as a component so it renders INSIDE the providers. Written as
+  // `{node()}` the entry is built while constructing TestTuiContexts' children,
+  // before its providers mount, and anything reaching a context throws. The
+  // other entries read `api.theme.current` and never noticed; the markdown
+  // renderer reads the theme context and did.
+  const Inner = () => node()
+  const app = await testRender(
+    () => (
+      <TestTuiContexts>
+        <Inner />
+      </TestTuiContexts>
+    ),
+    { width: 100, height: 24 },
+  )
   try {
     await app.renderOnce()
     return app.captureCharFrame()
@@ -74,14 +88,32 @@ describe("CHAT-18: no state is carried by colour or a glyph alone", () => {
   })
 })
 
-describe("CHAT-03: the body copies without repair", () => {
-  test("message text starts at the line's first column, with no gutter", async () => {
+describe("CHAT-03: the assistant's body copies without repair", () => {
+  // Scoped deliberately. claude-code #75221 asks for an option to strip the left
+  // gutter because it is copied along with the text — and the text people copy
+  // into bug reports and commits is the ASSISTANT's. The human's own turn is a
+  // panel with an accent bar and an indent, which is the shape the owner chose
+  // after seeing it flat; they already have the text they wrote.
+  // Asserted on the frame rather than through an entry, because the property
+  // belongs to the frame: a plain entry must not indent its children. Going
+  // through the assistant would drag the markdown renderer in, which needs the
+  // theme context the test fixture does not provide — and would test the
+  // renderer rather than the layout rule.
+  test("a plain entry does not indent its body", async () => {
+    const painted = await frame(() => (
+      <EntryFrame api={api()} label="ranex">
+        <text>the front door is one line</text>
+      </EntryFrame>
+    ))
+    const line = painted.split("\n").find((l) => l.includes("the front door is one line"))
+    expect(line).toBeDefined()
+    expect(line!.startsWith("the front door is one line")).toBe(true)
+  })
+
+  test("the human's turn is inset, which is the deliberate exception", async () => {
     const painted = await frame(() => UserEntry.render({ api: api(), item: USER as never }))
     const line = painted.split("\n").find((l) => l.includes("redesign the chat interface"))
-    expect(line).toBeDefined()
-    // claude-code #75221 asks for an option to strip the left gutter because it
-    // is copied along with the text. There is no gutter to strip.
-    expect(line!.startsWith("redesign the chat interface")).toBe(true)
+    expect(line!.startsWith("redesign the chat interface")).toBe(false)
   })
 
   test("identity is on its own line above the body, not beside it", async () => {
