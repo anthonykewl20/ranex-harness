@@ -169,11 +169,22 @@ async function renderOnceSettled(app: Awaited<ReturnType<typeof testRender>>) {
 }
 
 async function captureSettledFrame(app: Awaited<ReturnType<typeof testRender>>) {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const frame = app.captureCharFrame()
-    if (frame.trim().length > 0) return frame
-    await new Promise((resolve) => setTimeout(resolve, 25))
+  // Wait until the frame stops changing, not merely until it is non-empty. A
+  // partially painted frame (the border box alone) is non-empty while the rows
+  // under test are still missing; under full-suite parallel load that first
+  // non-empty capture arrives before the rows do and the row assertion flakes.
+  // Two consecutive equal frames is the honest settled condition.
+  let previous = ""
+  // The cap is a ceiling, not the norm: a fast machine returns on the first
+  // stable pair (a few tens of ms); an oversubscribed CI runner may need the
+  // full second. Returning early the moment the frame stops changing keeps the
+  // common path fast.
+  for (let attempt = 0; attempt < 40; attempt++) {
     await app.renderOnce()
+    const frame = app.captureCharFrame()
+    if (frame.trim().length > 0 && frame === previous) return frame
+    previous = frame
+    await new Promise((resolve) => setTimeout(resolve, 25))
   }
   return app.captureCharFrame()
 }
