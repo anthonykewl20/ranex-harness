@@ -45,20 +45,18 @@ export function projectItems(api: TuiPluginApi, sessionID: string): readonly Tra
     })
   }
 
-  for (const request of api.state.session.permission(sessionID)) {
-    items.push({
-      kind: "permission",
-      id: request.id,
-      // Every outstanding request, not `permissions()[0]`. Upstream shows one and
-      // hides the rest along with every question; CHAT-09 renders them all.
-      //
-      // `permission` is the field the API actually carries, and it names what is
-      // being asked for. It is shown verbatim: a permission prompt that
-      // paraphrases what it is requesting is how #83879's wrong selections
-      // happen, and the operator must approve the thing, not a summary of it.
-      request: { id: request.id, title: request.permission, body: request.patterns.join(", ") },
-    })
-  }
+  // Permissions are deliberately **not** projected here yet.
+  //
+  // They belong in `session_blocker`, not in the body, and that slot is still
+  // unfilled — so upstream's `PermissionPrompt` renders and works. Projecting
+  // them here as well would show every request twice: once docked in the stream
+  // and once fullscreen over it.
+  //
+  // Filling the slot has to wait on the question flow, because `replace` takes
+  // the whole region and `QuestionPrompt` lives in it. An approval surface that
+  // renders but cannot reply is worse than the fullscreen one it replaces, so
+  // `PermissionEntry` stays built, tested and unwired until CHAT-09 carries the
+  // reply path with it.
 
   return items
 }
