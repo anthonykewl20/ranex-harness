@@ -1,9 +1,11 @@
 import type { TuiPlugin, TuiPluginApi } from "@ranex/plugin/tui"
 import type { BuiltinTuiPlugin } from "../builtins"
-import { For, Show, createMemo } from "solid-js"
+import { For, Show, createMemo, createSignal } from "solid-js"
 import { useBindings } from "../../keymap"
 import { detectGlyphs } from "../../theme/glyphs"
 import { PaneFrame, type BoardData } from "./pane"
+import { BOARD_ACTIONS, boardActionState, dispatchAction, type BoardActionOutcome } from "./actions"
+import { BoardActions } from "./actions-view"
 import { PANES } from "./panes"
 
 export const ROUTE = "ranex.board"
@@ -27,13 +29,27 @@ function Board(props: { api: TuiPluginApi }) {
       ? (props.api.route.current.params as { returnRoute?: { name: string } } | undefined)
       : undefined
 
-  /**
-   * A route you can enter and not leave is a trap, and this one was: the route
-   * registered, the command opened it, and nothing bound a way back. Escape and
-   * `q` both return, and the footer says so on screen — a keybinding nobody can
-   * see is not an exit.
-   */
+  const [outcome, setOutcome] = createSignal<BoardActionOutcome | undefined>(undefined)
+
+  const actionCommands = BOARD_ACTIONS.map((action) => ({
+    name: `board.${action.id}`,
+    title: action.title,
+    category: "Ranex",
+    run() {
+      // The dialog guard lives in dispatch, not here, so a swallowed key is
+      // still an accounted-for outcome rather than a silent return.
+      setOutcome(dispatchAction(action.id, boardActionState(data().state === "read"), props.api.ui.dialog.open))
+    },
+  }))
+
   const commands = [
+    ...actionCommands,
+    /**
+     * A route you can enter and not leave is a trap, and this one was: the route
+     * registered, the command opened it, and nothing bound a way back. Escape and
+     * `q` both return, and the footer says so on screen — a keybinding nobody can
+     * see is not an exit.
+     */
     {
       name: "board.close",
       title: "Close the board",
@@ -51,7 +67,14 @@ function Board(props: { api: TuiPluginApi }) {
 
   useBindings(() => ({
     commands,
-    bindings: [{ key: "escape,q", cmd: "board.close", desc: "Close the board" }],
+    bindings: [
+      { key: "escape,q", cmd: "board.close", desc: "Close the board" },
+      ...BOARD_ACTIONS.map((action) => ({
+        key: action.key,
+        cmd: `board.${action.id}`,
+        desc: action.title,
+      })),
+    ],
   }))
 
   /**
@@ -95,6 +118,8 @@ function Board(props: { api: TuiPluginApi }) {
           </PaneFrame>
         )}
       </For>
+
+      <BoardActions api={props.api} state={boardActionState(data().state === "read")} outcome={outcome()} />
 
       <box flexDirection="row" gap={1}>
         <text fg={theme().primary}>
