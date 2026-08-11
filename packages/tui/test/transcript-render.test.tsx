@@ -59,8 +59,10 @@ describe("CHAT-05: reasoning is labelled by content, for every provider", () => 
   })
 
   test("a long label is truncated at the tail, so the head stays readable", () => {
+    // 56, not 72: a summary needing most of the width is not a summary, and a
+    // label long enough to wrap stops being a label at all.
     const label = reasoningLabel("x".repeat(200))
-    expect(label.length).toBeLessThanOrEqual(72)
+    expect(label.length).toBeLessThanOrEqual(56)
     expect(label.endsWith("…")).toBe(true)
   })
 })

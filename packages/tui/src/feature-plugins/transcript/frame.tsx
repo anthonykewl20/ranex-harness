@@ -59,12 +59,17 @@ export function EntryFrame(props: {
           <b>{props.label}</b>
         </text>
         <Show when={props.detail}>
-          <text fg={theme().textMuted} flexGrow={1}>
+          {/* One line, always. A label that wraps stops being a label: it
+              reflows the row, pushes the outcome column out of alignment, and
+              turns a one-line summary into a paragraph competing with the body
+              it was supposed to summarise. Clipping is the honest failure — the
+              full text is one keypress away in the expanded region. */}
+          <text fg={theme().textMuted} flexGrow={1} flexShrink={1} wrapMode="none">
             {props.detail}
           </text>
         </Show>
         <Show when={props.outcome}>
-          <text fg={theme().textMuted} flexShrink={0}>
+          <text fg={theme().textMuted} flexShrink={0} wrapMode="none">
             {props.outcome}
           </text>
         </Show>

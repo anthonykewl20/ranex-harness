@@ -29,7 +29,7 @@ export function reasoningLabel(text: string): string {
   const bold = trimmed.match(/^\*\*([^*\n]+)\*\*/)
   const first = bold ? bold[1] : (trimmed.split(/(?<=[.!?])\s|\n/)[0] ?? trimmed)
   const label = first.trim().replace(/\s+/g, " ")
-  return label.length > 72 ? `${label.slice(0, 71)}…` : label
+  return label.length > 56 ? `${label.slice(0, 55)}…` : label
 }
 
 export const ReasoningEntry: TranscriptEntry<"reasoning"> = {
