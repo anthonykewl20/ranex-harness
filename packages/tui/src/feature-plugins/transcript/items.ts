@@ -43,6 +43,11 @@ function signature(item: TranscriptItem): string {
   }
 }
 
+/** The durable object an item was projected from. */
+function source(item: TranscriptItem): unknown {
+  return item.kind === "reasoning" || item.kind === "tool" ? item.part : item.kind === "permission" ? item.request : item.kind === "error" ? item.why : item.message
+}
+
 /**
  * Items that keep their identity across renders when nothing about them changed.
  *
@@ -60,7 +65,11 @@ export function createProjection() {
     const stable = fresh.map((item) => {
       seen.add(item.id)
       const previous = cache.get(item.id)
-      if (previous && signature(previous) === signature(item)) return previous
+      // Signature AND source identity. The signature catches content moving;
+      // the reference catches a field it does not fingerprint — completion time,
+      // an error appearing — because the store replaces objects rather than
+      // mutating them, so a changed row always arrives as a new reference.
+      if (previous && signature(previous) === signature(item) && source(previous) === source(item)) return previous
       cache.set(item.id, item)
       return item
     })
