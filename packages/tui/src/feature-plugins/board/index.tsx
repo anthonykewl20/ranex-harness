@@ -4,7 +4,7 @@ import { For, Show, createMemo, createSignal } from "solid-js"
 import { useBindings } from "../../keymap"
 import { detectGlyphs } from "../../theme/glyphs"
 import { PaneFrame, type BoardData } from "./pane"
-import { BOARD_ACTIONS, boardActionState, dispatchAction, type BoardActionOutcome } from "./actions"
+import { BOARD_ACTIONS, boardActionState, dispatchAction, performExport, type BoardActionOutcome } from "./actions"
 import { BoardActions } from "./actions-view"
 import { PANES } from "./panes"
 
@@ -34,9 +34,20 @@ function Board(props: { api: TuiPluginApi }) {
     title: action.title,
     category: "Ranex",
     run() {
+      const current = data()
+      const state = boardActionState(current.state === "read")
       // The dialog guard lives in dispatch, not here, so a swallowed key is
       // still an accounted-for outcome rather than a silent return.
-      setOutcome(dispatchAction(action.id, boardActionState(data().state === "read"), props.api.ui.dialog.open))
+      if (action.id === "export") {
+        const digest = current.state === "read" ? current.record.subject_digest : "unbound"
+        const shortDigest = digest
+          .replace(/^[^:]+:/, "")
+          .replace(/[^a-zA-Z0-9]/g, "")
+          .slice(0, 12)
+        setOutcome(performExport(state, current, `ranex-board-${shortDigest}.txt`, props.api.ui.dialog.open))
+        return
+      }
+      setOutcome(dispatchAction(action.id, state, props.api.ui.dialog.open))
     },
   }))
 
@@ -163,7 +174,10 @@ function Unread(props: { api: TuiPluginApi; why: string }) {
 
       <box>
         <text fg={theme().text}>Until then, judge from the CLI:</text>
-        <text fg={theme().textMuted}> ranex gate evaluate {"<ref>"} --approver {"<you>"}</text>
+        <text fg={theme().textMuted}>
+          {" "}
+          ranex gate evaluate {"<ref>"} --approver {"<you>"}
+        </text>
       </box>
     </box>
   )

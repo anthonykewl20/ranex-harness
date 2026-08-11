@@ -24,6 +24,10 @@
  * and changes neither.
  */
 
+import { renameSync, rmSync, writeFileSync } from "node:fs"
+import type { BoardData } from "./pane"
+import { projectBoard } from "./projection"
+
 /** What the board knows about its subject. Nothing else gates an action. */
 export type BoardActionState = "no-subject" | "subject-read"
 
@@ -32,7 +36,7 @@ export type BoardActionId = "rerun" | "request-review" | "open-diff" | "export" 
 /**
  * Where an action's effect lives.
  *
- * `local` is the board's own business — navigation, and nothing the kernel would
+ * `local` is the board's own business — navigation or projection, and nothing the kernel would
  * ever need to hear about. `kernel-request` leaves this process, or would if a
  * channel existed. Nothing in between: an action that half-happens locally and
  * half-asks the kernel is the shape that produces an optimistic screen.
@@ -75,7 +79,7 @@ export const BOARD_ACTIONS: readonly BoardAction[] = [
     id: "export",
     key: "x",
     title: "Export this board as evidence",
-    effect: "kernel-request",
+    effect: "local",
     legalIn: ["subject-read"],
   },
   {
@@ -102,8 +106,7 @@ export type BoardActionOutcome =
   | { readonly kind: "done"; readonly detail: string }
 
 /** Why a kernel request cannot leave the process today. */
-export const NO_CHANNEL_REASON =
-  "no channel reaches the kernel; the bridge emits and nothing returns (ADR-019)"
+export const NO_CHANNEL_REASON = "no channel reaches the kernel; the bridge emits and nothing returns (ADR-019)"
 
 export function actionById(id: BoardActionId): BoardAction {
   const found = BOARD_ACTIONS.find((action) => action.id === id)
@@ -158,14 +161,49 @@ export function boardActionState(read: boolean): BoardActionState {
  * behind it must never both act on one press. Returned as an outcome rather
  * than a silent drop, so even a swallowed key is accounted for.
  */
-export function dispatchAction(
-  id: BoardActionId,
-  state: BoardActionState,
-  dialogOpen: boolean,
-): BoardActionOutcome {
+export function dispatchAction(id: BoardActionId, state: BoardActionState, dialogOpen: boolean): BoardActionOutcome {
   const action = actionById(id)
   if (dialogOpen) {
     return { kind: "unchanged", detail: `a dialog is open; ${action.id} was not dispatched` }
   }
   return resolveAction(action, state)
+}
+
+/** Export is a local projection after the same legality and dialog guards. */
+export function performExport(
+  state: BoardActionState,
+  data: BoardData,
+  destination: string,
+  dialogOpen: boolean,
+): BoardActionOutcome {
+  if (dialogOpen) return { kind: "unchanged", detail: "a dialog is open; export was not dispatched" }
+  if (state === "no-subject") return { kind: "refused", reason: refusalReason(actionById("export"), state) }
+  if (data.state === "unread") return { kind: "refused", reason: `export refused: ${data.why}` }
+
+  const unavailable = { state: "unavailable" as const, why: "the verdict return channel does not carry this field" }
+  const temporary = `${destination}.${process.pid}.${crypto.randomUUID()}.tmp`
+
+  try {
+    writeFileSync(
+      temporary,
+      projectBoard({
+        subject_digest: data.record.subject_digest,
+        gate_id: unavailable,
+        catalog_digest: unavailable,
+        verdict: data.record.verdict,
+        causes: unavailable,
+        filters: [],
+      }),
+      { flag: "wx" },
+    )
+    renameSync(temporary, destination)
+    return { kind: "done", detail: `exported ${destination}; a projection, not a signed record` }
+  } catch (error) {
+    try {
+      rmSync(temporary, { force: true })
+    } catch {
+      // Cleanup failure must not disguise the refusal that prevented publication.
+    }
+    return { kind: "refused", reason: `export refused: ${error instanceof Error ? error.message : String(error)}` }
+  }
 }
