@@ -51,7 +51,13 @@ export const ReasoningEntry: TranscriptEntry<"reasoning"> = {
           label="thought"
           detail={reasoningLabel(body())}
         >
-          {open() ? <Markdown content={body()} muted /> : null}
+          {/* Indented under its own header, so an open thought is visibly a
+              nested block rather than more conversation at the same level. */}
+          {open() ? (
+            <box paddingLeft={2}>
+              <Markdown content={body()} muted />
+            </box>
+          ) : null}
         </EntryFrame>
       </box>
     )

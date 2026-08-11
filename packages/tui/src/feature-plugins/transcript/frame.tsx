@@ -19,27 +19,38 @@ export function EntryFrame(props: {
   detail?: string
   outcome?: string
   /**
-   * Draws a full-width rule above the entry, marking the start of a turn.
+   * Fills the entry's whole block with the panel colour, marking it as the
+   * human's turn.
    *
    * This is how the two sides are told apart, and it is deliberately not how
-   * opencode does it. A per-message left bar colours every line of every
-   * message, which is loud, and it is copied along with the text
-   * (claude-code #75221). A rule is drawn once per exchange, touches no line of
-   * content, and chunks the transcript into turns you can find by eye while
-   * scrolling — which is the thing a colour on the left never gave you.
+   * opencode does it. A per-message left bar colours one column, is loud, and is
+   * copied along with the text (claude-code #75221). A label alone was not
+   * enough — `→ you` and `· ranex` are the same shape two lines apart, which is
+   * what the owner reported after running it.
+   *
+   * A filled block is unmissable while scrolling, gives the transcript an
+   * alternating rhythm, and costs the copy buffer nothing: a background colour
+   * is not part of the text. It also survives NO_COLOR losing nothing, because
+   * the label still spells whose turn it is.
    */
-  divider?: boolean
+  tinted?: boolean
   children?: JSXElement
 }) {
   const theme = () => props.api.theme.current
 
   return (
-    <box gap={0} marginTop={1}>
-      <Show when={props.divider}>
-        <text fg={theme().border} wrapMode="none">
-          {"─".repeat(200)}
-        </text>
-      </Show>
+    <box
+      gap={0}
+      marginTop={1}
+      flexShrink={0}
+      backgroundColor={props.tinted ? theme().backgroundPanel : undefined}
+      // Vertical padding only. Horizontal padding would put spaces in front of
+      // every line of the body, which is the copy defect the tint exists to
+      // avoid (claude-code #75221) — a full-width block is already unmistakable
+      // without indenting its content.
+      paddingTop={props.tinted ? 1 : 0}
+      paddingBottom={props.tinted ? 1 : 0}
+    >
       <box flexDirection="row" gap={1}>
         <Show when={props.glyph}>
           <text fg={theme().textMuted}>{props.glyph}</text>

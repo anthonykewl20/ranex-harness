@@ -1,8 +1,8 @@
 import { createSignal } from "solid-js"
 import { detectGlyphs } from "../../../theme/glyphs"
 import { EntryFrame } from "../frame"
-import { Markdown } from "../render/markdown"
 import { Diff, toolDiff } from "../render/diff"
+import { Code, Output } from "../render/output"
 import type { TranscriptEntry } from "../entry"
 import { readDensity, startsOpen } from "../density"
 
@@ -88,6 +88,10 @@ export const ToolEntry: TranscriptEntry<"tool"> = {
         metadata?: Record<string, unknown>
       }
     const diff = () => toolDiff(state())
+    const written = () => {
+      const content = state()?.input?.content
+      return typeof content === "string" && content.length > 0 ? content : undefined
+    }
 
     return (
       <box onMouseDown={() => setOpen((x) => !x)}>
@@ -100,11 +104,18 @@ export const ToolEntry: TranscriptEntry<"tool"> = {
         >
           {open() ? (
             diff() ? (
-              // Every tool that changed a file routes here, so Write and Edit
-              // cannot render the same change differently (claude-code #73951).
-              <Diff content={diff()!} path={stringInput(state()?.input)} />
+              // A change with removals to contrast against: added and removed
+              // rows, tinted, with line numbers.
+              <Diff content={diff()!} path={stringInput(state()?.input)} stat={diffStat(diff())} />
+            ) : written() ? (
+              // A newly written file has nothing to contrast against, so a wall
+              // of `+` lines says less than a line-numbered listing does.
+              <Code content={written()!} path={stringInput(state()?.input)} />
             ) : (
-              <Markdown content={typeof state()?.output === "string" ? (state().output as string) : ""} muted />
+              <Output
+                content={typeof state()?.output === "string" ? (state().output as string) : ""}
+                title={stringInput(state()?.input) ?? toolSubject(state()?.input)}
+              />
             )
           ) : null}
         </EntryFrame>
