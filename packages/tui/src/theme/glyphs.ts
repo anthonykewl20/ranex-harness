@@ -30,6 +30,14 @@ export type GlyphSet = {
   readonly arrow: string
   readonly branch: string
   readonly leaf: string
+  readonly boxTL: string
+  readonly boxTR: string
+  readonly boxBL: string
+  readonly boxBR: string
+  readonly boxH: string
+  readonly boxV: string
+  readonly divider: string
+  readonly halfBlock: string
 }
 
 export const UNICODE_GLYPHS: GlyphSet = {
@@ -45,6 +53,14 @@ export const UNICODE_GLYPHS: GlyphSet = {
   arrow: "→",
   branch: "├─",
   leaf: "└─",
+  boxTL: "╭",
+  boxTR: "╮",
+  boxBL: "╰",
+  boxBR: "╯",
+  boxH: "─",
+  boxV: "│",
+  divider: "╹",
+  halfBlock: "▀",
 }
 
 export const ASCII_GLYPHS: GlyphSet = {
@@ -60,6 +76,14 @@ export const ASCII_GLYPHS: GlyphSet = {
   arrow: "->",
   branch: "|-",
   leaf: "`-",
+  boxTL: "+",
+  boxTR: "+",
+  boxBL: "+",
+  boxBR: "+",
+  boxH: "-",
+  boxV: "|",
+  divider: "|",
+  halfBlock: "-",
 }
 
 /**

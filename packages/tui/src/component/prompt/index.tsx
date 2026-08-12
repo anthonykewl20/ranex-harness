@@ -16,7 +16,6 @@ import { fileURLToPath } from "url"
 import { useLocal } from "../../context/local"
 import { Flag } from "@ranex/core/flag/flag"
 import { tint, useTheme } from "../../context/theme"
-import { EmptyBorder, SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { useClipboard } from "../../context/clipboard"
 import { Spinner } from "../spinner"
@@ -57,8 +56,14 @@ import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
+import { detectCapability } from "../../theme/capability"
+import { detectGlyphs } from "../../theme/glyphs"
+import { AttachmentStrip } from "./attachment-strip"
 
 registerOpencodeSpinner()
+
+const COLOR_CAPABILITY = detectCapability()
+const GLYPHS = detectGlyphs()
 
 export type PromptProps = {
   sessionID?: string
@@ -211,6 +216,8 @@ export function Prompt(props: PromptProps) {
   const move = usePromptMove({ projectID: project.project, sessionID: () => props.sessionID })
   const [cursorVersion, setCursorVersion] = createSignal(0)
   const hasRightContent = createMemo(() => Boolean(props.right))
+  const [selectedAttachment, setSelectedAttachment] = createSignal(0)
+  const [attachmentsExpanded, setAttachmentsExpanded] = createSignal(false)
 
   function promptModelWarning() {
     toast.show({
@@ -731,6 +738,43 @@ export function Prompt(props: PromptProps) {
     )
   }
 
+  function dismissPromptPart(index: number) {
+    const extmark = input.extmarks
+      .getAllForTypeId(promptPartTypeId)
+      .find((item) => store.extmarkToPartIndex.get(item.id) === index)
+    const removedEnd = extmark && store.prompt.input[extmark.end] === " " ? extmark.end + 1 : extmark?.end
+    const nextInput = extmark
+      ? store.prompt.input.slice(0, extmark.start) + store.prompt.input.slice(removedEnd)
+      : store.prompt.input
+    const parts: PromptInfo["parts"] = store.prompt.parts.filter((_, partIndex) => partIndex !== index).map((part) => {
+      if (!extmark || removedEnd === undefined) return part
+      const length = removedEnd - extmark.start
+      if (part.type === "agent" && part.source && part.source.start > extmark.start) {
+        return { ...part, source: { ...part.source, start: part.source.start - length, end: part.source.end - length } }
+      }
+      if (part.type === "file" && part.source?.text && part.source.text.start > extmark.start) {
+        part.source.text.start -= length
+        part.source.text.end -= length
+        return part
+      }
+      if (part.type === "text" && part.source?.text && part.source.text.start > extmark.start) {
+        part.source.text.start -= length
+        part.source.text.end -= length
+        return part
+      }
+      return part
+    })
+    input.setText(nextInput)
+    setStore("prompt", { input: nextInput, parts })
+    restoreExtmarksFromParts(parts)
+    setSelectedAttachment(
+      parts.findIndex((part, partIndex) => partIndex >= index && (part.type === "text" || part.type === "file")) >= 0
+        ? parts.findIndex((part, partIndex) => partIndex >= index && (part.type === "text" || part.type === "file"))
+        : Math.max(0, parts.findLastIndex((part) => part.type === "text" || part.type === "file")),
+    )
+    input.focus()
+  }
+
   const stashCommands = createMemo(() =>
     [
       {
@@ -1144,7 +1188,7 @@ export function Prompt(props: PromptProps) {
     return true
   }
 
-  function pasteText(text: string, virtualText: string) {
+  function pasteText(text: string, virtualText: string, kind: "paste" | "svg" = "paste") {
     const currentOffset = input.cursorOffset
     const extmarkStart = currentOffset
     const extmarkEnd = extmarkStart + promptOffsetWidth(virtualText)
@@ -1165,6 +1209,7 @@ export function Prompt(props: PromptProps) {
         draft.prompt.parts.push({
           type: "text" as const,
           text,
+          metadata: { kind },
           source: {
             text: {
               start: extmarkStart,
@@ -1187,7 +1232,7 @@ export function Prompt(props: PromptProps) {
       const attachment = await readLocalAttachment(filepath)
       const filename = path.basename(filepath)
       if (attachment?.type === "text") {
-        pasteText(attachment.content, `[SVG: ${filename ?? "image"}]`)
+        pasteText(attachment.content, `[SVG: ${filename ?? "image"}]`, "svg")
         return
       }
       if (attachment?.type === "binary") {
@@ -1284,10 +1329,9 @@ export function Prompt(props: PromptProps) {
   }
 
   const highlight = createMemo(() => {
-    if (leader()) return theme.border
-    if (store.mode === "shell") return theme.primary
+    if (COLOR_CAPABILITY === "none" || leader()) return theme.border
     const agent = local.agent.current()
-    if (!agent) return theme.border
+    if (!agent) return theme.accent
     return local.agent.color(agent.name)
   })
 
@@ -1322,7 +1366,7 @@ export function Prompt(props: PromptProps) {
       status().type !== "idle"
         ? (local.agent.list().find((a) => a.name === lastUserMessage()?.agent) ?? local.agent.current())
         : local.agent.current()
-    const color = agent ? local.agent.color(agent.name) : theme.border
+    const color = COLOR_CAPABILITY === "none" ? theme.accent : agent ? local.agent.color(agent.name) : theme.accent
     return {
       frames: createFrames({
         color,
@@ -1342,35 +1386,65 @@ export function Prompt(props: PromptProps) {
   })
   const maxHeight = createMemo(() => tuiConfig.prompt?.max_height ?? Math.max(6, Math.floor(dimensions().height / 3)))
   const moveLabelWidth = createMemo(() => Math.max(12, Math.min(44, dimensions().width - 48)))
+  const attachmentParts = createMemo(() => store.prompt.parts.filter((part) => part.type === "text" || part.type === "file"))
+  const attachmentIndexes = createMemo(() => store.prompt.parts.flatMap((part, index) => part.type === "text" || part.type === "file" ? [index] : []))
+  const showAttachmentStrip = createMemo(() => dimensions().width >= 80 && attachmentParts().length > 0)
+  const showMeta = createMemo(() => dimensions().width >= 48)
+  const showStatusDetails = createMemo(() => dimensions().width >= 40)
+  const frameChars = createMemo(() => ({
+    topLeft: dimensions().width < 40 ? GLYPHS.boxH : GLYPHS.boxTL,
+    topRight: dimensions().width < 40 ? GLYPHS.boxH : GLYPHS.boxTR,
+    bottomLeft: dimensions().width < 40 ? GLYPHS.boxH : GLYPHS.boxBL,
+    bottomRight: dimensions().width < 40 ? GLYPHS.boxH : GLYPHS.boxBR,
+    horizontal: GLYPHS.boxH,
+    vertical: GLYPHS.boxV,
+    topT: GLYPHS.boxH,
+    bottomT: GLYPHS.boxH,
+    leftT: GLYPHS.boxV,
+    rightT: GLYPHS.boxV,
+    cross: GLYPHS.boxH,
+  }))
 
   return (
     <>
       <box ref={(r: BoxRenderable) => (anchor = r)} visible={props.visible !== false} width="100%">
         <box
+          minWidth={24}
           width="100%"
-          border={["left"]}
-          borderColor={borderHighlight()}
-          customBorderChars={{
-            ...SplitBorder.customBorderChars,
-            bottomLeft: "╹",
-          }}
+          border={true}
+          borderColor={theme.border}
+          focusedBorderColor={borderHighlight()}
+          focusable={true}
+          customBorderChars={frameChars()}
+          backgroundColor={theme.backgroundElement}
         >
           <box
             paddingLeft={2}
             paddingRight={2}
-            paddingTop={1}
+            paddingTop={showAttachmentStrip() ? 1 : 0}
             flexShrink={0}
             backgroundColor={theme.backgroundElement}
             flexGrow={1}
             width="100%"
           >
+            <Show when={showAttachmentStrip()}>
+              <AttachmentStrip
+                parts={store.prompt.parts}
+                selected={selectedAttachment()}
+                expanded={attachmentsExpanded()}
+                glyphs={GLYPHS}
+                theme={theme}
+                onSelect={setSelectedAttachment}
+                onExpand={() => setAttachmentsExpanded((value) => !value)}
+              />
+            </Show>
             <textarea
               width="100%"
               placeholder={placeholderText()}
               placeholderColor={theme.textMuted}
               textColor={leader() ? theme.textMuted : theme.text}
               focusedTextColor={leader() ? theme.textMuted : theme.text}
-              minHeight={1}
+              minHeight={3}
               maxHeight={maxHeight()}
               onContentChange={() => {
                 const value = input.plainText
@@ -1380,10 +1454,27 @@ export function Prompt(props: PromptProps) {
                 setCursorVersion((value) => value + 1)
               }}
               onCursorChange={() => setCursorVersion((value) => value + 1)}
-              onKeyDown={(e: { preventDefault(): void }) => {
+              onKeyDown={(e: KeyEvent) => {
                 if (props.disabled) {
                   e.preventDefault()
                   return
+                }
+                if (attachmentIndexes().length === 0 || !e.meta) return
+                if (e.name === "up" || e.name === "down") {
+                  e.preventDefault()
+                  const direction = e.name === "up" ? -1 : 1
+                  const current = Math.max(0, attachmentIndexes().indexOf(selectedAttachment()))
+                  setSelectedAttachment(attachmentIndexes()[(current + direction + attachmentIndexes().length) % attachmentIndexes().length])
+                  return
+                }
+                if (e.name === "backspace") {
+                  e.preventDefault()
+                  dismissPromptPart(selectedAttachment())
+                  return
+                }
+                if (e.name === "e" && showAttachmentStrip()) {
+                  e.preventDefault()
+                  setAttachmentsExpanded((value) => !value)
                 }
               }}
               onSubmit={() => {
@@ -1437,6 +1528,7 @@ export function Prompt(props: PromptProps) {
               cursorColor={props.disabled ? theme.backgroundElement : theme.text}
               syntaxStyle={syntax()}
             />
+            <Show when={showMeta()}>
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
               <box flexDirection="row" gap={1}>
                 <Show when={local.agent.current()} fallback={<box height={1} />}>
@@ -1450,7 +1542,7 @@ export function Prompt(props: PromptProps) {
                       </Show>
                       <Show when={store.mode === "normal"}>
                         <box flexDirection="row" gap={1}>
-                          <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
+                          <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>{GLYPHS.dot}</text>
                           <text
                             flexShrink={0}
                             fg={fadeColor(leader() ? theme.textMuted : theme.text, modelMetaAlpha())}
@@ -1458,7 +1550,7 @@ export function Prompt(props: PromptProps) {
                             {local.model.parsed().model}
                           </text>
                           <Show when={showVariant()}>
-                            <text fg={fadeColor(theme.textMuted, variantMetaAlpha())}>·</text>
+                            <text fg={fadeColor(theme.textMuted, variantMetaAlpha())}>{GLYPHS.dot}</text>
                             <text>
                               <span style={{ fg: fadeColor(theme.warning, variantMetaAlpha()), bold: true }}>
                                 {local.model.variant.current()}
@@ -1477,33 +1569,8 @@ export function Prompt(props: PromptProps) {
                 </box>
               </Show>
             </box>
+            </Show>
           </box>
-        </box>
-        <box
-          height={1}
-          border={["left"]}
-          borderColor={borderHighlight()}
-          customBorderChars={{
-            ...EmptyBorder,
-            vertical: theme.backgroundElement.a !== 0 ? "╹" : " ",
-          }}
-        >
-          <box
-            height={1}
-            border={["bottom"]}
-            borderColor={theme.backgroundElement}
-            customBorderChars={
-              theme.backgroundElement.a !== 0
-                ? {
-                    ...EmptyBorder,
-                    horizontal: "▀",
-                  }
-                : {
-                    ...EmptyBorder,
-                    horizontal: " ",
-                  }
-            }
-          />
         </box>
         <box width="100%" flexDirection="row" justifyContent="space-between">
           <Switch>
@@ -1516,7 +1583,7 @@ export function Prompt(props: PromptProps) {
               >
                 <box flexShrink={0} flexDirection="row" gap={1}>
                   <box marginLeft={1}>
-                    <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
+                    <Show when={animationsEnabled()} fallback={<text fg={theme.accent}>[{GLYPHS.dot.repeat(3)}]</text>}>
                       <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
                     </Show>
                   </box>
@@ -1647,8 +1714,12 @@ export function Prompt(props: PromptProps) {
               )}
             </Match>
           </Switch>
-          <Show when={status().type !== "retry"}>
+          <Show when={status().type !== "retry" && (showStatusDetails() || stash.list().length > 0)}>
             <box gap={2} flexDirection="row">
+              <Show when={stash.list().length > 0}>
+                <text fg={theme.textMuted}>{stash.list().length} queued {stash.list().length === 1 ? "draft" : "drafts"}</text>
+              </Show>
+              <Show when={showStatusDetails()}>
               <Show when={editorContextLabelState() !== "none" ? editorFileLabelDisplay() : undefined}>
                 {(file) => (
                   <text fg={editorContextLabelState() === "pending" ? theme.secondary : theme.textMuted}>{file()}</text>
@@ -1680,6 +1751,7 @@ export function Prompt(props: PromptProps) {
                   </text>
                 </Match>
               </Switch>
+              </Show>
             </box>
           </Show>
         </box>
