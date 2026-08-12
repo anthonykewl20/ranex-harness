@@ -30,6 +30,14 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/GitHub") {}
 
+export function makeRestClient(token: string) {
+  const octokit = new Octokit({ auth: token })
+  octokit.hook.before("request", (options) => {
+    options.headers["X-GitHub-Api-Version"] = "2026-03-10"
+  })
+  return octokit
+}
+
 export const node = LayerNode.make({
   service: Service,
   layer: Layer.effect(
@@ -40,7 +48,7 @@ export const node = LayerNode.make({
       const clients = yield* InstanceState.make(
         Effect.fn("GitHub.clients")(function* () {
           const token = yield* resolveToken()
-          const octokit = new Octokit({ auth: token })
+          const octokit = makeRestClient(token)
           const graphqlWithAuth = graphql.defaults({
             headers: { authorization: `token ${token}` },
           })
