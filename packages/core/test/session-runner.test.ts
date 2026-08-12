@@ -37,6 +37,7 @@ import { SessionRunner } from "@ranex/core/session/runner"
 import * as SessionRunnerLLM from "@ranex/core/session/runner/llm"
 import { SessionRunnerModel } from "@ranex/core/session/runner/model"
 import { ProviderWatchdog } from "@ranex/core/session/runner/provider-watchdog"
+import { SessionTurnLLM } from "@ranex/core/session/runner/turn-llm"
 import { ToolRegistry } from "@ranex/core/tool/registry"
 import { ApplicationTools } from "@ranex/core/tool/application-tools"
 import { AgentV2 } from "@ranex/core/agent"
@@ -246,6 +247,7 @@ const config = Layer.succeed(
 const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
   [Snapshot.node, Snapshot.noopLayer],
   [LayerNodePlatform.llmClient, client],
+  [SessionTurnLLM.node, SessionTurnLLM.layerFrom(client)],
   [SessionRunnerModel.node, models],
   [ProviderWatchdog.node, watchdogLayer],
   [SystemContextRegistry.node, systemContext],
@@ -295,6 +297,7 @@ const it = testEffect(
     ]),
     [
       [LayerNodePlatform.llmClient, client],
+      [SessionTurnLLM.node, SessionTurnLLM.layerFrom(client)],
       [PermissionV2.node, permission],
       [SessionRunnerModel.node, models],
       [ProviderWatchdog.node, watchdogLayer],

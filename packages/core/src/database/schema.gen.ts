@@ -205,6 +205,8 @@ export default {
           \`permission\` text,
           \`agent\` text,
           \`model\` text,
+          \`retry_attempt\` integer,
+          \`retry_next_attempt_at\` integer,
           \`execution_owner\` text,
           \`time_created\` integer NOT NULL,
           \`time_updated\` integer NOT NULL,
