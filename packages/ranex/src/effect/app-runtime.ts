@@ -8,6 +8,7 @@ import { Auth } from "@/auth"
 import { Account } from "@/account/account"
 import { Config } from "@/config/config"
 import { Git } from "@/git"
+import { GitHub } from "@/github/github"
 import { Ripgrep } from "@ranex/core/ripgrep"
 import { Storage } from "@/storage/storage"
 import { Snapshot } from "@/snapshot"
@@ -64,6 +65,7 @@ export const AppLayer = AppNodeBuilderV1.build(
     Account.node,
     Config.node,
     Git.node,
+    GitHub.node,
     Storage.node,
     Snapshot.node,
     Plugin.node,

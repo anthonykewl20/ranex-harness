@@ -12,6 +12,9 @@ import { ReadTool } from "./read"
 import { TaskTool } from "./task"
 import { Database } from "@ranex/core/database/database"
 import { TodoWriteTool } from "./todo"
+import { GitHubIssueTool } from "./github/issue"
+import { GitHubMilestoneTool } from "./github/milestone"
+import { GitHubProjectTool } from "./github/project"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -52,6 +55,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@ranex/core/provider"
 import { ModelV2 } from "@ranex/core/model"
 import { MCP } from "@/mcp"
+import { GitHub } from "@/github/github"
 import { PermissionV1 } from "@ranex/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
 
@@ -98,6 +102,9 @@ const layer = Layer.effect(
     const read = yield* ReadTool
     const question = yield* QuestionTool
     const todo = yield* TodoWriteTool
+    const githubIssue = yield* GitHubIssueTool
+    const githubMilestone = yield* GitHubMilestoneTool
+    const githubProject = yield* GitHubProjectTool
     const lsptool = yield* LspTool
     const plan = yield* PlanExitTool
     const webfetch = yield* WebFetchTool
@@ -213,6 +220,9 @@ const layer = Layer.effect(
           search: Tool.init(websearch),
           skill: Tool.init(skilltool),
           patch: Tool.init(patchtool),
+          githubIssue: Tool.init(githubIssue),
+          githubMilestone: Tool.init(githubMilestone),
+          githubProject: Tool.init(githubProject),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
@@ -235,6 +245,9 @@ const layer = Layer.effect(
             tool.search,
             tool.skill,
             tool.patch,
+            tool.githubIssue,
+            tool.githubMilestone,
+            tool.githubProject,
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],
@@ -403,6 +416,7 @@ export const node = LayerNode.make({
   layer,
   deps: [
     Config.node,
+    GitHub.node,
     Plugin.node,
     Question.node,
     Todo.node,

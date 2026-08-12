@@ -1,0 +1,15 @@
+Manage GitHub milestones — list, get, create, update, and close milestones in a GitHub repository.
+
+The `operation` field selects the action via its `action` discriminant:
+
+- `list`: List milestones. Optional `state` ("open", "closed", "all"; defaults to "open").
+- `get`: Fetch a single milestone. Requires `number`.
+- `create`: Create a milestone. Requires `title`. Optional `description` and `due_on` (ISO 8601 date string).
+- `update`: Modify a milestone. Requires `number`. Optional `title`, `description`, `state` ("open" or "closed"), `due_on`.
+- `close`: Close a milestone. Requires `number`.
+
+`owner` and `repo` are optional and default to the current git repository's GitHub origin remote. Provide them explicitly to target a different repository (both must be provided together).
+
+Requires the GITHUB_TOKEN environment variable to be set.
+
+All operations require user permission approval. Patterns: `milestones:read:owner/repo` for reads, `milestones:write:owner/repo` for writes.

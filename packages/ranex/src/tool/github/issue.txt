@@ -1,0 +1,16 @@
+Manage GitHub issues — list, get, create, update, close, and comment on issues in a GitHub repository.
+
+The `operation` field selects the action via its `action` discriminant:
+
+- `list`: List issues for a repository. Optional `state` ("open", "closed", "all"; defaults to "open"), `labels` (array of label names to filter by), and `milestone` (milestone number to filter by).
+- `get`: Fetch a single issue. Requires `number`.
+- `create`: Create a new issue. Requires `title`. Optional `body`, `labels` (array of strings), `assignees` (array of usernames), `milestone` (milestone number).
+- `update`: Modify an issue. Requires `number`. Optional `title`, `body`, `state` ("open" or "closed").
+- `close`: Close an issue. Requires `number`.
+- `comment`: Add a comment to an issue. Requires `number` and `body`.
+
+`owner` and `repo` are optional and default to the current git repository's GitHub origin remote. Provide them explicitly to target a different repository (both must be provided together).
+
+Requires the GITHUB_TOKEN environment variable to be set.
+
+All operations require user permission approval before execution. The user can allow specific operations persistently via opencode.json permission rules using patterns like `issues:read:owner/repo` or `issues:write:owner/repo`.

@@ -1,0 +1,15 @@
+Manage GitHub Projects (v2) — list, get, create projects, add items, and set field values on project items.
+
+The `operation` field selects the action. `owner` is the org or user login that owns the project — it is always required (projects are not tied to a specific repository).
+
+- `list`: List projects for an owner. Requires `owner`.
+- `get`: Fetch a single project. Requires `owner` and `number`.
+- `create`: Create a new project. Requires `owner` and `title`.
+- `add_item`: Add an issue to a project. Requires `owner`, `number` (project number), and `content` (an object with `owner`, `repo`, `number` identifying the issue).
+- `set_field`: Set a single field value on a project item. Requires `owner`, `number` (project number), `field_name`, `value`, and `content` (identifies the issue whose item to update).
+
+Only single-select and text field types are supported. For single-select, `value` must match an existing option name exactly.
+
+Requires the GITHUB_TOKEN environment variable to be set.
+
+All operations require user permission approval. Patterns: `projects:read:owner` for reads, `projects:write:owner` for writes.
