@@ -348,7 +348,7 @@ test("isLive conservatively accepts an old-format owner", async () => {
   expect(await ExecutionOwner.isLive(`${process.pid}:${randomUUID()}`)).toBe(true)
 })
 
-test("run() claims the session as execution owner", async () => {
+test("runner leaves execution ownership unchanged", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ranex-fence-run-"))
   const dbFile = join(dir, "fence.db")
   const sessionID = SessionV2.ID.make("ses_fence_run_claim")
@@ -360,8 +360,11 @@ test("run() claims the session as execution owner", async () => {
       Effect.gen(function* () {
         const runner = yield* SessionRunner.Service
         const store = yield* SessionStore.Service
+        const claimed = yield* store.claimExecution(sessionID, ExecutionOwner.ownerID)
+        expect(claimed).toBe(true)
         yield* runner.run({ sessionID, force: false })
         expect(yield* store.executionOwner(sessionID)).toBe(ExecutionOwner.ownerID)
+        yield* store.releaseExecution(sessionID, ExecutionOwner.ownerID)
       }),
     )
   } finally {

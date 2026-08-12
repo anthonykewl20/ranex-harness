@@ -8,6 +8,7 @@ import { ExecutionOwner } from "./execution-owner"
 import { SessionProjector } from "./projector"
 import { SessionSchema } from "./schema"
 import { SessionStore } from "./store"
+import { EffectFlock } from "../util/effect-flock"
 
 /**
  * Reconciles tools stranded `running` by a prior crash: publishes one durable
@@ -60,9 +61,9 @@ export const reconcileInterruptedTools = Effect.fn("Session.reconcileInterrupted
  * nobody called. A crash with an empty inbox never re-enters `run()` through the
  * inbox, so without this sweep those tools stay projected `running` forever.
  *
- * The sweep runs once when the application graph is built (before the server
- * accepts work), so it cannot race with a `run()` in this process and needs no
- * mutex. Each session is error-isolated: one bad session never aborts the sweep.
+ * Each session sweep takes its durable flock, serializing it against another
+ * process's drain for the same session. In this process, the runner's per-session
+ * semaphore joins same-session work. One bad session never aborts the sweep.
  *
  * Because `store.list()` is DB-global, each session is fenced by its durable
  * `session.execution_owner` claim and its boot/process identity. An absent owner,
@@ -74,6 +75,7 @@ const sweepLayer = Layer.effectDiscard(
   Effect.gen(function* () {
     const store = yield* SessionStore.Service
     const events = yield* EventV2.Service
+    const flock = yield* EffectFlock.Service
     // List-level isolation: a malformed legacy row throws inside fromRow and must
     // not abort server boot. Per-session isolation then keeps one bad session
     // from aborting the rest.
@@ -83,25 +85,31 @@ const sweepLayer = Layer.effectDiscard(
       return
     }
     yield* Effect.forEach(listExit.value, (session) =>
-      Effect.gen(function* () {
-        const owner = yield* store.executionOwner(session.id)
-        if (
-          owner !== undefined &&
-          owner !== ExecutionOwner.ownerID &&
-          (yield* Effect.promise(() => ExecutionOwner.isLive(owner)))
-        ) {
-          yield* Effect.logInfo("Session reconcile sweep: skipping session owned by a live process").pipe(
-            Effect.annotateLogs({ sessionID: session.id }),
-          )
-          return
-        }
-        const exit = yield* reconcileInterruptedTools({ events, store, sessionID: session.id }).pipe(Effect.exit)
-        if (Exit.isFailure(exit)) {
-          yield* Effect.logError("Session reconcile sweep failed", exit.cause).pipe(
-            Effect.annotateLogs({ sessionID: session.id }),
-          )
-        }
-      }),
+      flock.withLock(session.id)(
+        Effect.gen(function* () {
+          const owner = yield* store.executionOwner(session.id)
+          if (
+            owner !== undefined &&
+            owner !== ExecutionOwner.ownerID &&
+            (yield* Effect.promise(() => ExecutionOwner.isLive(owner)))
+          ) {
+            yield* Effect.logInfo("Session reconcile sweep: skipping session owned by a live process").pipe(
+              Effect.annotateLogs({ sessionID: session.id }),
+            )
+            return
+          }
+          yield* reconcileInterruptedTools({ events, store, sessionID: session.id })
+        }),
+      ).pipe(
+        Effect.exit,
+        Effect.flatMap(Effect.fnUntraced(function* (exit) {
+          if (Exit.isFailure(exit)) {
+            yield* Effect.logError("Session reconcile sweep failed", exit.cause).pipe(
+              Effect.annotateLogs({ sessionID: session.id }),
+            )
+          }
+        })),
+      ),
       { discard: true },
     )
   }),
@@ -110,5 +118,5 @@ const sweepLayer = Layer.effectDiscard(
 export const sweepNode = makeGlobalNode({
   name: "session-reconcile-sweep",
   layer: sweepLayer,
-  deps: [EventV2.node, SessionStore.node, SessionProjector.node],
+  deps: [EventV2.node, SessionStore.node, SessionProjector.node, EffectFlock.node],
 })
