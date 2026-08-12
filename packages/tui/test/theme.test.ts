@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
-import type { TerminalColors } from "@opentui/core"
+import { RGBA, type TerminalColors } from "@opentui/core"
 import { DEFAULT_THEMES, addTheme, allThemes, hasTheme, resolveTheme, terminalMode } from "../src/theme"
 import { discoverThemes } from "../src/context/theme"
 import { tmpdir } from "./fixture/fixture"
@@ -42,6 +42,22 @@ test("resolveTheme rejects circular color refs", () => {
   item.defs = { ...item.defs, one: "two", two: "one" }
   item.theme.primary = "one"
   expect(() => resolveTheme(item, "dark")).toThrow("Circular color reference")
+})
+
+test("ranex dark theme uses Kilo warm surfaces with royal-blue identity", () => {
+  const theme = resolveTheme(DEFAULT_THEMES.ranex, "dark")
+  expect(theme.background.equals(RGBA.fromHex("#0c0a09"))).toBe(true)
+  expect(theme.backgroundPanel.equals(RGBA.fromHex("#1c1917"))).toBe(true)
+  expect(theme.backgroundElement.equals(RGBA.fromHex("#292524"))).toBe(true)
+  expect(theme.primary.equals(RGBA.fromHex("#6387ff"))).toBe(true)
+  expect(theme.accent.equals(RGBA.fromHex("#6387ff"))).toBe(true)
+  expect(theme.borderActive.equals(RGBA.fromHex("#6387ff"))).toBe(true)
+  expect(theme.syntaxKeyword.equals(RGBA.fromHex("#6387ff"))).toBe(true)
+  expect(theme.success.equals(RGBA.fromHex("#89d185"))).toBe(true)
+  expect(theme.error.equals(RGBA.fromHex("#ff6467"))).toBe(true)
+  expect(theme.diffHighlightAdded.equals(RGBA.fromHex("#b8db87"))).toBe(true)
+  expect(theme.diffAddedBg.equals(RGBA.fromHex("#122318"))).toBe(true)
+  expect(theme.thinkingOpacity).toBe(0.72)
 })
 
 function terminalColors(defaultBackground: string | null, palette: Array<string | null> = []): TerminalColors {

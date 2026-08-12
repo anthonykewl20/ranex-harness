@@ -102,20 +102,20 @@ const ANSI_16: RGBA[] = [
  * the truecolor palette.
  */
 const SEMANTIC_SLOT: Record<string, number> = {
-  primary: 4, secondary: 6, accent: 5,
+  primary: 4, secondary: 8, accent: 4,
   success: 2, error: 1, warning: 3, info: 6,
   text: 7, textMuted: 8,
-  border: 8, borderActive: 7, borderSubtle: 8,
+  border: 8, borderActive: 4, borderSubtle: 8,
   diffAdded: 2, diffRemoved: 1, diffContext: 8,
   diffHighlightAdded: 2, diffHighlightRemoved: 1,
-  diffHunkHeader: 6, diffLineNumber: 8,
-  markdownText: 7, markdownHeading: 4, markdownLink: 6, markdownLinkText: 6,
-  markdownCode: 2, markdownBlockQuote: 8, markdownEmph: 3, markdownStrong: 7,
+  diffHunkHeader: 4, diffLineNumber: 8,
+  markdownText: 7, markdownHeading: 4, markdownLink: 4, markdownLinkText: 6,
+  markdownCode: 2, markdownBlockQuote: 8, markdownEmph: 3, markdownStrong: 4,
   markdownHorizontalRule: 8, markdownListItem: 4, markdownListEnumeration: 6,
   markdownImage: 4, markdownImageText: 6, markdownCodeBlock: 7,
-  syntaxComment: 8, syntaxKeyword: 5, syntaxFunction: 4, syntaxVariable: 7,
-  syntaxString: 2, syntaxNumber: 3, syntaxType: 6, syntaxOperator: 8,
-  syntaxPunctuation: 8, selectedListItemText: 7,
+  syntaxComment: 8, syntaxKeyword: 4, syntaxFunction: 6, syntaxVariable: 1,
+  syntaxString: 2, syntaxNumber: 3, syntaxType: 8, syntaxOperator: 6,
+  syntaxPunctuation: 7, selectedListItemText: 7,
 }
 
 /** WCAG relative luminance, enough to ask "is this theme dark?". */

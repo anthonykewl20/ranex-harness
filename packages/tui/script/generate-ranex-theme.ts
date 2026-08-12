@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Generates `src/theme/assets/ranex.json` from the approved Ranex palette and
+ * Generates `src/theme/assets/ranex.json` from Ranex's terminal palette and
  * refuses to emit it if any pair fails its contrast floor.
  *
  * Two ideas, from two places:
@@ -16,9 +16,10 @@
  * governance tool whose FAIL is hard to read has failed at its one job, so the
  * check is a build gate here rather than a reviewer's eye.
  *
- * Base tokens are the approved ranex.dev palette (ranex-web/index.html), which
- * already carries `pass` and `fail` as first-class tokens. Do not edit the
- * generated JSON — edit BASE below and re-run:
+ * Dark-mode warm neutrals are sourced from Kilo Code's `kilo.json` at
+ * 64e5dd03633013b4564d0ac759747d606f74522c. Ranex substitutes royal blue for
+ * Kilo's yellow main colour and retains semantic ownership of PASS (green) and
+ * FAIL (red). Do not edit the generated JSON — edit BASE below and re-run:
  *
  *   bun run packages/tui/script/generate-ranex-theme.ts
  */
@@ -27,8 +28,7 @@ type Hex = `#${string}`
 type Mode = "dark" | "light"
 
 /**
- * The approved palette. `pass`/`fail` are brand tokens, not decoration: they
- * are the two values of `Verdict`.
+ * `pass`/`fail` are verdict tokens, not decoration.
  */
 const BASE = {
   light: {
@@ -37,6 +37,7 @@ const BASE = {
     surface2: "#EDF1F3",
     ink: "#1B2733",
     inkSoft: "#52616E",
+    inkWeaker: "#57534d",
     line: "#D9E0E4",
     lineStrong: "#B9C4CC",
     accent: "#2B5C8A",
@@ -53,27 +54,42 @@ const BASE = {
     info: "#1F6E73",
     infoBg: "#E3F1F2",
     highlight: "#6A4FB0",
+    primaryForeground: "#F4F6F7",
+    diffHighlightAdded: "#2f7d32",
+    diffHighlightRemoved: "#c00009",
+    diffAddedBg: "#e8f5e9",
+    diffRemovedBg: "#ffe4e6",
+    diffAddedLineNumberBg: "#d7ecd8",
+    diffRemovedLineNumberBg: "#ffd4d8",
   },
   dark: {
-    ground: "#000000",
-    surface: "#0C0C0C",
-    surface2: "#161616",
-    ink: "#FFFFFF",
-    inkSoft: "#A6A6A6",
-    line: "#262626",
-    lineStrong: "#3A3A3A",
-    accent: "#4FC1FF",
-    accentStrong: "#7AD3FF",
-    accentTint: "#082030",
-    pass: "#4EC9B0",
-    passBg: "#05241A",
-    fail: "#F44747",
-    failBg: "#2A0E0E",
-    warn: "#FFD03A",
-    warnBg: "#2A2106",
-    info: "#56C8E0",
-    infoBg: "#06252B",
-    highlight: "#C586C0",
+    ground: "#0c0a09",
+    surface: "#292524",
+    surface2: "#1c1917",
+    ink: "#fafaf9",
+    inkSoft: "#a6a09b",
+    inkWeaker: "#79716b",
+    line: "#44403b",
+    lineStrong: "#35312d",
+    accent: "#6387FF",
+    accentStrong: "#6387FF",
+    accentTint: "#151B2D",
+    pass: "#89d185",
+    passBg: "#122318",
+    fail: "#ff6467",
+    failBg: "#2a1214",
+    warn: "#cca700",
+    warnBg: "#292524",
+    info: "#3794ff",
+    infoBg: "#292524",
+    highlight: "#6387FF",
+    primaryForeground: "#0c0a09",
+    diffHighlightAdded: "#b8db87",
+    diffHighlightRemoved: "#ff8587",
+    diffAddedBg: "#122318",
+    diffRemovedBg: "#2a1214",
+    diffAddedLineNumberBg: "#17291b",
+    diffRemovedLineNumberBg: "#35181a",
   },
 } satisfies Record<Mode, Record<string, Hex>>
 
@@ -85,8 +101,8 @@ type Token = keyof (typeof BASE)["dark"]
  */
 const MAP: Record<string, Token> = {
   primary: "accent",
-  secondary: "info",
-  accent: "highlight",
+  secondary: "inkSoft",
+  accent: "accent",
   error: "fail",
   warning: "warn",
   success: "pass",
@@ -97,31 +113,33 @@ const MAP: Record<string, Token> = {
   background: "ground",
   backgroundPanel: "surface2",
   backgroundElement: "surface",
+  backgroundMenu: "surface2",
   border: "line",
   borderActive: "accent",
   borderSubtle: "lineStrong",
+  selectedListItemText: "primaryForeground",
 
   diffAdded: "pass",
   diffRemoved: "fail",
   diffContext: "inkSoft",
   diffHunkHeader: "accent",
-  diffHighlightAdded: "pass",
-  diffHighlightRemoved: "fail",
-  diffAddedBg: "passBg",
-  diffRemovedBg: "failBg",
+  diffHighlightAdded: "diffHighlightAdded",
+  diffHighlightRemoved: "diffHighlightRemoved",
+  diffAddedBg: "diffAddedBg",
+  diffRemovedBg: "diffRemovedBg",
   diffContextBg: "surface2",
-  diffLineNumber: "inkSoft",
-  diffAddedLineNumberBg: "passBg",
-  diffRemovedLineNumberBg: "failBg",
+  diffLineNumber: "inkWeaker",
+  diffAddedLineNumberBg: "diffAddedLineNumberBg",
+  diffRemovedLineNumberBg: "diffRemovedLineNumberBg",
 
   markdownText: "ink",
-  markdownHeading: "accentStrong",
+  markdownHeading: "accent",
   markdownLink: "accent",
   markdownLinkText: "info",
   markdownCode: "pass",
   markdownBlockQuote: "inkSoft",
   markdownEmph: "warn",
-  markdownStrong: "accentStrong",
+  markdownStrong: "accent",
   markdownHorizontalRule: "line",
   markdownListItem: "accent",
   markdownListEnumeration: "info",
@@ -130,14 +148,14 @@ const MAP: Record<string, Token> = {
   markdownCodeBlock: "ink",
 
   syntaxComment: "inkSoft",
-  syntaxKeyword: "highlight",
-  syntaxFunction: "accentStrong",
-  syntaxVariable: "ink",
+  syntaxKeyword: "accent",
+  syntaxFunction: "info",
+  syntaxVariable: "fail",
   syntaxString: "pass",
   syntaxNumber: "warn",
-  syntaxType: "info",
-  syntaxOperator: "inkSoft",
-  syntaxPunctuation: "inkSoft",
+  syntaxType: "inkSoft",
+  syntaxOperator: "info",
+  syntaxPunctuation: "ink",
 }
 
 /** WCAG 2.1 relative luminance. */
@@ -176,6 +194,10 @@ const CHECKS: { fg: Token; bg: Token; min: number; why: string }[] = [
   { fg: "fail", bg: "failBg", min: 4.5, why: "diff removed" },
   { fg: "warn", bg: "warnBg", min: 4.5, why: "warning callout" },
   { fg: "info", bg: "infoBg", min: 4.5, why: "info callout" },
+  { fg: "primaryForeground", bg: "accent", min: 4.5, why: "selected text on primary" },
+  { fg: "diffHighlightAdded", bg: "diffAddedBg", min: 4.5, why: "diff added highlight" },
+  { fg: "diffHighlightRemoved", bg: "diffRemovedBg", min: 4.5, why: "diff removed highlight" },
+  { fg: "inkWeaker", bg: "surface2", min: 3.0, why: "diff line number on panel" },
   { fg: "line", bg: "ground", min: 1.2, why: "border visible" },
   { fg: "lineStrong", bg: "ground", min: 1.5, why: "strong border visible" },
 ]
@@ -222,12 +244,15 @@ await Bun.write(
           Object.keys(BASE[mode]).map((token) => [defName(mode, token), BASE[mode][token as Token]]),
         ),
       ),
-      theme: Object.fromEntries(
-        Object.entries(MAP).map(([key, token]) => [
-          key,
-          { dark: defName("dark", token), light: defName("light", token) },
-        ]),
-      ),
+      theme: {
+        ...Object.fromEntries(
+          Object.entries(MAP).map(([key, token]) => [
+            key,
+            { dark: defName("dark", token), light: defName("light", token) },
+          ]),
+        ),
+        thinkingOpacity: 0.72,
+      },
     },
     null,
     2,

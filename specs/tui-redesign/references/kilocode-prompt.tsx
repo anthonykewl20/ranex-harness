@@ -14,7 +14,7 @@ import { registerOpencodeSpinner } from "../register-spinner"
 import path from "path"
 import { fileURLToPath } from "url"
 import { useLocal } from "../../context/local"
-import { Flag } from "@ranex/core/flag/flag"
+import { Flag } from "@opencode-ai/core/flag/flag"
 import { tint, useTheme } from "../../context/theme"
 import { EmptyBorder, SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
@@ -24,6 +24,7 @@ import { useSDK } from "../../context/sdk"
 import { useRoute } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
+import { useNudge } from "@/kilocode/cli/cmd/tui/context/nudge" // kilocode_change
 import { useEvent } from "../../context/event"
 import { editorSelectionKey, useEditorContext, type EditorSelection } from "../../context/editor"
 import { normalizePromptContent, openEditor } from "../../editor"
@@ -32,12 +33,12 @@ import { promptOffsetWidth } from "../../prompt/display"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { usePromptHistory, type PromptInfo } from "../../prompt/history"
 import { computePromptTraits } from "../../prompt/traits"
-import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
+import { expandPastedPlaceholder, expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
 import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
-import type { AssistantMessage, FilePart, UserMessage } from "@ranex/sdk/v2"
+import type { AssistantMessage, FilePart, UserMessage } from "@kilocode/sdk/v2"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
@@ -51,22 +52,27 @@ import { createFadeIn } from "../../util/signal"
 import { DialogSkill } from "../dialog-skill"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
-import { RANEX_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
+// kilocode_change start
+import { KiloSessionTuiSync } from "@/kilocode/session/tui-sync"
+import { slashMatches } from "@/kilocode/cli/cmd/command-display"
+import * as AgentRequirements from "@/kilocode/cli/agent-requirements"
+import { createCostAlertController } from "@/kilocode/cli/cmd/tui/cost-alert"
+import { MemoryPrompt } from "@/kilocode/cli/cmd/tui/component/memory-prompt"
+// kilocode_change end
+import { KILO_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
 import { useTuiConfig } from "../../config"
+// kilocode_change start - vim modal editing for the prompt
+import { useVim, VimModeIndicator, vimToggleCommand } from "@/kilocode/cli/cmd/tui/component/prompt"
+// kilocode_change end
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
-import { useLocation } from "../../context/location"
-import { detectCapability } from "../../theme/capability"
-import { detectGlyphs } from "../../theme/glyphs"
 
 registerOpencodeSpinner()
 
-const COLOR_CAPABILITY = detectCapability()
-const GLYPHS = detectGlyphs()
-
 export type PromptProps = {
   sessionID?: string
+  directory?: string // kilocode_change
   visible?: boolean
   disabled?: boolean
   onSubmit?: () => void
@@ -85,7 +91,9 @@ function pastedFilepath(value: string, platform: string) {
   if (raw.startsWith("file://")) {
     try {
       return fileURLToPath(raw)
-    } catch {}
+    } catch (err) {
+      console.debug("Failed to parse pasted file URL", err)
+    }
   }
   if (platform === "win32") return raw
   return raw.replace(/\\(.)/g, "$1")
@@ -154,7 +162,6 @@ export function Prompt(props: PromptProps) {
   const local = useLocal()
   const args = useArgs()
   const paths = useTuiPaths()
-  const location = useLocation()
   const terminalEnvironment = useTuiTerminalEnvironment()
   const clipboard = useClipboard()
   const sdk = useSDK()
@@ -165,12 +172,14 @@ export function Prompt(props: PromptProps) {
   const tuiConfig = useTuiConfig()
   const dialog = useDialog()
   const toast = useToast()
+  const nudge = useNudge() // kilocode_change
   const status = createMemo(() => sync.data.session_status?.[props.sessionID ?? ""] ?? { type: "idle" })
   const history = usePromptHistory()
   const stash = usePromptStash()
   const keymap = useOpencodeKeymap()
   const agentShortcut = useCommandShortcut("agent.cycle")
   const paletteShortcut = useCommandShortcut("command.palette.show")
+  const variantShortcut = useCommandShortcut("variant.cycle")
   const renderer = useRenderer()
   const exit = useExit()
   const dimensions = useTerminalDimensions()
@@ -215,6 +224,17 @@ export function Prompt(props: PromptProps) {
   const workspace = usePromptWorkspace(props.sessionID)
   const move = usePromptMove({ projectID: project.project, sessionID: () => props.sessionID })
   const [cursorVersion, setCursorVersion] = createSignal(0)
+  // kilocode_change start - vim modal editing for the prompt
+  const vim = useVim({
+    input: () => input,
+    disabled: () => props.disabled ?? false,
+    autocompleteVisible: () => Boolean(auto()?.visible),
+    getVimEnabled: () => Boolean(kv.get("vim_enabled", tuiConfig.vim ?? false)),
+    bumpCursor: () => setCursorVersion((value) => value + 1),
+    cursorVersion: () => cursorVersion(),
+  })
+  // kilocode_change end
+  const currentProviderLabel = createMemo(() => local.model.parsed().provider)
   const hasRightContent = createMemo(() => Boolean(props.right))
 
   function promptModelWarning() {
@@ -289,6 +309,7 @@ export function Prompt(props: PromptProps) {
     mode: "normal" | "shell"
     extmarkToPartIndex: Map<number, number>
     interrupt: number
+    exitPress: number // kilocode_change - track double ctrl+c to exit
     placeholder: number
   }>({
     placeholder: randomIndex(list().length),
@@ -299,6 +320,7 @@ export function Prompt(props: PromptProps) {
     mode: "normal",
     extmarkToPartIndex: new Map(),
     interrupt: 0,
+    exitPress: 0, // kilocode_change
   })
 
   createEffect(
@@ -311,29 +333,32 @@ export function Prompt(props: PromptProps) {
     ),
   )
 
-  // Initialize agent/model/variant from last user message when session changes
-  let syncedSessionID: string | undefined
+  // kilocode_change start - sync local agent/model whenever newest user message changes
+  let syncedKey: string | undefined
   createEffect(() => {
     const sessionID = props.sessionID
     const msg = lastUserMessage()
+    if (!sessionID || !msg) return
+    const parts = sync.data.part[msg.id]
+    if (!parts) return
+    if (!KiloSessionTuiSync.model({ role: msg.role, parts })) return
 
-    if (sessionID !== syncedSessionID) {
-      if (!sessionID || !msg) return
+    const key = [sessionID, msg.id].join(":")
+    if (key === syncedKey) return
+    syncedKey = key
 
-      syncedSessionID = sessionID
-
-      // Only set agent if it's a primary agent (not a subagent)
-      const isPrimaryAgent = local.agent.list().some((x) => x.name === msg.agent)
-      if (msg.agent && isPrimaryAgent) {
-        // Keep command line --agent if specified.
-        if (!args.agent) local.agent.set(msg.agent)
-        if (msg.model) {
-          local.model.set(msg.model)
-          local.model.variant.set(msg.model.variant)
-        }
+    // Only set agent if it's a primary agent (not a subagent)
+    const primary = local.agent.list().find((x) => x.name === msg.agent)
+    if (msg.agent && primary) {
+      // Keep command line --agent if specified.
+      if (!args.agent) local.agent.set(msg.agent)
+      if (msg.model && !primary.model && !args.agent) {
+        local.model.set(msg.model)
+        local.model.variant.set(msg.model.variant)
       }
     }
   })
+  // kilocode_change end
 
   const promptCommands = createMemo(() =>
     [
@@ -423,6 +448,20 @@ export function Prompt(props: PromptProps) {
           dialog.clear()
         },
       },
+      // kilocode_change start
+      {
+        title: "Cost alert",
+        desc: "Set Kilo's cost alert",
+        name: "cost_alert",
+        category: "Session",
+        slashName: "cost-alert",
+        slashAliases: ["cost"],
+        run: () => {
+          costAlert.start()
+          dialog.clear()
+        },
+      },
+      // kilocode_change end
       {
         title: "Open editor",
         category: "Session",
@@ -515,6 +554,15 @@ export function Prompt(props: PromptProps) {
           input.cursorOffset = Bun.stringWidth(normalized)
         },
       },
+      // kilocode_change start - vim modal editing toggle (palette + /vim)
+      vimToggleCommand({
+        vimEnabled: vim.vimEnabled,
+        setVimEnabled: (value) => kv.set("vim_enabled", value),
+        resetVim: vim.resetVim,
+        clearDialog: () => dialog.clear(),
+        showToast: (message) => toast.show({ message, variant: "info" }),
+      }),
+      // kilocode_change end
       {
         title: "Skills",
         name: "prompt.skills",
@@ -540,7 +588,7 @@ export function Prompt(props: PromptProps) {
         desc: "Change the workspace for the session",
         name: "workspace.set",
         category: "Session",
-        enabled: Flag.RANEX_EXPERIMENTAL_WORKSPACES,
+        enabled: Flag.KILO_EXPERIMENTAL_WORKSPACES,
         slashName: "warp",
         run: () => {
           workspace.open()
@@ -567,7 +615,7 @@ export function Prompt(props: PromptProps) {
   }))
 
   useBindings(() => ({
-    mode: RANEX_BASE_MODE,
+    mode: KILO_BASE_MODE,
     bindings: tuiConfig.keybinds.gather("prompt.palette", [
       "prompt.submit",
       "prompt.editor",
@@ -575,7 +623,8 @@ export function Prompt(props: PromptProps) {
       "prompt.stash",
       "prompt.stash.pop",
       "prompt.stash.list",
-      "prompt.skills",
+      "prompt.vim.toggle", // kilocode_change
+      "prompt.skills", // kilocode_change
       "session.interrupt",
       "workspace.set",
       "session.move",
@@ -609,6 +658,7 @@ export function Prompt(props: PromptProps) {
         parts: [],
       })
       setStore("extmarkToPartIndex", new Map())
+      vim.resetVim() // kilocode_change - return to insert mode after the prompt is cleared
     },
     submit() {
       void submit()
@@ -634,6 +684,14 @@ export function Prompt(props: PromptProps) {
     setInputTarget(undefined)
     props.ref?.(undefined)
   })
+
+  // kilocode_change start - close autocomplete while blocking overlays hide the prompt
+  createEffect(() => {
+    if (props.visible === false || props.disabled) {
+      auto()?.dismiss()
+    }
+  })
+  // kilocode_change end
 
   createEffect(() => {
     if (!input || input.isDestroyed) return
@@ -753,6 +811,7 @@ export function Prompt(props: PromptProps) {
           input.clear()
           setStore("prompt", { input: "", parts: [] })
           setStore("extmarkToPartIndex", new Map())
+          vim.resetVim() // kilocode_change
           dialog.clear()
         },
       },
@@ -768,6 +827,7 @@ export function Prompt(props: PromptProps) {
             setStore("prompt", { input: entry.input, parts: entry.parts })
             restoreExtmarksFromParts(entry.parts)
             input.gotoBufferEnd()
+            vim.resetVim() // kilocode_change
           }
           dialog.clear()
         },
@@ -785,6 +845,7 @@ export function Prompt(props: PromptProps) {
                 setStore("prompt", { input: entry.input, parts: entry.parts })
                 restoreExtmarksFromParts(entry.parts)
                 input.gotoBufferEnd()
+                vim.resetVim() // kilocode_change
               }}
             />
           ))
@@ -815,6 +876,27 @@ export function Prompt(props: PromptProps) {
       bindings: tuiConfig.keybinds.get("prompt.clear"),
     }
   })
+
+  // kilocode_change start - require a double Ctrl+C to exit from an empty focused prompt
+  useBindings(() => ({
+    target: inputTarget,
+    enabled: inputTarget() !== undefined && !props.disabled && store.prompt.input === "",
+    bindings: [
+      {
+        key: "ctrl+c",
+        desc: "Exit application",
+        group: "Prompt",
+        cmd: (ctx: CommandContext<Renderable, KeyEvent>) => {
+          ctx.event.preventDefault()
+          ctx.event.stopPropagation()
+          setStore("exitPress", store.exitPress + 1)
+          setTimeout(() => setStore("exitPress", 0), 1000)
+          if (store.exitPress >= 2) void exit()
+        },
+      },
+    ],
+  }))
+  // kilocode_change end
 
   useBindings(() => {
     return {
@@ -886,6 +968,7 @@ export function Prompt(props: PromptProps) {
             setStore("prompt", item)
             setStore("mode", item.mode ?? "normal")
             restoreExtmarksFromParts(item.parts)
+            vim.resetVim() // kilocode_change - recalled history starts in insert mode
             input.cursorOffset = 0
           },
         },
@@ -922,6 +1005,7 @@ export function Prompt(props: PromptProps) {
             setStore("prompt", item)
             setStore("mode", item.mode ?? "normal")
             restoreExtmarksFromParts(item.parts)
+            vim.resetVim() // kilocode_change - recalled history starts in insert mode
             input.cursorOffset = input.plainText.length
           },
         },
@@ -961,6 +1045,9 @@ export function Prompt(props: PromptProps) {
     if (workspace.creating() || move.creating()) return false
     if (auto()?.visible) return false
     if (!store.prompt.input) return false
+    // kilocode_change start - in-memory cost alert command
+    if (costAlert.handle(store.prompt.input.trim())) return true
+    // kilocode_change end
     const agent = local.agent.current()
     if (!agent) return false
     const trimmed = store.prompt.input.trim()
@@ -968,11 +1055,60 @@ export function Prompt(props: PromptProps) {
       void exit()
       return true
     }
+    // kilocode_change start
+    const memory = await MemoryPrompt.run({
+      text: store.prompt.input,
+      client: sdk.client,
+      workspace: project.workspace.current(),
+      directory: props.directory,
+      sessionID: props.sessionID,
+      toast,
+      dialog,
+      done: () => {
+        history.append({
+          ...store.prompt,
+          mode: store.mode,
+        })
+        input.extmarks.clear()
+        setStore("prompt", {
+          input: "",
+          parts: [],
+        })
+        setStore("extmarkToPartIndex", new Map())
+        props.onSubmit?.()
+        input.clear()
+      },
+    })
+    if (memory) return true
+    // kilocode_change end
     const selectedModel = local.model.current()
     if (!selectedModel) {
       void promptModelWarning()
       return false
     }
+
+    // kilocode_change start - gate TUI sends on declared agent requirements
+    const requirements = await AgentRequirements.check({
+      client: sdk.client,
+      agent: agent.name,
+      directory: project.instance.directory() || sdk.directory || process.cwd(),
+    }).catch((error) => {
+      toast.show({
+        message: errorMessage(error),
+        variant: "error",
+      })
+      return undefined
+    })
+    if (!requirements) return false
+    if (!requirements.ok) {
+      toast.show({
+        title: "Agent requirements",
+        message: requirements.error.data.message,
+        variant: "error",
+      })
+      return false
+    }
+    // kilocode_change end
 
     const workspaceSession = props.sessionID ? sync.session.get(props.sessionID) : undefined
     const workspaceID = workspaceSession?.workspaceID
@@ -1063,7 +1199,7 @@ export function Prompt(props: PromptProps) {
       move.startSubmit()
       void sdk.client.session.shell({
         sessionID,
-        agent: agent.name,
+        agent: local.agent.current()?.name ?? "", // kilocode_change
         model: {
           providerID: selectedModel.providerID,
           modelID: selectedModel.modelID,
@@ -1073,7 +1209,7 @@ export function Prompt(props: PromptProps) {
       setStore("mode", "normal")
     } else if (
       inputText.startsWith("/") &&
-      sync.data.command.some((x) => x.name === inputText.split("\n")[0].split(" ")[0].slice(1))
+      sync.data.command.some((x) => slashMatches(x, inputText.split("\n")[0].split(" ")[0].slice(1))) // kilocode_change
     ) {
       move.startSubmit()
       // Parse command from first line, preserve multi-line content in arguments
@@ -1087,7 +1223,7 @@ export function Prompt(props: PromptProps) {
         sessionID,
         command: command.slice(1),
         arguments: args,
-        agent: agent.name,
+        agent: local.agent.current()?.name ?? "", // kilocode_change
         model: `${selectedModel.providerID}/${selectedModel.modelID}`,
         variant,
         parts: nonTextParts.filter((x) => x.type === "file"),
@@ -1122,6 +1258,7 @@ export function Prompt(props: PromptProps) {
         })
       if (editorParts.length > 0) editor.markSelectionSent()
     }
+    toast.dismiss() // kilocode_change - dismiss persistent config warning on first submit
     history.append({
       ...store.prompt,
       mode: currentMode,
@@ -1149,7 +1286,7 @@ export function Prompt(props: PromptProps) {
     return true
   }
 
-  function pasteText(text: string, virtualText: string, kind: "paste" | "svg" = "paste") {
+  function pasteText(text: string, virtualText: string) {
     const currentOffset = input.cursorOffset
     const extmarkStart = currentOffset
     const extmarkEnd = extmarkStart + promptOffsetWidth(virtualText)
@@ -1170,7 +1307,6 @@ export function Prompt(props: PromptProps) {
         draft.prompt.parts.push({
           type: "text" as const,
           text,
-          metadata: { kind },
           source: {
             text: {
               start: extmarkStart,
@@ -1187,13 +1323,22 @@ export function Prompt(props: PromptProps) {
   async function pasteInputText(text: string) {
     const normalizedText = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
     const pastedContent = normalizedText.trim()
+    // kilocode_change start - a second identical paste expands the collapsed placeholder
+    if (expandPastedPlaceholder(input, promptPartTypeId, store.extmarkToPartIndex, store.prompt.parts, pastedContent)) {
+      const value = input.plainText
+      setStore("prompt", "input", value)
+      auto()?.onInput(value)
+      syncExtmarksWithPromptParts()
+      return
+    }
+    // kilocode_change end
     const filepath = pastedFilepath(pastedContent, terminalEnvironment.platform)
     const isUrl = /^(https?):\/\//.test(filepath)
     if (!isUrl) {
       const attachment = await readLocalAttachment(filepath)
       const filename = path.basename(filepath)
       if (attachment?.type === "text") {
-        pasteText(attachment.content, `[SVG: ${filename ?? "image"}]`, "svg")
+        pasteText(attachment.content, `[SVG: ${filename ?? "image"}]`)
         return
       }
       if (attachment?.type === "binary") {
@@ -1209,7 +1354,7 @@ export function Prompt(props: PromptProps) {
 
     const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
     if (
-      (lineCount >= 3 || pastedContent.length > 150) &&
+      (lineCount >= 5 || pastedContent.length > 800) && // kilocode_change #7252 delay paste summary
       kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary)
     ) {
       pasteText(pastedContent, `[Pasted ~${lineCount} lines]`)
@@ -1287,11 +1432,30 @@ export function Prompt(props: PromptProps) {
       parts: [],
     })
     setStore("extmarkToPartIndex", new Map())
+    vim.resetVim() // kilocode_change - don't leak stale vim mode/selection into an emptied prompt
   }
 
+  // kilocode_change start - cost-alert logic lives under kilocode/; only prompt mutation stays here
+  const costAlert = createCostAlertController({
+    prefill: () => {
+      const value = "/cost-alert "
+      input.setText(value)
+      setStore("prompt", { input: value, parts: [] })
+      input.gotoBufferEnd()
+    },
+    clearPrompt,
+    toast,
+    nudge,
+    sessionID: () => props.sessionID,
+  })
+  // kilocode_change end
+
   const highlight = createMemo(() => {
-    if (COLOR_CAPABILITY === "none" || leader()) return theme.border
-    return theme.primary
+    if (leader()) return theme.border
+    if (store.mode === "shell") return theme.primary
+    const agent = local.agent.current()
+    if (!agent) return theme.border
+    return local.agent.color(agent.name ?? "") // kilocode_change
   })
 
   const showVariant = createMemo(() => {
@@ -1325,7 +1489,7 @@ export function Prompt(props: PromptProps) {
       status().type !== "idle"
         ? (local.agent.list().find((a) => a.name === lastUserMessage()?.agent) ?? local.agent.current())
         : local.agent.current()
-    const color = COLOR_CAPABILITY === "none" ? theme.accent : agent ? local.agent.color(agent.name) : theme.accent
+    const color = agent ? local.agent.color(agent.name ?? "") : theme.border // kilocode_change
     return {
       frames: createFrames({
         color,
@@ -1355,7 +1519,7 @@ export function Prompt(props: PromptProps) {
           borderColor={borderHighlight()}
           customBorderChars={{
             ...SplitBorder.customBorderChars,
-            bottomLeft: GLYPHS.divider,
+            bottomLeft: "╹",
           }}
         >
           <box
@@ -1382,12 +1546,22 @@ export function Prompt(props: PromptProps) {
                 syncExtmarksWithPromptParts()
                 setCursorVersion((value) => value + 1)
               }}
-              onCursorChange={() => setCursorVersion((value) => value + 1)}
-              onKeyDown={(e: KeyEvent) => {
+              /* kilocode_change */ onCursorChange={() => {
+                setCursorVersion((value) => value + 1)
+                if (store.mode === "normal") auto()?.onCursorChange()
+              }}
+              /* kilocode_change - KeyEvent type for vim key routing */ onKeyDown={(e: KeyEvent) => {
                 if (props.disabled) {
                   e.preventDefault()
                   return
                 }
+                // kilocode_change start - route keys through the vim layer when enabled
+                if (vim.vimOnKey(e)) {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  return
+                }
+                // kilocode_change end
               }}
               onSubmit={() => {
                 // IME: double-defer so the last composed character (e.g. Korean
@@ -1446,30 +1620,48 @@ export function Prompt(props: PromptProps) {
                   {(agent) => (
                     <>
                       <text fg={fadeColor(highlight(), agentMetaAlpha())}>
-                        {store.mode === "shell" ? "Shell" : Locale.titlecase(agent().name)}
+                        {/* kilocode_change start */}
+                        {store.mode === "shell"
+                          ? "Shell"
+                          : (local.agent.current()?.displayName ??
+                            Locale.titlecase(local.agent.current()?.name ?? ""))}{" "}
+                        {/* kilocode_change end */}
                       </text>
+                      {/* kilocode_change start - vim mode indicator */}
+                      <VimModeIndicator
+                        when={() => vim.vimEnabled() && store.mode !== "shell"}
+                        mode={vim.vimMode}
+                        fade={fadeColor}
+                        textMuted={() => theme.textMuted}
+                        info={() => theme.info}
+                        warning={() => theme.warning}
+                        success={() => theme.success}
+                        alpha={agentMetaAlpha}
+                      />
+                      {/* kilocode_change end */}
                       <Show when={store.mode === "normal" && local.permission.mode === "auto"}>
                         <text fg={fadeColor(theme.textMuted, agentMetaAlpha())}>auto</text>
                       </Show>
                       <Show when={store.mode === "normal"}>
-                        <box flexDirection="row" gap={1}>
-                          <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>{GLYPHS.dot}</text>
-                          <text
-                            flexShrink={0}
-                            fg={fadeColor(leader() ? theme.textMuted : theme.text, modelMetaAlpha())}
-                          >
-                            {local.model.parsed().model}
+                      <box flexDirection="row" gap={1}>
+                        <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
+                        <text
+                          flexShrink={0}
+                          fg={fadeColor(leader() ? theme.textMuted : theme.text, modelMetaAlpha())}
+                        >
+                          {local.model.parsed().model}
+                        </text>
+                        <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>{currentProviderLabel()}</text>
+                        <Show when={showVariant()}>
+                          <text fg={fadeColor(theme.textMuted, variantMetaAlpha())}>·</text>
+                          <text>
+                            <span style={{ fg: fadeColor(theme.warning, variantMetaAlpha()), bold: true }}>
+                              {local.model.variant.current()}
+                            </span>
                           </text>
-                          <Show when={showVariant()}>
-                            <text fg={fadeColor(theme.textMuted, variantMetaAlpha())}>{GLYPHS.dot}</text>
-                            <text>
-                              <span style={{ fg: fadeColor(theme.warning, variantMetaAlpha()), bold: true }}>
-                                {local.model.variant.current()}
-                              </span>
-                            </text>
-                          </Show>
-                        </box>
-                      </Show>
+                        </Show>
+                      </box>
+                    </Show>
                     </>
                   )}
                 </Show>
@@ -1484,22 +1676,29 @@ export function Prompt(props: PromptProps) {
         </box>
         <box
           height={1}
-          flexShrink={0}
+          /* kilocode_change */ flexShrink={0}
           border={["left"]}
           borderColor={borderHighlight()}
           customBorderChars={{
             ...EmptyBorder,
-            vertical: theme.backgroundElement.a !== 0 ? GLYPHS.divider : " ",
+            vertical: theme.backgroundElement.a !== 0 ? "╹" : " ",
           }}
         >
           <box
             height={1}
             border={["bottom"]}
             borderColor={theme.backgroundElement}
-            customBorderChars={{
-              ...EmptyBorder,
-              horizontal: theme.backgroundElement.a !== 0 ? GLYPHS.halfBlock : " ",
-            }}
+            customBorderChars={
+              theme.backgroundElement.a !== 0
+                ? {
+                    ...EmptyBorder,
+                    horizontal: "▀",
+                  }
+                : {
+                    ...EmptyBorder,
+                    horizontal: " ",
+                  }
+            }
           />
         </box>
         <box width="100%" flexDirection="row" justifyContent="space-between">
@@ -1513,14 +1712,11 @@ export function Prompt(props: PromptProps) {
               >
                 <box flexShrink={0} flexDirection="row" gap={1}>
                   <box marginLeft={1}>
-                    <Show when={animationsEnabled()} fallback={<text fg={theme.accent}>[{GLYPHS.dot.repeat(3)}]</text>}>
+                    <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
                       <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
                     </Show>
                   </box>
                   <box flexDirection="row" gap={1} flexShrink={0}>
-                    <Show when={status().type === "busy"}>
-                      <text fg={theme.textMuted}>busy</text>
-                    </Show>
                     {(() => {
                       const retry = createMemo(() => {
                         const s = status()
@@ -1637,21 +1833,19 @@ export function Prompt(props: PromptProps) {
                 <text fg={theme.accent}>(new working copy)</text>
               </box>
             </Match>
-            <Match when={true}>
-              {props.hint ?? (
-                <Show when={props.sessionID}>
-                  <box marginLeft={1}>
-                    <text fg={theme.textMuted}>{location()?.directory ?? paths.cwd}</text>
-                  </box>
-                </Show>
-              )}
-            </Match>
+            {/* kilocode_change start - Kilo already shows the working directory in its sidebar */}
+            <Match when={true}>{props.hint ?? <text />}</Match>
+            {/* kilocode_change end */}
           </Switch>
           <Show when={status().type !== "retry"}>
             <box gap={2} flexDirection="row">
-              <Show when={stash.list().length > 0}>
-                <text fg={theme.textMuted}>{stash.list().length} queued {stash.list().length === 1 ? "draft" : "drafts"}</text>
+              {/* kilocode_change start - show "ctrl+c again to exit" hint */}
+              <Show when={store.exitPress > 0}>
+                <text fg={theme.primary}>
+                  ctrl+c <span style={{ fg: theme.primary }}>again to exit</span>
+                </text>
               </Show>
+              {/* kilocode_change end */}
               <Show when={editorContextLabelState() !== "none" ? editorFileLabelDisplay() : undefined}>
                 {(file) => (
                   <text fg={editorContextLabelState() === "pending" ? theme.secondary : theme.textMuted}>{file()}</text>
@@ -1659,6 +1853,11 @@ export function Prompt(props: PromptProps) {
               </Show>
               <Switch>
                 <Match when={store.mode === "normal"}>
+                  <Show when={local.model.variant.list().length > 0}>
+                    <text fg={theme.text}>
+                      {variantShortcut()} <span style={{ fg: theme.textMuted }}>variants</span>
+                    </text>
+                  </Show>
                   <Switch>
                     <Match when={usage()}>
                       {(item) => (

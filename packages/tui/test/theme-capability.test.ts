@@ -66,8 +66,11 @@ describe("degradation", () => {
     expect(bare.background.intent).toBe("default")
     expect(bare.backgroundPanel.intent).toBe("default")
     expect(bare.text.intent).toBe("default")
+    expect(bare.primary.intent).toBe("default")
     expect(bare.error.intent).toBe("default")
     expect(bare.background.equals(RGBA.defaultBackground())).toBe(true)
+    expect(bare.backgroundElement.equals(RGBA.defaultBackground())).toBe(true)
+    expect(bare.primary.equals(RGBA.defaultForeground())).toBe(true)
     expect(bare.text.equals(RGBA.defaultForeground())).toBe(true)
   })
 
@@ -85,6 +88,26 @@ describe("degradation", () => {
       expect(bare.success.slot).not.toBe(bare.warning.slot)
       expect(bare.error.slot).not.toBe(bare.warning.slot)
     }
+  })
+
+  test("royal-blue identity roles stay blue at 16 colours", () => {
+    const theme = degrade(ranex(), "ansi16")
+    for (const key of [
+      "primary",
+      "accent",
+      "borderActive",
+      "diffHunkHeader",
+      "markdownHeading",
+      "markdownLink",
+      "markdownStrong",
+      "markdownListItem",
+      "markdownImage",
+      "syntaxKeyword",
+    ] as const) {
+      expect(theme[key].slot).toBe(12)
+    }
+    expect(theme.success.slot).toBe(10)
+    expect(theme.error.slot).toBe(9)
   })
 
   test("a transparent token is not painted by quantisation", () => {
