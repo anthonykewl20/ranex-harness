@@ -36,7 +36,8 @@ async function main() {
     await Effect.runPromise(
       Effect.gen(function* () {
         const store = yield* SessionStore.Service
-        yield* store.claimExecution(SessionV2.ID.make(msg.sessionID), ExecutionOwner.ownerID)
+        const claimed = yield* store.claimExecution(SessionV2.ID.make(msg.sessionID), ExecutionOwner.ownerID)
+        if (!claimed) return yield* Effect.die("Failed to claim Session execution ownership")
       }).pipe(Effect.scoped, Effect.provide(layer)),
     )
     await Bun.write(msg.readyFile, String(process.pid))

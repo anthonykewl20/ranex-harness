@@ -1,6 +1,6 @@
 export * as SessionStore from "./store"
 
-import { eq } from "drizzle-orm"
+import { and, eq, isNull, or } from "drizzle-orm"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Database } from "../database/database"
 import { makeGlobalNode } from "../effect/app-node"
@@ -10,11 +10,13 @@ import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
 import { SessionMessageTable, SessionTable } from "./sql"
 import { fromRow } from "./info"
+import { ExecutionOwner } from "./execution-owner"
 
 export interface Interface {
   readonly get: (sessionID: SessionSchema.ID) => Effect.Effect<SessionSchema.Info | undefined>
   readonly list: () => Effect.Effect<ReadonlyArray<SessionSchema.Info>>
-  readonly claimExecution: (sessionID: SessionSchema.ID, owner: string) => Effect.Effect<void>
+  readonly claimExecution: (sessionID: SessionSchema.ID, owner: string) => Effect.Effect<boolean>
+  readonly releaseExecution: (sessionID: SessionSchema.ID, owner: string) => Effect.Effect<void>
   readonly executionOwner: (sessionID: SessionSchema.ID) => Effect.Effect<string | undefined>
   readonly context: (sessionID: SessionSchema.ID) => Effect.Effect<SessionMessage.Message[], MessageDecodeError>
   readonly runnerContext: (
@@ -44,10 +46,47 @@ const layer = Layer.effect(
         return rows.map(fromRow)
       }),
       claimExecution: Effect.fn("SessionStore.claimExecution")(function* (sessionID, owner) {
+        const claim = Effect.fnUntraced(function* (attempt: number): Effect.fn.Return<boolean> {
+          const row = yield* db
+            .select({ execution_owner: SessionTable.execution_owner })
+            .from(SessionTable)
+            .where(eq(SessionTable.id, sessionID))
+            .get()
+            .pipe(Effect.orDie)
+          if (!row) return false
+          const observed = row.execution_owner
+          if (observed !== null && observed !== owner && (yield* Effect.promise(() => ExecutionOwner.isLive(observed))))
+            return false
+          const claimed = yield* db
+            .update(SessionTable)
+            .set({ execution_owner: owner })
+            .where(
+              and(
+                eq(SessionTable.id, sessionID),
+                observed === null
+                  ? or(isNull(SessionTable.execution_owner), eq(SessionTable.execution_owner, owner))
+                  : or(
+                      isNull(SessionTable.execution_owner),
+                      eq(SessionTable.execution_owner, observed),
+                      eq(SessionTable.execution_owner, owner),
+                    ),
+              ),
+            )
+            .returning({ id: SessionTable.id })
+            .get()
+            .pipe(Effect.orDie)
+          if (claimed !== undefined) return true
+          if (attempt === 4) return false
+          yield* Effect.yieldNow
+          return yield* claim(attempt + 1)
+        })
+        return yield* claim(1)
+      }),
+      releaseExecution: Effect.fn("SessionStore.releaseExecution")(function* (sessionID, owner) {
         yield* db
           .update(SessionTable)
-          .set({ execution_owner: owner })
-          .where(eq(SessionTable.id, sessionID))
+          .set({ execution_owner: null })
+          .where(and(eq(SessionTable.id, sessionID), eq(SessionTable.execution_owner, owner)))
           .run()
           .pipe(Effect.orDie)
       }),

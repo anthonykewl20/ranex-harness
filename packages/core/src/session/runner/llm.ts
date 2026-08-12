@@ -35,7 +35,6 @@ import { ToolOutputStore } from "../../tool-output-store"
 import { SessionContextEpoch } from "../context-epoch"
 import { SessionCompaction } from "../compaction"
 import { SessionEvent } from "../event"
-import { ExecutionOwner } from "../execution-owner"
 import { SessionHistory } from "../history"
 import { SessionInput } from "../input"
 import { SessionReconcile } from "../reconcile"
@@ -511,7 +510,6 @@ const layer = Layer.effect(
       readonly sessionID: SessionSchema.ID
       readonly force: boolean
     }) {
-      yield* store.claimExecution(input.sessionID, ExecutionOwner.ownerID)
       // Reconcile tools stranded by a prior crash BEFORE the eligible-input guard.
       // A crash with an empty inbox never re-enters run() through the inbox, so
       // reconciliation must fire here regardless of pending work. It only touches

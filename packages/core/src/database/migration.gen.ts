@@ -43,5 +43,6 @@ export const migrations = (
     import("./migration/20260810130935_add_session_execution_owner"),
     import("./migration/20260812114223_session_retry"),
     import("./migration/20260812134550_fearless_havok"),
+    import("./migration/20260812160000_clear_legacy_execution_owner"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]
