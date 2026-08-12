@@ -1,129 +1,178 @@
-<p align="center">
-  <a href="https://opencode.ai">
-    <picture>
-      <source srcset="packages/console/app/src/asset/logo-ornate-dark.svg" media="(prefers-color-scheme: dark)">
-      <source srcset="packages/console/app/src/asset/logo-ornate-light.svg" media="(prefers-color-scheme: light)">
-      <img src="packages/console/app/src/asset/logo-ornate-light.svg" alt="OpenCode logo">
-    </picture>
-  </a>
-</p>
-<p align="center">The open source AI coding agent.</p>
-<p align="center">
-  <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/opencode-ai"><img alt="npm" src="https://img.shields.io/npm/v/opencode-ai?style=flat-square" /></a>
-  <a href="https://github.com/anomalyco/opencode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opencode/publish.yml?style=flat-square&branch=dev" /></a>
-</p>
+# Ranex Harness
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh.md">简体中文</a> |
-  <a href="README.zht.md">繁體中文</a> |
-  <a href="README.ko.md">한국어</a> |
-  <a href="README.de.md">Deutsch</a> |
-  <a href="README.es.md">Español</a> |
-  <a href="README.fr.md">Français</a> |
-  <a href="README.it.md">Italiano</a> |
-  <a href="README.da.md">Dansk</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.pl.md">Polski</a> |
-  <a href="README.ru.md">Русский</a> |
-  <a href="README.bs.md">Bosanski</a> |
-  <a href="README.ar.md">العربية</a> |
-  <a href="README.no.md">Norsk</a> |
-  <a href="README.br.md">Português (Brasil)</a> |
-  <a href="README.th.md">ไทย</a> |
-  <a href="README.tr.md">Türkçe</a> |
-  <a href="README.uk.md">Українська</a> |
-  <a href="README.bn.md">বাংলা</a> |
-  <a href="README.gr.md">Ελληνικά</a> |
-  <a href="README.vi.md">Tiếng Việt</a>
-</p>
+> Rules an agent can read are suggestions. Rules compiled into code are
+> constraints.
 
-[![OpenCode Terminal UI](packages/web/src/assets/lander/screenshot.png)](https://opencode.ai)
+The agent harness — the model-driven side of Ranex's wall. A trimmed fork of
+opencode (MIT), molded so a code-only kernel outside the loop judges every step
+by executable evidence.
 
----
+## The problem
 
-### Installation
+An AI writing software is a blindfolded dart thrower with a guide shouting
+coordinates. The thrower cannot see whether its dart landed, and the guide may
+have given bad coordinates before the throw. Those are separate failures. A
+third is more common:
 
-```bash
-# YOLO
-curl -fsSL https://opencode.ai/install | bash
+> Most tools let the thrower paint the bullseye around the dart after it lands.
 
-# Package managers
-npm i -g opencode-ai@latest        # or bun/pnpm/yarn
-scoop install opencode             # Windows
-choco install opencode             # Windows
-brew install anomalyco/tap/opencode # macOS and Linux (recommended, always up to date)
-brew install opencode              # macOS and Linux (official brew formula, updated less)
-sudo pacman -S opencode            # Arch Linux (Stable)
-paru -S opencode-bin               # Arch Linux (Latest from AUR)
-mise use -g opencode               # Any OS
-nix run nixpkgs#opencode           # or github:anomalyco/opencode for latest dev branch
+Today an agent both writes the tests and declares success, so "all tests pass"
+means little. The full problem statement lives in the kernel repository.
+
+## The solution
+
+Ranex is `make` for a nondeterministic compiler. It optimizes the **scoring**,
+not the aim.
+
+> Ranex does not improve aim. Not by one degree. It makes misses visible and cheap, and hits provable.
+
+A code-only kernel sits outside the agent loop and judges executable evidence,
+not model confidence.
+
+> Removing every model credential from the machine must not change a single verdict.
+
+The wall is load-bearing. The harness is model-driven TypeScript. The kernel is
+code-only Python. They run as separate processes. Hooks inside the harness
+collect references. The kernel outside reads disk, holds keys, writes the
+journal, and is the only thing that stamps.
+
+## What this harness is
+
+This repository is the **ranex harness**: the producer on the model-driven side
+of the wall. It is not a general-purpose coding agent, and it is not opencode.
+It is a deliberately narrowed fork whose output is treated as untrusted until
+the separate Ranex kernel measures it.
+
+The molding is concrete:
+
+- **Pinned provenance.** Forked from opencode at `v1.18.11`
+  (`012c2f57f976489d88bd4598a056b4bdcdd428ee`, abbreviated `012c2f57`).
+  Upstream MIT attribution is retained. This records provenance, not
+  affiliation.
+- **Keep-set.** `ranex` (core business logic & server), `core`, `cli`, `llm`,
+  `plugin`, `protocol`, `schema`, `tui`, `server`, `sdk`,
+  `effect-drizzle-sqlite`, plus top-level `patches/`.
+- **Cut-set.** Desktop, web, console, infra, and the other upstream packages
+  outside the keep-set are cut.
+- **Locked plugin surface.** Only compiled-in built-ins may load. Config-driven
+  and npm-installed plugins are refused. The bridge is the only loaded plugin.
+- **Fail-closed startup.** The harness refuses to start unbridged. A silent,
+  unjudged run is a defect, never a default.
+- **No producer approval.** The harness never approves, merges, stamps, or
+  names the approver. On task end it commits its tree. The kernel materialises
+  that commit and judges the bytes itself.
+
+The harness's own summary is discarded. It is never evidence.
+
+> One actor writes the code, writes the tests, and declares success. That is why "all tests pass" from an AI means so little — the target moved to wherever the dart went.
+
+### How the loop closes
+
+```text
+take the next ready task
+  → create an isolated git worktree
+  → spawn a worker
+  → wait for it to exit
+  → read the DIFF ON DISK (the worker's summary is discarded)
+  → run the checks (code, not a model)
+  ├─ pass → the kernel merges
+  └─ fail → retry ×3, then escalate to the human in plain language
 ```
 
-> [!TIP]
-> Remove versions older than 0.1.x before installing.
+Workers never merge — the kernel merges.
 
-### Desktop App (BETA)
+## The wall
 
-OpenCode is also available as a desktop application. Download directly from the [releases page](https://github.com/anomalyco/opencode/releases) or [opencode.ai/download](https://opencode.ai/download).
+Producer and gauge are under one roof but separated by a process boundary. If
+the wall falls, the restaurant grades its own dishes. Hooks collect; the kernel
+judges.
 
-| Platform              | Download                           |
-| --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe` |
-| Linux                 | `.deb`, `.rpm`, or `.AppImage`     |
+## Status
+
+**Pre-release. This is not a usable product yet.** This is the harness side of
+a system whose hardest conceptual part — the verdict path — lives in the
+kernel.
+
+This is where ADR-015's durable-execution program runs: milestone #1, "Durable
+execution, failover, and recovery." Two of its five durability claims are in
+production here:
+
+- **Provider watchdog** — SLICE-012, `23d6a5b4ee`. A stalled provider stream
+  now reaches a terminal state on its own instead of hanging forever.
+- **Reconciler reorder and startup sweep** — SLICE-013, `a8bc7bdf35`. A crash
+  with an empty inbox no longer strands tools projected `running` forever.
+
+Three remain: durable retry, durable blockers, and Session-ID fencing. Each is
+gated by the SLICE-011 prototype record. The prototype proved the design. It
+shipped none of those three claims into production.
+
+The TUI is being redesigned on a **separate track** under ADR-018: "the board
+is the front door." It neither consumes the durability program nor changes
+kernel authority.
+
+**Known gaps, stated plainly:**
+
+- Same-UID key theft is open (`RISK-06`). Confinement under ADR-006 and
+  SLICE-017+ closes it. Until then, use a scoped, spend-limited model key.
+- Today's `task fanout` is free-prompt JSONL prototype mechanics, **not**
+  production mutation authority. Keep one mutation writer until SLICE-044's
+  exit.
+
+## Where the kernel lives
+
+The authoritative problem statement, full arc42 architecture map, ADRs, slice
+ledger, and current status live in **the Ranex kernel repository**, the sibling
+Python project. This harness is out-of-tree relative to it. Harness-side
+durability work lands here.
+
+This repository is hosted at
+[github.com/anthonykewl20/ranex-harness](https://github.com/anthonykewl20/ranex-harness).
+No kernel URL is asserted here until the owner supplies the verified location.
+
+## Development
+
+Requires Bun 1.3 or newer.
 
 ```bash
-# macOS (Homebrew)
-brew install --cask opencode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/opencode-desktop
+bun install
+bun dev
 ```
 
-#### Installation Directory
-
-The install script respects the following priority order for the installation path:
-
-1. `$OPENCODE_INSTALL_DIR` - Custom installation directory
-2. `$XDG_BIN_DIR` - XDG Base Directory Specification compliant path
-3. `$HOME/bin` - Standard user binary directory (if it exists or can be created)
-4. `$HOME/.opencode/bin` - Default fallback
+`bun dev` runs in `packages/ranex`. To run against another directory:
 
 ```bash
-# Examples
-OPENCODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://opencode.ai/install | bash
-XDG_BIN_DIR=$HOME/.local/bin curl -fsSL https://opencode.ai/install | bash
+bun dev <directory>
 ```
 
-### Agents
+Typecheck from the affected package, never from the repository root and never
+with `tsc` directly:
 
-OpenCode includes two built-in agents you can switch between with the `Tab` key.
+```bash
+cd packages/ranex
+bun typecheck
+```
 
-- **build** - Default, full-access agent for development work
-- **plan** - Read-only agent for analysis and code exploration
-  - Denies file edits by default
-  - Asks permission before running bash commands
-  - Ideal for exploring unfamiliar codebases or planning changes
+Tests cannot run from the repository root; the root `test` script guards this.
+Run them from the relevant package directory.
 
-Also included is a **general** subagent for complex searches and multistep tasks.
-This is used internally and can be invoked using `@general` in messages.
+After changing the public Protocol or Server `HttpApi`, regenerate clients:
 
-Learn more about [agents](https://opencode.ai/docs/agents).
+```bash
+cd packages/client
+bun run generate
+```
 
-### Documentation
+Do not edit `src/generated` or `src/generated-effect` directly. See
+[CONTRIBUTING.md](./CONTRIBUTING.md) for the remaining development workflow and
+[AGENTS.md](./AGENTS.md) for repository rules and style.
 
-For more info on how to configure OpenCode, [**head over to our docs**](https://opencode.ai/docs).
+## Provenance and license
 
-### Contributing
+MIT License — see [LICENSE](./LICENSE). The on-disk notice is `Copyright (c) 2025 opencode`, retained verbatim from the upstream fork.
 
-If you're interested in contributing to OpenCode, please read our [contributing docs](./CONTRIBUTING.md) before submitting a pull request.
+This repository is a fork of
+[opencode](https://github.com/anomalyco/opencode) (MIT), pinned at `v1.18.11`
+(`012c2f57`). Upstream's MIT notice is retained.
 
-### Building on OpenCode
-
-If you are working on a project that's related to OpenCode and is using "opencode" as part of its name, for example "opencode-dashboard" or "opencode-mobile", please add a note to your README to clarify that it is not built by the OpenCode team and is not affiliated with us in any way.
-
----
-
-**Join our community** [Discord](https://discord.gg/opencode) | [X.com](https://x.com/opencode)
+This fork is not built or maintained by the opencode team and is not affiliated
+with opencode.
