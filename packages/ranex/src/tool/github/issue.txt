@@ -1,6 +1,6 @@
-Manage GitHub issues — list, get, create, update, close, and comment on issues in a GitHub repository.
+Manage GitHub issues — list, get, create, update, close, and comment on issues in a GitHub repository. Pass `action` at the top level; do not use an `operation` field.
 
-The `operation` field selects the action via its `action` discriminant:
+Examples: `{ "action": "create", "title": "Bug report" }`, `{ "action": "get", "number": 42 }`, `{ "action": "comment", "number": 42, "body": "Fixed" }`.
 
 - `list`: List issues for a repository. Optional `state` ("open", "closed", "all"; defaults to "open"), `labels` (array of label names to filter by), and `milestone` (milestone number to filter by).
 - `get`: Fetch a single issue. Requires `number`.

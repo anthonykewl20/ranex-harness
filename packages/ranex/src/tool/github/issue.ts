@@ -3,10 +3,20 @@ import * as Tool from "../tool"
 import DESCRIPTION from "./issue.txt"
 import { githubErrorResult } from "./shared"
 import { GitHub } from "@/github/github"
-import type { Result } from "@/github/issues"
+import type { Operation, Result } from "@/github/issues"
 
-const IssueOperation = Schema.Union([
+const Repository = {
+  owner: Schema.optional(Schema.String).annotate({
+    description: "Repository owner. Defaults to the current git origin remote.",
+  }),
+  repo: Schema.optional(Schema.String).annotate({
+    description: "Repository name. Defaults to the current git origin remote.",
+  }),
+}
+
+export const Parameters = Schema.Union([
   Schema.Struct({
+    ...Repository,
     action: Schema.Literal("list"),
     state: Schema.Literals(["open", "closed", "all"]).pipe(
       Schema.withDecodingDefault(Effect.succeed("open" as const)),
@@ -15,10 +25,12 @@ const IssueOperation = Schema.Union([
     milestone: Schema.optional(Schema.Number).annotate({ description: "Filter by milestone number." }),
   }),
   Schema.Struct({
+    ...Repository,
     action: Schema.Literal("get"),
     number: Schema.Number,
   }),
   Schema.Struct({
+    ...Repository,
     action: Schema.Literal("create"),
     title: Schema.String,
     body: Schema.optional(Schema.String),
@@ -27,6 +39,7 @@ const IssueOperation = Schema.Union([
     milestone: Schema.optional(Schema.Number),
   }),
   Schema.Struct({
+    ...Repository,
     action: Schema.Literal("update"),
     number: Schema.Number,
     title: Schema.optional(Schema.String),
@@ -34,27 +47,17 @@ const IssueOperation = Schema.Union([
     state: Schema.optional(Schema.Literals(["open", "closed"])),
   }),
   Schema.Struct({
+    ...Repository,
     action: Schema.Literal("close"),
     number: Schema.Number,
   }),
   Schema.Struct({
+    ...Repository,
     action: Schema.Literal("comment"),
     number: Schema.Number,
     body: Schema.String,
   }),
 ])
-
-export const Parameters = Schema.Struct({
-  owner: Schema.optional(Schema.String).annotate({
-    description: "Repository owner. Defaults to the current git origin remote.",
-  }),
-  repo: Schema.optional(Schema.String).annotate({
-    description: "Repository name. Defaults to the current git origin remote.",
-  }),
-  operation: IssueOperation.annotate({
-    description: "The issue operation to perform.",
-  }),
-})
 
 type Metadata = {
   owner: string
@@ -82,26 +85,26 @@ export const GitHubIssueTool = Tool.define<typeof Parameters, Metadata, GitHub.S
             repo: params.repo,
           })
 
-          const mode = WRITES.has(params.operation.action) ? "write" : "read"
+          const mode = WRITES.has(params.action) ? "write" : "read"
           yield* ctx.ask({
             permission: "github",
             patterns: [`issues:${mode}:${owner}/${repo}`],
             always: [`issues:${mode}:${owner}/${repo}`],
             metadata: {
-              action: params.operation.action,
+              action: params.action,
               owner,
               repo,
             },
           })
 
-          const result = yield* github.issue({ owner, repo }, params.operation)
+          const result = yield* github.issue({ owner, repo }, issueOperation(params))
 
           return {
             title: titleFor(
               result,
               owner,
               repo,
-              params.operation.action === "comment" ? params.operation.number : undefined,
+              params.action === "comment" ? params.number : undefined,
             ),
             output: JSON.stringify("items" in result ? result.items : result.item, null, 2),
             metadata: {
@@ -128,6 +131,29 @@ export const GitHubIssueTool = Tool.define<typeof Parameters, Metadata, GitHub.S
     } satisfies Tool.DefWithoutID<typeof Parameters, Metadata>
   }),
 )
+
+function issueOperation(params: typeof Parameters.Type): Operation {
+  switch (params.action) {
+    case "list":
+      return { action: params.action, state: params.state, labels: params.labels, milestone: params.milestone }
+    case "get":
+    case "close":
+      return { action: params.action, number: params.number }
+    case "create":
+      return {
+        action: params.action,
+        title: params.title,
+        body: params.body,
+        labels: params.labels,
+        assignees: params.assignees,
+        milestone: params.milestone,
+      }
+    case "update":
+      return { action: params.action, number: params.number, title: params.title, body: params.body, state: params.state }
+    case "comment":
+      return { action: params.action, number: params.number, body: params.body }
+  }
+}
 
 function titleFor(result: Result, owner: string, repo: string, commentNumber?: number) {
   if ("items" in result) return `${result.items.length} issues in ${owner}/${repo}`
