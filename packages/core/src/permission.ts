@@ -274,7 +274,7 @@ const layer = Layer.effect(
 
           const won = yield* claimSettlement(input.requestID)
           if (!won) return yield* new NotFoundError({ requestID: input.requestID })
-          if (!existing) return yield* EffectRuntime.die(`Missing pending permission Deferred: ${input.requestID}`)
+          if (!existing) return
 
           if (input.reply === "reject") {
             yield* Deferred.fail(

@@ -152,7 +152,7 @@ const layer = Layer.effect(
           const won = yield* claimSettlement(input.requestID)
           if (!won) return yield* new NotFoundError({ requestID: input.requestID })
           const existing = pending.get(input.requestID)
-          if (!existing) return yield* Effect.die(`Missing pending question Deferred: ${input.requestID}`)
+          if (!existing) return
           yield* Deferred.succeed(existing.deferred, input.answers)
           pending.delete(input.requestID)
           yield* events.publish(Event.Replied, {
@@ -170,7 +170,7 @@ const layer = Layer.effect(
           const won = yield* claimSettlement(requestID)
           if (!won) return yield* new NotFoundError({ requestID })
           const existing = pending.get(requestID)
-          if (!existing) return yield* Effect.die(`Missing pending question Deferred: ${requestID}`)
+          if (!existing) return
           yield* Deferred.fail(existing.deferred, new RejectedError())
           pending.delete(requestID)
           yield* events.publish(Event.Rejected, {

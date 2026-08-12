@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
-import { Deferred, Effect, Exit, Layer, Scope } from "effect"
+import { Deferred, Effect, Exit, Layer, Scope, Stream } from "effect"
 import { AgentV2 } from "@ranex/core/agent"
 import { Database } from "@ranex/core/database/database"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
@@ -203,19 +203,50 @@ describe("durable permission and question blockers", () => {
       return counts
     }))
     expect(original).toEqual({ permission: 1, question: 1 })
-    const republished = await graph(filename, Effect.gen(function* () {
-      const events = yield* EventV2.Service
-      const counts = { permission: 0, question: 0 }
-      const unsubscribe = yield* events.listen((event) => Effect.sync(() => {
-        if (event.type === PermissionV2.Event.Asked.type) counts.permission++
-        if (event.type === QuestionV2.Event.Asked.type) counts.question++
-      }))
-      yield* Effect.addFinalizer(() => unsubscribe)
-      yield* PermissionV2.Service
-      yield* QuestionV2.Service
-      yield* Effect.yieldNow
-      return counts
+    const counts = { permission: 0, question: 0 }
+    const eventSpy = Layer.succeed(EventV2.Service, EventV2.Service.of({
+      publish: (definition, data) => Effect.sync(() => {
+        if (definition.type === PermissionV2.Event.Asked.type) counts.permission++
+        if (definition.type === QuestionV2.Event.Asked.type) counts.question++
+        return { id: EventV2.ID.create(), type: definition.type, data } as EventV2.Payload<typeof definition>
+      }),
+      subscribe: () => Stream.empty,
+      all: () => Stream.empty,
+      durable: () => Stream.empty,
+      listen: () => Effect.succeed(Effect.void),
+      project: () => Effect.void,
+      replay: () => Effect.void,
+      replayAll: () => Effect.succeed(undefined),
+      remove: () => Effect.void,
+      claim: () => Effect.void,
     }))
+    const republished = await Effect.runPromise(Effect.gen(function* () {
+      const permissions = yield* PermissionV2.Service
+      yield* QuestionV2.Service
+      const observed = { ...counts }
+      const events = yield* EventV2.Service
+      yield* events.publish(PermissionV2.Event.Asked, (yield* permissions.list())[0]!)
+      expect(counts.permission).toBe(1)
+      return observed
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(AppNodeBuilder.build(
+        LayerNode.group([
+          Database.node,
+          EventV2.node,
+          SessionStore.node,
+          PermissionSaved.node,
+          AgentV2.node,
+          PermissionV2.node,
+          QuestionV2.node,
+        ]),
+        [
+          [Database.node, Database.layerFromPath(filename)],
+          [EventV2.node, eventSpy],
+          [Location.node, current],
+        ],
+      )),
+    ))
     expect(republished).toEqual({ permission: 0, question: 0 })
   })
 
