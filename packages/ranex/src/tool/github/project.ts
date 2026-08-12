@@ -1,17 +1,17 @@
 import { Effect, Schema } from "effect"
 import * as Tool from "../tool"
 import DESCRIPTION from "./project.txt"
-import { githubErrorResult } from "./shared"
+import { githubErrorResult, PositiveIdentifier } from "./shared"
 import { GitHub } from "@/github/github"
 import type { Result } from "@/github/projects"
 
 const ContentRef = Schema.Struct({
   owner: Schema.String,
   repo: Schema.String,
-  number: Schema.Number,
+  number: PositiveIdentifier,
 })
 
-const ProjectOperation = Schema.Union([
+export const Parameters = Schema.Union([
   Schema.Struct({
     action: Schema.Literal("list"),
     owner: Schema.String.annotate({ description: "Org or user login that owns the projects." }),
@@ -19,7 +19,7 @@ const ProjectOperation = Schema.Union([
   Schema.Struct({
     action: Schema.Literal("get"),
     owner: Schema.String,
-    number: Schema.Number.annotate({ description: "Project number." }),
+    number: PositiveIdentifier.annotate({ description: "Project number." }),
   }),
   Schema.Struct({
     action: Schema.Literal("create"),
@@ -29,7 +29,7 @@ const ProjectOperation = Schema.Union([
   Schema.Struct({
     action: Schema.Literal("add_item"),
     owner: Schema.String,
-    number: Schema.Number,
+    number: PositiveIdentifier.annotate({ description: "Project number." }),
     content: ContentRef.annotate({
       description: "The issue to add: { owner, repo, number }.",
     }),
@@ -37,7 +37,7 @@ const ProjectOperation = Schema.Union([
   Schema.Struct({
     action: Schema.Literal("set_field"),
     owner: Schema.String,
-    number: Schema.Number,
+    number: PositiveIdentifier.annotate({ description: "Project number." }),
     field_name: Schema.String,
     value: Schema.String,
     content: ContentRef.annotate({
@@ -45,12 +45,6 @@ const ProjectOperation = Schema.Union([
     }),
   }),
 ])
-
-export const Parameters = Schema.Struct({
-  operation: ProjectOperation.annotate({
-    description: "The project operation to perform.",
-  }),
-})
 
 type Metadata = {
   owner: string
@@ -75,7 +69,7 @@ export const GitHubProjectTool = Tool.define<typeof Parameters, Metadata, GitHub
       parameters: Parameters,
       execute: (params, ctx) =>
         Effect.gen(function* () {
-          const op = params.operation
+          const op = params
           const mode = WRITES.has(op.action) ? "write" : "read"
           yield* ctx.ask({
             permission: "github",

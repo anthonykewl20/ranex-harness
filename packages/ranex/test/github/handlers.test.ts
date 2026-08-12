@@ -243,6 +243,21 @@ describe("github issue handlers", () => {
     expect(result.item.state).toBe("closed")
   })
 
+  test("update forwards direct issue changes", async () => {
+    const calls: unknown[] = []
+    const octokit = makeFakeOctokit({
+      issuesUpdate: async (params) => {
+        calls.push(params)
+        return { data: { ...sampleIssue, title: "Fixed", body: "Resolved" } }
+      },
+    })
+    const result = await Effect.runPromise(
+      Issues.handle(octokit, repo, { action: "update", number: 42, title: "Fixed", body: "Resolved" }),
+    )
+    expect(calls).toEqual([{ owner: "acme", repo: "widgets", issue_number: 42, title: "Fixed", body: "Resolved" }])
+    expect(result).toMatchObject({ action: "update", item: { title: "Fixed", body: "Resolved" } })
+  })
+
   test("comment forwards its body and normalizes the response", async () => {
     const calls: unknown[] = []
     const octokit = makeFakeOctokit({
@@ -342,6 +357,39 @@ describe("github milestone handlers", () => {
     })
   })
 
+  test("get forwards milestone number", async () => {
+    const calls: unknown[] = []
+    const result = await Effect.runPromise(
+      Milestones.handle(
+        makeFakeOctokit({ getMilestone: async (params) => (calls.push(params), { data: sampleMilestone }) }),
+        repo,
+        { action: "get", number: 5 },
+      ),
+    )
+    expect(calls).toEqual([{ owner: "acme", repo: "widgets", milestone_number: 5 }])
+    expect(result).toMatchObject({ action: "get", item: { number: 5 } })
+  })
+
+  test("update forwards milestone changes", async () => {
+    const calls: unknown[] = []
+    const result = await Effect.runPromise(
+      Milestones.handle(
+        makeFakeOctokit({ updateMilestone: async (params) => (calls.push(params), { data: sampleMilestone }) }),
+        repo,
+        { action: "update", number: 5, title: "v2.1", state: "open", due_on: "2024-07-01T00:00:00Z" },
+      ),
+    )
+    expect(calls).toEqual([{
+      owner: "acme",
+      repo: "widgets",
+      milestone_number: 5,
+      title: "v2.1",
+      state: "open",
+      due_on: "2024-07-01T00:00:00Z",
+    }])
+    expect(result.action).toBe("update")
+  })
+
   test("close delegates to updateMilestone with closed state", async () => {
     const calls: unknown[] = []
     const octokit = makeFakeOctokit({
@@ -396,5 +444,114 @@ describe("github project handlers", () => {
     expect(orgCalled).toBe(true)
     expect(userCalls).toEqual([{ username: "me" }])
     expect(result.items).toHaveLength(1)
+    expect(result.items[0]?.url).toBe("https://github.com/users/me/projects/1")
+  })
+
+  test("get falls back with string user_id and constructs user URL", async () => {
+    const calls: unknown[] = []
+    const octokit = {
+      rest: { projects: {
+        getForOrg: async () => Promise.reject({ status: 404, message: "Not Found" }),
+        getForUser: async (params: unknown) => (calls.push(params), { data: { number: 7, title: "Roadmap" } }),
+      } },
+    } as unknown as Octokit
+    const result = await Effect.runPromise(
+      Projects.handle({ octokit, graphql: (async () => ({})) as unknown as typeof graphql }, { action: "get", owner: "me", number: 7 }),
+    )
+    expect(calls).toEqual([{ user_id: "me", project_number: 7 }])
+    expect(result).toMatchObject({ action: "get", item: { url: "https://github.com/users/me/projects/7" } })
+  })
+
+  test("create resolves owner and forwards GraphQL variables", async () => {
+    const calls: Array<{ query: string; variables: unknown }> = []
+    const graphqlClient = (async (query: string, variables: unknown) => {
+      calls.push({ query, variables })
+      if (query.includes("organization")) return { organization: { id: "ORG" } }
+      return { createProjectV2: { projectV2: { number: 7, title: "Roadmap", url: "https://github.com/orgs/acme/projects/7" } } }
+    }) as unknown as typeof graphql
+    const result = await Effect.runPromise(
+      Projects.handle({ octokit: {} as Octokit, graphql: graphqlClient }, { action: "create", owner: "acme", title: "Roadmap" }),
+    )
+    expect(calls[0]?.variables).toEqual({ login: "acme" })
+    expect(calls[1]?.variables).toEqual({ ownerId: "ORG", title: "Roadmap" })
+    expect(result).toMatchObject({ action: "create", item: { number: 7, title: "Roadmap" } })
+  })
+
+  test("create propagates non-404 errors resolving an organization owner", async () => {
+    const calls: string[] = []
+    const graphqlClient = (async (query: string) => {
+      calls.push(query)
+      throw { status: 403, message: "Forbidden" }
+    }) as unknown as typeof graphql
+
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        Projects.handle(
+          { octokit: {} as Octokit, graphql: graphqlClient },
+          { action: "create", owner: "acme", title: "Roadmap" },
+        ),
+      ),
+    )
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toContain("organization")
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      expect(Cause.squash(exit.cause)).toMatchObject({ status: 403, message: "Forbidden" })
+    }
+  })
+
+  test("add_item falls back with string user_id", async () => {
+    const calls: unknown[] = []
+    const octokit = {
+      rest: {
+        issues: { get: async (params: unknown) => (calls.push(params), { data: { id: 123 } }) },
+        projects: {
+          addItemForOrg: async () => Promise.reject({ status: 404, message: "Not Found" }),
+          addItemForUser: async (params: unknown) => (calls.push(params), { data: { node_id: "ITEM", content_type: "Issue", content: { title: "Bug", number: 42 } } }),
+        },
+      },
+    } as unknown as Octokit
+    const result = await Effect.runPromise(
+      Projects.handle(
+        { octokit, graphql: (async () => ({})) as unknown as typeof graphql },
+        { action: "add_item", owner: "me", number: 7, content: { owner: "acme", repo: "app", number: 42 } },
+      ),
+    )
+    expect(calls).toEqual([
+      { owner: "acme", repo: "app", issue_number: 42 },
+      { user_id: "me", project_number: 7, type: "Issue", id: 123 },
+    ])
+    expect(result).toMatchObject({ action: "add_item", item: { id: "ITEM", content_number: 42 } })
+  })
+
+  test("set_field uses user endpoints and forwards GraphQL field variables", async () => {
+    const userCalls: unknown[] = []
+    const graphqlCalls: unknown[] = []
+    const notFound = () => Promise.reject({ status: 404, message: "Not Found" })
+    const octokit = {
+      rest: { projects: {
+        getForOrg: notFound,
+        getForUser: async (params: unknown) => (userCalls.push(params), { data: { node_id: "PROJECT" } }),
+        listFieldsForOrg: notFound,
+        listFieldsForUser: async (params: unknown) => (userCalls.push(params), { data: [{ name: "Status", node_id: "FIELD", data_type: "single_select", options: [{ id: "DONE", name: { raw: "Done" } }] }] }),
+        listItemsForOrg: notFound,
+        listItemsForUser: async (params: unknown) => (userCalls.push(params), { data: [{ node_id: "ITEM", content_type: "Issue", content: { number: 42, title: "Bug", repository: { full_name: "acme/app" } } }] }),
+      } },
+    } as unknown as Octokit
+    const graphqlClient = (async (_query: string, variables: unknown) => (graphqlCalls.push(variables), {})) as unknown as typeof graphql
+    const result = await Effect.runPromise(
+      Projects.handle(
+        { octokit, graphql: graphqlClient },
+        { action: "set_field", owner: "me", number: 7, field_name: "Status", value: "Done", content: { owner: "acme", repo: "app", number: 42 } },
+      ),
+    )
+    expect(userCalls).toEqual([
+      { user_id: "me", project_number: 7 },
+      { user_id: "me", project_number: 7 },
+      { user_id: "me", project_number: 7 },
+    ])
+    expect(graphqlCalls).toEqual([{ projectId: "PROJECT", itemId: "ITEM", fieldId: "FIELD", value: { singleSelectOptionId: "DONE" } }])
+    expect(result).toMatchObject({ action: "set_field", item: { field_name: "Status", field_value: "Done" } })
   })
 })

@@ -1,16 +1,14 @@
-Manage GitHub issues — list, get, create, update, close, and comment on issues in a GitHub repository. Pass `action` at the top level; do not use an `operation` field.
+Manage GitHub issues with a flat top-level `action` contract. Do not use an `operation` field.
 
-Examples: `{ "action": "create", "title": "Bug report" }`, `{ "action": "get", "number": 42 }`, `{ "action": "comment", "number": 42, "body": "Fixed" }`.
+- `list`: `{ "action": "list", "state": "open", "labels": ["bug"], "milestone": 3 }`
+- `get`: `{ "action": "get", "number": 42 }`
+- `create`: `{ "action": "create", "title": "Bug report", "body": "Steps to reproduce", "labels": ["bug"], "assignees": ["octocat"], "milestone": 3 }`
+- `update`: `{ "action": "update", "number": 42, "title": "Updated title", "body": "Updated details", "state": "open" }`
+- `close`: `{ "action": "close", "number": 42 }`
+- `comment`: `{ "action": "comment", "number": 42, "body": "Fixed" }`
 
-- `list`: List issues for a repository. Optional `state` ("open", "closed", "all"; defaults to "open"), `labels` (array of label names to filter by), and `milestone` (milestone number to filter by).
-- `get`: Fetch a single issue. Requires `number`.
-- `create`: Create a new issue. Requires `title`. Optional `body`, `labels` (array of strings), `assignees` (array of usernames), `milestone` (milestone number).
-- `update`: Modify an issue. Requires `number`. Optional `title`, `body`, `state` ("open" or "closed").
-- `close`: Close an issue. Requires `number`.
-- `comment`: Add a comment to an issue. Requires `number` and `body`.
+`list` defaults `state` to "open"; valid states are "open", "closed", and "all". Update state may be "open" or "closed". Issue and milestone identifiers accept positive integers or decimal digit strings.
 
-`owner` and `repo` are optional and default to the current git repository's GitHub origin remote. Provide them explicitly to target a different repository (both must be provided together).
+`owner` and `repo` are optional and default to the current git origin. Supply both together to target another repository; supplying only one is invalid. For example: `{ "action": "get", "owner": "acme", "repo": "widgets", "number": 42 }`.
 
-Requires the GITHUB_TOKEN environment variable to be set.
-
-All operations require user permission approval before execution. The user can allow specific operations persistently via opencode.json permission rules using patterns like `issues:read:owner/repo` or `issues:write:owner/repo`.
+Requires GitHub authentication. Every operation requires approval using `issues:read:owner/repo` or `issues:write:owner/repo` permission patterns.

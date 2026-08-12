@@ -1,52 +1,58 @@
 import { Effect, Schema } from "effect"
 import * as Tool from "../tool"
 import DESCRIPTION from "./milestone.txt"
-import { githubErrorResult } from "./shared"
+import { githubErrorResult, PositiveIdentifier } from "./shared"
 import { GitHub } from "@/github/github"
-import type { Result } from "@/github/milestones"
+import type { Operation, Result } from "@/github/milestones"
 
-const MilestoneOperation = Schema.Union([
-  Schema.Struct({
-    action: Schema.Literal("list"),
-    state: Schema.Literals(["open", "closed", "all"]).pipe(
-      Schema.withDecodingDefault(Effect.succeed("open" as const)),
-    ),
-  }),
-  Schema.Struct({
-    action: Schema.Literal("get"),
-    number: Schema.Number,
-  }),
-  Schema.Struct({
-    action: Schema.Literal("create"),
-    title: Schema.String,
-    description: Schema.optional(Schema.String),
-    due_on: Schema.optional(Schema.String),
-  }),
-  Schema.Struct({
-    action: Schema.Literal("update"),
-    number: Schema.Number,
-    title: Schema.optional(Schema.String),
-    description: Schema.optional(Schema.String),
-    state: Schema.optional(Schema.Literals(["open", "closed"])),
-    due_on: Schema.optional(Schema.String),
-  }),
-  Schema.Struct({
-    action: Schema.Literal("close"),
-    number: Schema.Number,
-  }),
-])
-
-export const Parameters = Schema.Struct({
+const Repository = {
   owner: Schema.optional(Schema.String).annotate({
     description: "Repository owner. Defaults to the current git origin remote.",
   }),
   repo: Schema.optional(Schema.String).annotate({
     description: "Repository name. Defaults to the current git origin remote.",
   }),
-  operation: MilestoneOperation.annotate({
-    description: "The milestone operation to perform.",
+}
+
+const DueOn = Schema.String.check(
+  Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/),
+).annotate({ description: "An ISO 8601 timestamp with a UTC or numeric timezone." })
+
+export const Parameters = Schema.Union([
+  Schema.Struct({
+    ...Repository,
+    action: Schema.Literal("list"),
+    state: Schema.Literals(["open", "closed", "all"]).pipe(
+      Schema.withDecodingDefault(Effect.succeed("open" as const)),
+    ),
   }),
-})
+  Schema.Struct({
+    ...Repository,
+    action: Schema.Literal("get"),
+    number: PositiveIdentifier,
+  }),
+  Schema.Struct({
+    ...Repository,
+    action: Schema.Literal("create"),
+    title: Schema.String,
+    description: Schema.optional(Schema.String),
+    due_on: Schema.optional(DueOn),
+  }),
+  Schema.Struct({
+    ...Repository,
+    action: Schema.Literal("update"),
+    number: PositiveIdentifier,
+    title: Schema.optional(Schema.String),
+    description: Schema.optional(Schema.String),
+    state: Schema.optional(Schema.Literals(["open", "closed"])),
+    due_on: Schema.optional(DueOn),
+  }),
+  Schema.Struct({
+    ...Repository,
+    action: Schema.Literal("close"),
+    number: PositiveIdentifier,
+  }),
+])
 
 type Metadata = {
   owner: string
@@ -74,19 +80,19 @@ export const GitHubMilestoneTool = Tool.define<typeof Parameters, Metadata, GitH
             repo: params.repo,
           })
 
-          const mode = WRITES.has(params.operation.action) ? "write" : "read"
+          const mode = WRITES.has(params.action) ? "write" : "read"
           yield* ctx.ask({
             permission: "github",
             patterns: [`milestones:${mode}:${owner}/${repo}`],
             always: [`milestones:${mode}:${owner}/${repo}`],
             metadata: {
-              action: params.operation.action,
+              action: params.action,
               owner,
               repo,
             },
           })
 
-          const result = yield* github.milestone({ owner, repo }, params.operation)
+          const result = yield* github.milestone({ owner, repo }, milestoneOperation(params))
 
           return {
             title: titleFor(result, owner, repo),
@@ -116,4 +122,25 @@ export const GitHubMilestoneTool = Tool.define<typeof Parameters, Metadata, GitH
 function titleFor(result: Result, owner: string, repo: string) {
   if ("items" in result) return `${result.items.length} milestones in ${owner}/${repo}`
   return result.item.title || `#${result.item.number}`
+}
+
+function milestoneOperation(params: typeof Parameters.Type): Operation {
+  switch (params.action) {
+    case "list":
+      return { action: params.action, state: params.state }
+    case "get":
+    case "close":
+      return { action: params.action, number: params.number }
+    case "create":
+      return { action: params.action, title: params.title, description: params.description, due_on: params.due_on }
+    case "update":
+      return {
+        action: params.action,
+        number: params.number,
+        title: params.title,
+        description: params.description,
+        state: params.state,
+        due_on: params.due_on,
+      }
+  }
 }

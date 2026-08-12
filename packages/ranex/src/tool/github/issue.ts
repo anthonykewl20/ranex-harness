@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect"
 import * as Tool from "../tool"
 import DESCRIPTION from "./issue.txt"
-import { githubErrorResult } from "./shared"
+import { githubErrorResult, PositiveIdentifier } from "./shared"
 import { GitHub } from "@/github/github"
 import type { Operation, Result } from "@/github/issues"
 
@@ -22,12 +22,12 @@ export const Parameters = Schema.Union([
       Schema.withDecodingDefault(Effect.succeed("open" as const)),
     ),
     labels: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
-    milestone: Schema.optional(Schema.Number).annotate({ description: "Filter by milestone number." }),
+    milestone: Schema.optional(PositiveIdentifier).annotate({ description: "Filter by milestone number." }),
   }),
   Schema.Struct({
     ...Repository,
     action: Schema.Literal("get"),
-    number: Schema.Number,
+    number: PositiveIdentifier,
   }),
   Schema.Struct({
     ...Repository,
@@ -36,12 +36,12 @@ export const Parameters = Schema.Union([
     body: Schema.optional(Schema.String),
     labels: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
     assignees: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
-    milestone: Schema.optional(Schema.Number),
+    milestone: Schema.optional(PositiveIdentifier),
   }),
   Schema.Struct({
     ...Repository,
     action: Schema.Literal("update"),
-    number: Schema.Number,
+    number: PositiveIdentifier,
     title: Schema.optional(Schema.String),
     body: Schema.optional(Schema.String),
     state: Schema.optional(Schema.Literals(["open", "closed"])),
@@ -49,12 +49,12 @@ export const Parameters = Schema.Union([
   Schema.Struct({
     ...Repository,
     action: Schema.Literal("close"),
-    number: Schema.Number,
+    number: PositiveIdentifier,
   }),
   Schema.Struct({
     ...Repository,
     action: Schema.Literal("comment"),
-    number: Schema.Number,
+    number: PositiveIdentifier,
     body: Schema.String,
   }),
 ])

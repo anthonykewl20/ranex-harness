@@ -65,33 +65,36 @@ export function handle(clients: Clients, op: Operation): Effect.Effect<Result, A
 
 function list(clients: Clients, op: { owner: string }) {
   return Effect.gen(function* () {
-    const items = yield* withUserFallback(
-      withRateLimitRetry(() => clients.octokit.paginate(clients.octokit.rest.projects.listForOrg, { org: op.owner })),
+    const response = yield* withUserFallback(
+      withRateLimitRetry(() => clients.octokit.paginate(clients.octokit.rest.projects.listForOrg, { org: op.owner })).pipe(
+        Effect.map((items) => ({ items, user: false as boolean })),
+      ),
       () =>
         withRateLimitRetry(() =>
           clients.octokit.paginate(clients.octokit.rest.projects.listForUser, {
             username: op.owner,
           }),
-        ),
+        ).pipe(Effect.map((items) => ({ items, user: true as boolean }))),
     )
-    return { action: "list" as const, items: items.map(normalizeProject) }
+    return { action: "list" as const, items: response.items.map((item) => normalizeProject(item, op.owner, response.user)) }
   })
 }
 
 function get(clients: Clients, op: { owner: string; number: number }) {
   return Effect.gen(function* () {
     const response = yield* withUserFallback(
-      withRateLimitRetry(() => clients.octokit.rest.projects.getForOrg({ org: op.owner, project_number: op.number })),
+      withRateLimitRetry(() => clients.octokit.rest.projects.getForOrg({ org: op.owner, project_number: op.number })).pipe(
+        Effect.map((response) => ({ response, user: false as boolean })),
+      ),
       () =>
         withRateLimitRetry(() =>
           clients.octokit.rest.projects.getForUser({
-            // GitHub accepts username string in user_id path parameter
-            user_id: op.owner as unknown as number,
+            user_id: op.owner,
             project_number: op.number,
-          } as never),
-        ),
+          }),
+        ).pipe(Effect.map((response) => ({ response, user: true as boolean }))),
     )
-    return { action: "get" as const, item: normalizeProject(response.data) }
+    return { action: "get" as const, item: normalizeProject(response.response.data, op.owner, response.user) }
   })
 }
 
@@ -121,7 +124,12 @@ function resolveOwnerId(clients: Clients, login: string): Effect.Effect<string, 
   return Effect.gen(function* () {
     const orgResult = yield* withRateLimitRetry(() =>
       clients.graphql(`query($login: String!) { organization(login: $login) { id } }`, { login }),
-    ).pipe(Effect.catch(() => Effect.succeed(null)))
+    ).pipe(
+      Effect.catch((error) => {
+        if (error.status === 404) return Effect.succeed(null)
+        return Effect.fail(error)
+      }),
+    )
     const orgId = (orgResult as { organization: { id: string } | null } | null)?.organization?.id
     if (orgId) return orgId
 
@@ -162,12 +170,11 @@ function addItem(
       () =>
         withRateLimitRetry(() =>
           clients.octokit.rest.projects.addItemForUser({
-            // GitHub accepts username string in user_id path parameter
-            user_id: op.owner as unknown as number,
+            user_id: op.owner,
             project_number: op.number,
             type: "Issue",
             id: issue.data.id,
-          } as never),
+          }),
         ),
     )
     return { action: "add_item" as const, item: yield* normalizeItem(response.data) }
@@ -190,10 +197,9 @@ function setField(
       () =>
         withRateLimitRetry(() =>
           clients.octokit.rest.projects.getForUser({
-            // GitHub accepts username string in user_id path parameter
-            user_id: op.owner as unknown as number,
+            user_id: op.owner,
             project_number: op.number,
-          } as never),
+          }),
         ),
     )
     const fieldsResponse = yield* withUserFallback(
@@ -203,10 +209,9 @@ function setField(
       () =>
         withRateLimitRetry(() =>
           clients.octokit.rest.projects.listFieldsForUser({
-            // GitHub accepts username string in user_id path parameter
-            user_id: op.owner as unknown as number,
+            user_id: op.owner,
             project_number: op.number,
-          } as never),
+          }),
         ),
     )
     const field = fieldsResponse.data.find((item) => item.name === op.field_name)
@@ -230,10 +235,9 @@ function setField(
       () =>
         withRateLimitRetry(() =>
           clients.octokit.rest.projects.listItemsForUser({
-            // GitHub accepts username string in user_id path parameter
-            user_id: op.owner as unknown as number,
+            user_id: op.owner,
             project_number: op.number,
-          } as never),
+          }),
         ),
     )
     const item = itemsResponse.data.find((candidate) => {
@@ -319,8 +323,12 @@ function withUserFallback<A>(
   )
 }
 
-function normalizeProject(data: { number: number; title: string; html_url?: string; url?: string }): ProjectInfo {
-  return { number: data.number, title: data.title, url: data.html_url ?? data.url ?? "" }
+function normalizeProject(data: { number: number; title: string }, owner: string, user: boolean): ProjectInfo {
+  return {
+    number: data.number,
+    title: data.title,
+    url: `https://github.com/${user ? "users" : "orgs"}/${owner}/projects/${data.number}`,
+  }
 }
 
 function normalizeItem(data: {

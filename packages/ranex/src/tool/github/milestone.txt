@@ -1,15 +1,13 @@
-Manage GitHub milestones — list, get, create, update, and close milestones in a GitHub repository.
+Manage GitHub milestones with a flat top-level `action` contract. Do not use an `operation` field.
 
-The `operation` field selects the action via its `action` discriminant:
+- `list`: `{ "action": "list", "state": "open" }`
+- `get`: `{ "action": "get", "number": 3 }`
+- `create`: `{ "action": "create", "title": "v2.0", "description": "Second release", "due_on": "2026-09-01T00:00:00Z" }`
+- `update`: `{ "action": "update", "number": 3, "title": "v2.1", "description": "Revised release", "state": "open", "due_on": "2026-10-01T00:00:00Z" }`
+- `close`: `{ "action": "close", "number": 3 }`
 
-- `list`: List milestones. Optional `state` ("open", "closed", "all"; defaults to "open").
-- `get`: Fetch a single milestone. Requires `number`.
-- `create`: Create a milestone. Requires `title`. Optional `description` and `due_on` (ISO 8601 date string).
-- `update`: Modify a milestone. Requires `number`. Optional `title`, `description`, `state` ("open" or "closed"), `due_on`.
-- `close`: Close a milestone. Requires `number`.
+`list` defaults `state` to "open"; valid states are "open", "closed", and "all". Update state may be "open" or "closed". `due_on` requires an ISO 8601 timestamp. Milestone identifiers accept positive integers or decimal digit strings.
 
-`owner` and `repo` are optional and default to the current git repository's GitHub origin remote. Provide them explicitly to target a different repository (both must be provided together).
+`owner` and `repo` are optional and default to the current git origin. Supply both together to target another repository; supplying only one is invalid. For example: `{ "action": "get", "owner": "acme", "repo": "widgets", "number": 3 }`.
 
-Requires the GITHUB_TOKEN environment variable to be set.
-
-All operations require user permission approval. Patterns: `milestones:read:owner/repo` for reads, `milestones:write:owner/repo` for writes.
+Requires GitHub authentication. Every operation requires approval using `milestones:read:owner/repo` or `milestones:write:owner/repo` permission patterns.
