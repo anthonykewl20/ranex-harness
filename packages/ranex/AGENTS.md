@@ -137,8 +137,13 @@ Three built-in tools for managing GitHub issues, milestones, and Projects (v2):
 
 ### Setup
 
-Set the `GITHUB_TOKEN` environment variable to a GitHub personal access token with
-`repo` and `project` scope. Without it, all GitHub tool calls fail with `AuthMissing`.
+The tools resolve credentials in this order:
+1. `GITHUB_TOKEN` environment variable
+2. `~/.config/opencode/github-token` file
+3. `gh auth token` (system keyring — works automatically if `gh` CLI is authenticated)
+
+If none are available, tool calls fail with `AuthMissing`. The token needs `repo` scope
+for issues and milestones; add `project` scope for Projects v2 operations.
 
 ### Default Repository
 

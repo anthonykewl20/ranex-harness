@@ -5,9 +5,10 @@ import { resolveToken } from "../../src/github/auth"
 import { AuthMissing } from "../../src/github/error"
 import { tmpdir } from "../fixture/fixture"
 
-describe("github.auth.resolveToken", () => {
+describe.serial("github.auth.resolveToken", () => {
   const previousToken = process.env.GITHUB_TOKEN
   const previousHome = process.env.HOME
+  const previousHost = process.env.GH_HOST
 
   afterEach(() => {
     if (previousToken === undefined) {
@@ -18,9 +19,15 @@ describe("github.auth.resolveToken", () => {
 
     if (previousHome === undefined) {
       delete process.env.HOME
-      return
+    } else {
+      process.env.HOME = previousHome
     }
-    process.env.HOME = previousHome
+
+    if (previousHost === undefined) {
+      delete process.env.GH_HOST
+    } else {
+      process.env.GH_HOST = previousHost
+    }
   })
 
   test("returns token when GITHUB_TOKEN is set", async () => {
@@ -43,6 +50,7 @@ describe("github.auth.resolveToken", () => {
     await using tmp = await tmpdir()
     delete process.env.GITHUB_TOKEN
     process.env.HOME = tmp.path
+    process.env.GH_HOST = "invalid.example"
     const exit = await Effect.runPromise(resolveToken().pipe(Effect.exit))
 
     expect(Exit.isFailure(exit)).toBe(true)
@@ -55,9 +63,20 @@ describe("github.auth.resolveToken", () => {
     await Bun.write(`${tmp.path}/.config/opencode/github-token`, "\n")
     process.env.GITHUB_TOKEN = ""
     process.env.HOME = tmp.path
+    process.env.GH_HOST = "invalid.example"
     const exit = await Effect.runPromise(resolveToken().pipe(Effect.exit))
 
     expect(Exit.isFailure(exit)).toBe(true)
     if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(AuthMissing)
+  })
+
+  test("falls back to gh auth token when env and file are absent", async () => {
+    await using tmp = await tmpdir()
+    delete process.env.GITHUB_TOKEN
+    process.env.HOME = tmp.path
+
+    const token = await Effect.runPromise(resolveToken())
+
+    expect(token).toMatch(/^(ghp_|gho_|github_pat_)/)
   })
 })

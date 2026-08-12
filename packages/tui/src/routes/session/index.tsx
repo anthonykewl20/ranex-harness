@@ -1762,6 +1762,9 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         <Match when={display() === "question"}>
           <Question {...toolprops} />
         </Match>
+        <Match when={display() === "github"}>
+          <GitHubTool {...toolprops} />
+        </Match>
         <Match when={display() === "skill"}>
           <Skill {...toolprops} />
         </Match>
@@ -2202,6 +2205,23 @@ function WebSearch(props: ToolProps) {
   )
 }
 
+function GitHubTool(props: ToolProps) {
+  const isRunning = () =>
+    props.part.state.status === "pending" || props.part.state.status === "running"
+
+  return (
+    <InlineTool
+      icon="⚙"
+      pending="Ranex GitHub Tool"
+      complete={true}
+      spinner={isRunning()}
+      part={props.part}
+    >
+      Ranex GitHub Tool
+    </InlineTool>
+  )
+}
+
 function Task(props: ToolProps) {
   const { theme } = useTheme()
   const { navigate } = useRoute()
@@ -2637,6 +2657,7 @@ const toolDisplays = new Set([
 ])
 
 export function toolDisplay(tool: string) {
+  if (tool === "github_issue" || tool === "github_milestone" || tool === "github_project") return "github"
   return toolDisplays.has(tool) ? tool : "generic"
 }
 
