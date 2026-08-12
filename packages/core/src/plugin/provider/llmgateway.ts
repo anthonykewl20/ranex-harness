@@ -17,7 +17,7 @@ export const LLMGatewayPlugin = define({
           evt.provider.update(item.provider.id, (provider) => {
             provider.request.headers["HTTP-Referer"] = "https://ranex.dev/"
             provider.request.headers["X-Title"] = "ranex"
-            provider.request.headers["X-Source"] = "opencode"
+            provider.request.headers["X-Source"] = "ranex"
           })
         }
       }),
