@@ -1,22 +1,55 @@
 import { expect } from "bun:test"
 import { Database } from "@ranex/core/database/database"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
+import { LayerNodePlatform } from "@ranex/core/effect/app-node-platform"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { EventV2 } from "@ranex/core/event"
 import { EventTable } from "@ranex/core/event/sql"
+import { Location } from "@ranex/core/location"
+import { PermissionV2 } from "@ranex/core/permission"
 import { Project } from "@ranex/core/project"
 import { ProjectTable } from "@ranex/core/project/sql"
+import { QuestionV2 } from "@ranex/core/question"
 import { AbsolutePath } from "@ranex/core/schema"
 import { SessionV2 } from "@ranex/core/session"
 import { SessionEvent } from "@ranex/core/session/event"
+import { SessionExecution } from "@ranex/core/session/execution"
+import { Prompt } from "@ranex/core/session/prompt"
 import { SessionProjector } from "@ranex/core/session/projector"
+import { SessionRunCoordinator } from "@ranex/core/session/run-coordinator"
+import { SessionRunner } from "@ranex/core/session/runner"
+import { node as sessionRunnerNode } from "@ranex/core/session/runner/llm"
+import { SessionRunnerModel } from "@ranex/core/session/runner/model"
+import { ProviderWatchdog } from "@ranex/core/session/runner/provider-watchdog"
 import { SessionTable } from "@ranex/core/session/sql"
+import { SessionStore } from "@ranex/core/session/store"
 import { SessionTurnLLM } from "@ranex/core/session/runner/turn-llm"
-import { LLMClient, RequestExecutor } from "@ranex/llm/route"
-import { DateTime, Effect, Fiber, Layer, Ref, Stream } from "effect"
+import { AgentV2 } from "@ranex/core/agent"
+import { Config } from "@ranex/core/config"
+import { ConfigCompaction } from "@ranex/core/config/compaction"
+import { SkillGuidance } from "@ranex/core/skill/guidance"
+import { Snapshot } from "@ranex/core/snapshot"
+import { SystemContext } from "@ranex/core/system-context"
+import { SystemContextRegistry } from "@ranex/core/system-context/registry"
+import { ReferenceGuidance } from "@ranex/core/reference/guidance"
+import { ApplicationTools } from "@ranex/core/tool/application-tools"
+import { ToolRegistry } from "@ranex/core/tool/registry"
+import {
+  LLMClient,
+  LLMError,
+  LLMEvent,
+  Model,
+  ProviderInternalReason,
+  InvalidRequestReason,
+  type LLMClientShape,
+  type LLMRequest,
+} from "@ranex/llm"
+import { RequestExecutor } from "@ranex/llm/route"
+import { route } from "@ranex/llm/protocols/openai-chat"
+import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Stream } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
-import { count, eq } from "drizzle-orm"
+import { asc, count, eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Database.node, EventV2.node, SessionProjector.node])))
@@ -218,3 +251,348 @@ it.effect("branded turn client adapter republishes its client under a distinct t
     expect(turn).toBe(fake)
   }).pipe(Effect.provide(SessionTurnLLM.layerFrom(Layer.succeed(LLMClient.Service, fake))))
 })
+
+let turnCalls = 0
+let turnStarted: Deferred.Deferred<void> | undefined
+let turnStreams: Stream.Stream<LLMEvent, LLMError>[] | undefined
+let globalResponses: Response[] = []
+let globalTransportCalls = 0
+
+const unavailable = () =>
+  new LLMError({
+    module: "test",
+    method: "stream",
+    reason: new ProviderInternalReason({ message: "Provider unavailable", status: 503 }),
+  })
+
+const overflow = () =>
+  Stream.fail(
+    new LLMError({
+      module: "test",
+      method: "stream",
+      reason: new InvalidRequestReason({ message: "prompt too long", classification: "context-overflow" }),
+    }),
+  )
+
+const complete = (id: string, text: string) =>
+  Stream.fromIterable([
+    LLMEvent.stepStart({ index: 0 }),
+    LLMEvent.textStart({ id }),
+    LLMEvent.textDelta({ id, text }),
+    LLMEvent.textEnd({ id }),
+    LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+    LLMEvent.finish({ reason: "stop" }),
+  ])
+
+const summaryResponse = (text = "## Objective\n- Recover overflow") =>
+  new Response(
+    [
+      `data: ${JSON.stringify({ id: "summary", choices: [{ delta: { content: text }, finish_reason: null }] })}`,
+      `data: ${JSON.stringify({ id: "summary", choices: [{ delta: {}, finish_reason: "stop" }] })}`,
+      "data: [DONE]",
+      "",
+    ].join("\n\n"),
+    { headers: { "content-type": "text/event-stream" } },
+  )
+
+const turnClient = Layer.succeed(
+  LLMClient.Service,
+  LLMClient.Service.of({
+    prepare: () => Effect.die("unused"),
+    stream: ((_request: LLMRequest) => {
+      const started = turnStarted
+      turnStarted = undefined
+      return Stream.unwrap(
+        Effect.sync(() => turnCalls++).pipe(
+          Effect.andThen(started ? Deferred.succeed(started, undefined) : Effect.void),
+          Effect.as(turnStreams?.shift() ?? Stream.fail(unavailable())),
+        ),
+      )
+    }) as unknown as LLMClientShape["stream"],
+    generate: () => Effect.die("unused"),
+  }),
+)
+
+const globalHttp = Layer.succeed(
+  HttpClient.HttpClient,
+  HttpClient.make((request) =>
+    Effect.sync(() => {
+      globalTransportCalls++
+      return HttpClientResponse.fromWeb(
+        request,
+        globalResponses.shift() ?? new Response("unavailable", { status: 503 }),
+      )
+    }),
+  ),
+)
+const globalClient = LLMClient.layer.pipe(Layer.provide(RequestExecutor.layer.pipe(Layer.provide(globalHttp))))
+const retryModel = Model.make({
+  id: "retry-model",
+  provider: "test",
+  route: route.with({
+    endpoint: { baseURL: "https://provider.test" },
+    limits: { context: 20_000, output: 1_000 },
+  }),
+})
+const models = SessionRunnerModel.layerWith(() => Effect.succeed(retryModel))
+const permission = Layer.mock(PermissionV2.Service, {
+  assert: () => Effect.die("unused"),
+  ask: () => Effect.die("unused"),
+  reply: () => Effect.die("unused"),
+  get: () => Effect.die("unused"),
+  forSession: () => Effect.die("unused"),
+  list: () => Effect.die("unused"),
+})
+const systemContext = Layer.mock(SystemContextRegistry.Service, { load: () => Effect.succeed(SystemContext.empty) })
+const skillGuidance = Layer.mock(SkillGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
+const referenceGuidance = Layer.mock(ReferenceGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
+const config = Layer.succeed(
+  Config.Service,
+  Config.Service.of({
+    entries: () =>
+      Effect.succeed([
+        new Config.Document({
+          type: "document",
+          info: new Config.Info({
+            compaction: new ConfigCompaction.Info({
+              buffer: 3_000,
+              keep: new ConfigCompaction.Keep({ tokens: 1_000 }),
+            }),
+          }),
+        }),
+      ]),
+  }),
+)
+const watchdog = Layer.succeed(ProviderWatchdog.Service, ProviderWatchdog.Service.of({ idle: undefined, absolute: undefined }))
+const runnerLayer = AppNodeBuilder.build(sessionRunnerNode, [
+  [Snapshot.node, Snapshot.noopLayer],
+  [LayerNodePlatform.llmClient, globalClient],
+  [SessionTurnLLM.node, SessionTurnLLM.layerFrom(turnClient)],
+  [SessionRunnerModel.node, models],
+  [ProviderWatchdog.node, watchdog],
+  [SystemContextRegistry.node, systemContext],
+  [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
+  [SkillGuidance.node, skillGuidance],
+  [ReferenceGuidance.node, referenceGuidance],
+  [PermissionV2.node, permission],
+  [Config.node, config],
+])
+const execution = Layer.effect(
+  SessionExecution.Service,
+  Effect.gen(function* () {
+    const runner = yield* SessionRunner.Service
+    const coordinator = yield* SessionRunCoordinator.make<SessionV2.ID, SessionRunner.RunError>({
+      drain: (id, force) => runner.run({ sessionID: id, force }),
+    })
+    return SessionExecution.Service.of({
+      active: coordinator.active,
+      resume: coordinator.run,
+      wake: coordinator.wake,
+      interrupt: coordinator.interrupt,
+    })
+  }),
+).pipe(Layer.provide(runnerLayer))
+const drivingIt = testEffect(
+  AppNodeBuilder.build(
+    LayerNode.group([
+      Database.node,
+      EventV2.node,
+      QuestionV2.node,
+      SessionProjector.node,
+      SessionStore.node,
+      ApplicationTools.node,
+      AgentV2.node,
+      ToolRegistry.node,
+      ToolRegistry.toolsNode,
+      SessionRunnerModel.node,
+      SystemContextRegistry.node,
+      SkillGuidance.node,
+      ReferenceGuidance.node,
+      Config.node,
+      Snapshot.node,
+      sessionRunnerNode,
+      SessionExecution.node,
+      SessionV2.node,
+    ]),
+    [
+      [LayerNodePlatform.llmClient, globalClient],
+      [SessionTurnLLM.node, SessionTurnLLM.layerFrom(turnClient)],
+      [PermissionV2.node, permission],
+      [SessionRunnerModel.node, models],
+      [ProviderWatchdog.node, watchdog],
+      [SystemContextRegistry.node, systemContext],
+      [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
+      [SkillGuidance.node, skillGuidance],
+      [ReferenceGuidance.node, referenceGuidance],
+      [Snapshot.node, Snapshot.noopLayer],
+      [SessionExecution.node, execution],
+      [Config.node, config],
+    ],
+  ),
+)
+
+const insertDrivingSession = (id: SessionV2.ID) =>
+  Effect.gen(function* () {
+    const db = (yield* Database.Service).db
+    yield* db
+      .insert(ProjectTable)
+      .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+      .onConflictDoNothing()
+      .run()
+      .pipe(Effect.orDie)
+    yield* db
+      .insert(SessionTable)
+      .values({
+        id,
+        project_id: Project.ID.global,
+        slug: id,
+        directory: "/project",
+        title: "durable retry",
+        version: "test",
+      })
+      .onConflictDoNothing()
+      .run()
+      .pipe(Effect.orDie)
+    turnCalls = 0
+    turnStarted = undefined
+    turnStreams = undefined
+    globalResponses = []
+    globalTransportCalls = 0
+  })
+
+const retriedAttempts = (id: SessionV2.ID) =>
+  Effect.gen(function* () {
+    const db = (yield* Database.Service).db
+    const rows = yield* db
+      .select({ data: EventTable.data })
+      .from(EventTable)
+      .where(eq(EventTable.type, EventV2.versionedType(SessionEvent.Retried.type, 1)))
+      .orderBy(asc(EventTable.seq))
+      .all()
+      .pipe(Effect.orDie)
+    return rows.filter((row) => row.data.sessionID === id).map((row) => row.data.attempt)
+  })
+
+drivingIt.effect("GREEN: fresh drain honors persisted retry delay and resumes remaining attempts", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_driving_green")
+    yield* insertDrivingSession(id)
+    const session = yield* SessionV2.Service
+    const sessionExecution = yield* SessionExecution.Service
+    const events = yield* EventV2.Service
+    const db = (yield* Database.Service).db
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Retry durably" }), resume: false })
+    const firstStarted = yield* Deferred.make<void>()
+    turnStarted = firstStarted
+    const firstRetried = yield* events.subscribe(SessionEvent.Retried).pipe(Stream.runHead, Effect.forkScoped)
+    yield* Effect.yieldNow
+    const firstDrain = yield* sessionExecution.resume(id).pipe(Effect.forkChild)
+    yield* Deferred.await(firstStarted)
+    expect((yield* Fiber.join(firstRetried)).pipe(Option.map((event) => event.data.attempt), Option.getOrUndefined)).toBe(0)
+    expect(turnCalls).toBe(1)
+    expect(
+      yield* db
+        .select({ attempt: SessionTable.retry_attempt, next_attempt_at: SessionTable.retry_next_attempt_at })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, id))
+        .get()
+        .pipe(Effect.orDie),
+    ).toEqual({ attempt: 0, next_attempt_at: 500 })
+    yield* sessionExecution.interrupt(id)
+    const firstExit = yield* Fiber.await(firstDrain)
+    expect(Exit.isFailure(firstExit) && Cause.hasInterrupts(firstExit.cause)).toBeTrue()
+
+    const secondStarted = yield* Deferred.make<void>()
+    turnStarted = secondStarted
+    const freshDrain = yield* sessionExecution.resume(id).pipe(Effect.exit, Effect.forkChild)
+    yield* Effect.yieldNow
+    expect(turnCalls).toBe(1)
+    yield* TestClock.adjust("499 millis")
+    expect(turnCalls).toBe(1)
+    yield* TestClock.adjust("1 millis")
+    yield* Deferred.await(secondStarted)
+    expect(turnCalls).toBe(2)
+    while ((yield* retriedAttempts(id)).length < 2) yield* Effect.yieldNow
+    expect(yield* retriedAttempts(id)).toEqual([0, 1])
+    yield* TestClock.adjust("1 second")
+    const exit = yield* Fiber.join(freshDrain)
+    expect(Exit.isFailure(exit)).toBeTrue()
+    expect(turnCalls).toBe(3)
+    expect(yield* retriedAttempts(id)).toEqual([0, 1])
+    expect(
+      yield* db
+        .select({ attempt: SessionTable.retry_attempt, next_attempt_at: SessionTable.retry_next_attempt_at })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, id))
+        .get()
+        .pipe(Effect.orDie),
+    ).toEqual({ attempt: null, next_attempt_at: null })
+  }),
+)
+
+drivingIt.effect("OVERFLOW: retryable failure after overflow compaction remains typed", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_driving_overflow")
+    yield* insertDrivingSession(id)
+    const session = yield* SessionV2.Service
+    const sessionExecution = yield* SessionExecution.Service
+    turnStreams = [overflow(), Stream.fail(unavailable()), Stream.fail(unavailable()), Stream.fail(unavailable())]
+    globalResponses = [summaryResponse()]
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Earlier question ".repeat(700) }), resume: false })
+    const drain = yield* sessionExecution.resume(id).pipe(Effect.exit, Effect.forkChild)
+    while (turnCalls < 2) yield* Effect.yieldNow
+    yield* TestClock.adjust("500 millis")
+    while (turnCalls < 3) yield* Effect.yieldNow
+    yield* TestClock.adjust("1 second")
+    const exit = yield* Fiber.join(drain)
+    expect(Exit.isFailure(exit) && Cause.hasFails(exit.cause)).toBeTrue()
+    expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBeFalse()
+    expect(turnCalls + globalTransportCalls).toBe(5)
+    expect(yield* retriedAttempts(id)).toEqual([0, 1])
+  }),
+)
+
+drivingIt.effect("compaction keeps global executor transient-status retries", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_driving_compaction")
+    yield* insertDrivingSession(id)
+    const session = yield* SessionV2.Service
+    const sessionExecution = yield* SessionExecution.Service
+    turnStreams = [overflow(), complete("final", "Recovered")]
+    globalResponses = [
+      new Response("unavailable", { status: 503 }),
+      new Response("unavailable", { status: 503 }),
+      summaryResponse(),
+    ]
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Earlier question ".repeat(700) }), resume: false })
+    const drain = yield* sessionExecution.resume(id).pipe(Effect.exit, Effect.forkChild)
+    yield* TestClock.adjust("30 seconds")
+    const exit = yield* Fiber.join(drain)
+    expect(Exit.isSuccess(exit)).toBeTrue()
+    expect(globalTransportCalls).toBe(3)
+    expect(turnCalls).toBe(2)
+  }),
+)
+
+drivingIt.effect("mixed 503 then overflow preserves the retry attempt through compaction", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_driving_mixed")
+    yield* insertDrivingSession(id)
+    const session = yield* SessionV2.Service
+    const sessionExecution = yield* SessionExecution.Service
+    turnStreams = [Stream.fail(unavailable()), overflow(), Stream.fail(unavailable()), Stream.fail(unavailable())]
+    globalResponses = [summaryResponse()]
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Earlier question ".repeat(700) }), resume: false })
+    const drain = yield* sessionExecution.resume(id).pipe(Effect.exit, Effect.forkChild)
+    while (turnCalls < 1) yield* Effect.yieldNow
+    yield* TestClock.adjust("500 millis")
+    while (turnCalls < 3) yield* Effect.yieldNow
+    yield* TestClock.adjust("1 second")
+    const exit = yield* Fiber.join(drain)
+    expect(Exit.isFailure(exit) && Cause.hasFails(exit.cause)).toBeTrue()
+    expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBeFalse()
+    expect(yield* retriedAttempts(id)).toEqual([0, 1])
+    expect(turnCalls).toBe(4)
+    expect(globalTransportCalls).toBe(1)
+  }),
+)
