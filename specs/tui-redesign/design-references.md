@@ -33,6 +33,7 @@ licence and `git hash-object` of each copy.
 | `k9s-view-table.go` | A board of rows with keybound actions and drill-down | Apache-2.0 |
 | `lazygit-layout.go` | Multi-panel layout, focus, and popups over it | MIT |
 | `opentui-renderable.ts` | The rendering contract the harness already builds on | MIT |
+| `kilocode-prompt.tsx`, `kilocode-theme.json` | Left-rail composer mechanics and the default dark-theme vocabulary | MIT |
 
 ---
 
@@ -306,6 +307,30 @@ hooks, `render(buffer, deltaTime)` with an overridable `renderSelf`, and a
 
 ---
 
+## 8. `Kilo-Org/kilocode` — composer and dark theme
+
+**Files:** `kilocode-prompt.tsx`, `kilocode-theme.json`
+**Pinned:** `64e5dd03633013b4564d0ac759747d606f74522c`
+
+### Copy
+
+- The left-rail composer, alpha-aware divider, warm stone surfaces, compact
+  metadata row, typed extmark-backed inline placeholders, and theme semantic
+  mappings.
+- Adapt the accent: Ranex royal blue replaces Kilo yellow; the Ranex logo and
+  `PASS`/`FAIL` semantics remain Ranex-owned.
+
+### Do not copy
+
+Kilo branding, Vim, cost alerts, Past chats, Memory, session sync, or
+permission/autonomous semantics.
+
+### Where it applies in Ranex
+
+The composer and default dark theme.
+
+---
+
 ## Deliberately not adopted
 
 Recorded because the alternatives considered are part of the evidence.
@@ -333,7 +358,7 @@ recorded URL — that needs a second fetch, which an offline suite cannot do.
 Confirm the local copies are unmodified:
 
 ```sh
-cd specs/tui-redesign/references && git hash-object *.go *.ts *.py
+cd specs/tui-redesign/references && git hash-object *.go *.json *.py *.ts *.tsx *.txt
 ```
 
 Compare against the `blob:` values in `NOTICE.md`. To re-fetch any file, the

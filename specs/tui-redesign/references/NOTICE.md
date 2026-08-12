@@ -79,7 +79,34 @@ needs a second fetch of the cited URL. Do not describe it as more than that.
 - blob:`dcc4d78e31bd96df7835eca29795fb7fe83e05c4`
 - This is the framework the harness already renders through (`@opentui/solid`,
   `@opentui/core`). It is vendored as the *contract we build against*, not as a
-  design we are choosing between.
+   design we are choosing between.
+
+### `kilocode-prompt.tsx`
+- Repository: `Kilo-Org/kilocode`
+- Path: `packages/tui/src/component/prompt/index.tsx`
+- Pinned: `64e5dd03633013b4564d0ac759747d606f74522c`
+- URL: https://raw.githubusercontent.com/Kilo-Org/kilocode/64e5dd03633013b4564d0ac759747d606f74522c/packages/tui/src/component/prompt/index.tsx
+- SPDX-License-Identifier: MIT — Copyright (c) 2026 Kilo Code; Copyright (c) 2025 opencode
+- Licence text: `LICENSE-KILOCODE-MIT.txt`
+- blob:`3449a9b099635eafd952b2b9a39cc11d0508e467`
+
+### `kilocode-theme.json`
+- Repository: `Kilo-Org/kilocode`
+- Path: `packages/tui/src/theme/assets/kilo.json`
+- Pinned: `64e5dd03633013b4564d0ac759747d606f74522c`
+- URL: https://raw.githubusercontent.com/Kilo-Org/kilocode/64e5dd03633013b4564d0ac759747d606f74522c/packages/tui/src/theme/assets/kilo.json
+- SPDX-License-Identifier: MIT — Copyright (c) 2026 Kilo Code; Copyright (c) 2025 opencode
+- Licence text: `LICENSE-KILOCODE-MIT.txt`
+- blob:`73323a16fc356bef4be9d4eabb758d225e7479e5`
+
+### `LICENSE-KILOCODE-MIT.txt`
+- Repository: `Kilo-Org/kilocode`
+- Path: `LICENSE`
+- Pinned: `64e5dd03633013b4564d0ac759747d606f74522c`
+- URL: https://raw.githubusercontent.com/Kilo-Org/kilocode/64e5dd03633013b4564d0ac759747d606f74522c/LICENSE
+- SPDX-License-Identifier: MIT — Copyright (c) 2026 Kilo Code; Copyright (c) 2025 opencode
+- Licence text: `LICENSE-KILOCODE-MIT.txt` (this file)
+- blob:`c5762eb3ad5a0e1788ef155772fe3c240ab23e42`
 
 ## Apache-2.0 sources
 
