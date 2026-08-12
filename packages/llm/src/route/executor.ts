@@ -363,22 +363,26 @@ const retryStatusFailures = <A, R>(
     )
   })
 
-export const layer: Layer.Layer<Service, never, HttpClient.HttpClient> = Layer.effect(
-  Service,
-  Effect.gen(function* () {
-    const http = yield* HttpClient.HttpClient
-    const executeOnce = (request: HttpClientRequest.HttpClientRequest) =>
-      Effect.gen(function* () {
-        const redactedNames = yield* Headers.CurrentRedactedNames
-        return yield* http
-          .execute(request)
-          .pipe(Effect.mapError(toHttpError(redactedNames)), Effect.flatMap(statusError(request, redactedNames)))
+const makeLayer = (retry: boolean): Layer.Layer<Service, never, HttpClient.HttpClient> =>
+  Layer.effect(
+    Service,
+    Effect.gen(function* () {
+      const http = yield* HttpClient.HttpClient
+      const executeOnce = (request: HttpClientRequest.HttpClientRequest) =>
+        Effect.gen(function* () {
+          const redactedNames = yield* Headers.CurrentRedactedNames
+          return yield* http
+            .execute(request)
+            .pipe(Effect.mapError(toHttpError(redactedNames)), Effect.flatMap(statusError(request, redactedNames)))
+        })
+      return Service.of({
+        execute: (request) => (retry ? retryStatusFailures(executeOnce(request)) : executeOnce(request)),
       })
-    return Service.of({
-      execute: (request) => retryStatusFailures(executeOnce(request)),
-    })
-  }),
-)
+    }),
+  )
+
+export const layer = makeLayer(true)
+export const singleAttemptLayer = makeLayer(false)
 
 export const fetchLayer = layer.pipe(Layer.provide(FetchHttpClient.layer))
 

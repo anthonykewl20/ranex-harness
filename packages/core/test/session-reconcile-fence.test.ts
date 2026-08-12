@@ -27,6 +27,7 @@ import { SessionReconcile } from "@ranex/core/session/reconcile"
 import { SessionRunner } from "@ranex/core/session/runner"
 import { node } from "@ranex/core/session/runner/llm"
 import { SessionRunnerModel } from "@ranex/core/session/runner/model"
+import { SessionTurnLLM } from "@ranex/core/session/runner/turn-llm"
 import { createLLMEventPublisher } from "@ranex/core/session/runner/publish-llm-event"
 import { SessionStore } from "@ranex/core/session/store"
 import { SessionTable } from "@ranex/core/session/sql"
@@ -139,6 +140,7 @@ function buildRunnerLayer(dbFile: string) {
     [
       [Database.node, Database.layerFromPath(dbFile)],
       [LayerNodePlatform.llmClient, client],
+      [SessionTurnLLM.node, SessionTurnLLM.layerFrom(client)],
       [PermissionV2.node, permission],
       [SessionRunnerModel.node, models],
       [SystemContextRegistry.node, systemContext],

@@ -12,7 +12,11 @@ import {
 
 const WATCHDOG_IDLE_KIND = "watchdog-idle"
 const WATCHDOG_ABSOLUTE_KIND = "watchdog-absolute"
-import { Cause, DateTime, Effect, Exit, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
+const MAX_RETRIES = 2
+const BASE_DELAY_MS = 500
+const MAX_DELAY_MS = 10_000
+import { Cause, Clock, DateTime, Effect, Exit, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
+import { eq } from "drizzle-orm"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
 import { Database } from "../../database/database"
@@ -46,6 +50,8 @@ import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
 import { llmClient } from "../../effect/app-node-platform"
+import { SessionTurnLLM } from "./turn-llm"
+import { SessionTable } from "../sql"
 
 /**
  * Runs one durable coding-agent Session until it settles.
@@ -102,6 +108,7 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const events = yield* EventV2.Service
     const llm = yield* LLMClient.Service
+    const turnLLM = yield* SessionTurnLLM.Service
     const agents = yield* AgentV2.Service
     const tools = yield* ToolRegistry.Service
     const models = yield* SessionRunnerModel.Service
@@ -160,6 +167,15 @@ const layer = Layer.effect(
       }
     }
 
+    class RetryTurnError extends Error {
+      constructor(
+        readonly attempt: number,
+        readonly error: LLMError,
+      ) {
+        super()
+      }
+    }
+
     const continueAfterCompaction = (step: number) => new TurnTransitionError({ _tag: "ContinueAfterCompaction", step })
     const continueAfterOverflowCompaction = (step: number) =>
       new TurnTransitionError({ _tag: "ContinueAfterOverflowCompaction", step })
@@ -173,6 +189,7 @@ const layer = Layer.effect(
       sessionID: SessionSchema.ID,
       promotion: SessionInput.Delivery | undefined,
       step: number,
+      attempt: number,
       recoverOverflow?: typeof compaction.compactAfterOverflow,
     ) {
       const session = yield* getSession(sessionID)
@@ -243,7 +260,7 @@ const layer = Layer.effect(
         idleDuration !== undefined
           ? Stream.fromPull(
               Effect.gen(function* () {
-                const pull = yield* Stream.toPull(llm.stream(request))
+                const pull = yield* Stream.toPull(turnLLM.stream(request))
                 let first = true
                 return Effect.gen(function* () {
                   if (first) {
@@ -257,7 +274,7 @@ const layer = Layer.effect(
                 })
               }),
             )
-          : llm.stream(request)
+          : turnLLM.stream(request)
       const providerStream = idleWatched.pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {
@@ -335,6 +352,14 @@ const layer = Layer.effect(
             return yield* Effect.die(continueAfterOverflowCompaction(currentStep))
           if (overflowFailure) yield* publish(overflowFailure)
           const llmFailure = failure instanceof LLMError ? failure : undefined
+          if (
+            llmFailure?.retryable &&
+            attempt < MAX_RETRIES &&
+            !publisher.hasAssistantStarted() &&
+            stream._tag === "Failure" &&
+            !Cause.hasInterrupts(stream.cause)
+          )
+            return yield* Effect.die(new RetryTurnError(attempt, llmFailure))
           if (llmFailure && !publisher.hasProviderError()) {
             yield* withPublication(publisher.failUnsettledTools("Provider did not return a tool result", true))
             yield* withPublication(publisher.failAssistant(llmFailure.reason.message))
@@ -413,31 +438,70 @@ const layer = Layer.effect(
       sessionID: SessionSchema.ID,
       promotion: SessionInput.Delivery | undefined,
       step: number,
+      attempt: number,
     ) => Effect.Effect<{ readonly needsContinuation: boolean; readonly step: number }, RunError>
 
-    const runAfterOverflowCompaction: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step) {
-      return yield* runTurnAttempt(sessionID, promotion, step).pipe(
+    const retryDelay = (attempt: number) => Math.min(BASE_DELAY_MS * 2 ** attempt, MAX_DELAY_MS)
+    const retryTurn = (
+      sessionID: SessionSchema.ID,
+      defect: RetryTurnError,
+      reenter: (attempt: number) => ReturnType<RunTurn>,
+    ) =>
+      Effect.gen(function* () {
+        const reason = defect.error.reason
+        const statusCode =
+          "status" in reason
+            ? reason.status
+            : reason._tag === "RateLimit"
+              ? reason.http?.response?.status ?? 429
+              : "http" in reason
+                ? reason.http?.response?.status
+                : undefined
+        yield* events.publish(SessionEvent.Retried, {
+          sessionID,
+          timestamp: yield* DateTime.now,
+          attempt: defect.attempt,
+          error: {
+            message: defect.error.message,
+            statusCode,
+            isRetryable: true,
+          },
+        })
+        yield* Effect.sleep(retryDelay(defect.attempt))
+        return yield* reenter(defect.attempt + 1)
+      })
+
+    const runAfterOverflowCompaction: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, attempt) {
+      return yield* runTurnAttempt(sessionID, promotion, step, attempt).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {
+            if (defect instanceof RetryTurnError)
+              return yield* retryTurn(sessionID, defect, (nextAttempt) =>
+                runAfterOverflowCompaction(sessionID, undefined, step, nextAttempt),
+              )
             if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
               return yield* Effect.die("Post-compaction provider attempt cannot recover another overflow")
             yield* Effect.yieldNow
-            return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
+            return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step, attempt)
           }),
         ),
       )
     })
 
-    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step) {
-      return yield* runTurnAttempt(sessionID, promotion, step, compaction.compactAfterOverflow).pipe(
+    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, attempt) {
+      return yield* runTurnAttempt(sessionID, promotion, step, attempt, compaction.compactAfterOverflow).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {
+            if (defect instanceof RetryTurnError)
+              return yield* retryTurn(sessionID, defect, (nextAttempt) =>
+                runTurn(sessionID, undefined, step, nextAttempt),
+              )
             if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
             yield* Effect.yieldNow
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
-              return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
-            return yield* runTurn(sessionID, undefined, defect.transition.step)
+              return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step, attempt)
+            return yield* runTurn(sessionID, undefined, defect.transition.step, attempt)
           }),
         ),
       )
@@ -453,18 +517,40 @@ const layer = Layer.effect(
       // reconciliation must fire here regardless of pending work. It only touches
       // projected tool context, never SessionInput, so the guard is unchanged.
       yield* failInterruptedTools(input.sessionID)
+      const persistedRetry = yield* db
+        .select({ attempt: SessionTable.retry_attempt, next_attempt_at: SessionTable.retry_next_attempt_at })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, input.sessionID))
+        .get()
+        .pipe(Effect.orDie)
+      const retryAttempt = persistedRetry?.attempt ?? undefined
+      const retryNextAttemptAt = persistedRetry?.next_attempt_at ?? undefined
+      if (retryAttempt !== undefined && retryNextAttemptAt !== undefined) {
+        const now = yield* Clock.currentTimeMillis
+        yield* Effect.sleep(Math.max(0, retryNextAttemptAt - now))
+      }
       const hasSteer = yield* SessionInput.hasPending(db, input.sessionID, "steer")
       const hasQueue = hasSteer ? false : yield* SessionInput.hasPending(db, input.sessionID, "queue")
-      if (!input.force && !hasSteer && !hasQueue) return
+      if (!input.force && !hasSteer && !hasQueue && retryAttempt === undefined) return
       let promotion: SessionInput.Delivery | undefined = hasSteer ? "steer" : hasQueue ? "queue" : undefined
-      let shouldRun = input.force || hasSteer || hasQueue
+      let shouldRun = input.force || hasSteer || hasQueue || retryAttempt !== undefined
+      let attempt = retryAttempt === undefined ? 0 : retryAttempt + 1
       while (shouldRun) {
         let needsContinuation = true
         let step = 1
         while (needsContinuation) {
-          const result = yield* runTurn(input.sessionID, promotion, step)
+          const exit = yield* runTurn(input.sessionID, promotion, step, attempt).pipe(Effect.exit)
+          if (Exit.isFailure(exit) && (Cause.hasDies(exit.cause) || Cause.hasInterrupts(exit.cause))) return yield* exit
+          yield* db
+            .update(SessionTable)
+            .set({ retry_attempt: null, retry_next_attempt_at: null })
+            .where(eq(SessionTable.id, input.sessionID))
+            .run()
+            .pipe(Effect.orDie)
+          const result = yield* exit
           needsContinuation = result.needsContinuation
           step = result.step + 1
+          attempt = 0
           promotion = "steer"
           if (!needsContinuation) needsContinuation = yield* SessionInput.hasPending(db, input.sessionID, "steer")
         }
@@ -493,6 +579,7 @@ export const node = makeLocationNode({
   deps: [
     EventV2.node,
     llmClient,
+    SessionTurnLLM.node,
     AgentV2.node,
     ToolRegistry.node,
     SessionRunnerModel.node,
