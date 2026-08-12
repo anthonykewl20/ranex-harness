@@ -129,3 +129,39 @@ Use `Effect.cached` when multiple concurrent callers should share a single in-fl
 Use `EffectBridge` for native or external callbacks (`@parcel/watcher`, `node-pty`, native `fs.watch`, plugin callbacks, etc.) that need to re-enter Effect services with instance/workspace context.
 
 Plain async code should pass explicit context or stay inside an Effect fiber; do not add ambient instance context shims.
+
+## GitHub Tools
+
+Three built-in tools for managing GitHub issues, milestones, and Projects (v2):
+`github_issue`, `github_milestone`, `github_project`.
+
+### Setup
+
+Set the `GITHUB_TOKEN` environment variable to a GitHub personal access token with
+`repo` and `project` scope. Without it, all GitHub tool calls fail with `AuthMissing`.
+
+### Default Repository
+
+`github_issue` and `github_milestone` default `owner`/`repo` from the current git
+repository's `origin` remote. Override explicitly by passing both `owner` and `repo`
+in the operation. `github_project` always requires an explicit `owner` (the org or
+user that owns the project).
+
+### Permission Model
+
+All operations require user approval. Permission patterns:
+
+- `issues:read:owner/repo` / `issues:write:owner/repo`
+- `milestones:read:owner/repo` / `milestones:write:owner/repo`
+- `projects:read:owner` / `projects:write:owner`
+
+Configure durable allows in `opencode.json`:
+
+```json
+{ "permission": { "github": { "issues:read:acme/*": "allow" } } }
+```
+
+### Rate Limits
+
+API calls that hit GitHub rate limits (HTTP 429 or 403 with "rate limit" in the
+message) are automatically retried once after a 60-second delay.

@@ -1,6 +1,6 @@
 import type { Octokit } from "@octokit/rest"
 import { Effect, Schema } from "effect"
-import { ApiError, toApiError } from "./error"
+import { ApiError, withRateLimitRetry } from "./error"
 
 export const MilestoneInfo = Schema.Struct({
   number: Schema.Number,
@@ -55,36 +55,28 @@ export function handle(
   }
 }
 
-function list(
-  octokit: Octokit,
-  repo: { owner: string; repo: string },
-  op: { state?: "open" | "closed" | "all" },
-) {
+function list(octokit: Octokit, repo: { owner: string; repo: string }, op: { state?: "open" | "closed" | "all" }) {
   return Effect.gen(function* () {
-    const items = yield* Effect.tryPromise({
-      try: () =>
-        octokit.paginate(octokit.rest.issues.listMilestones, {
-          owner: repo.owner,
-          repo: repo.repo,
-          state: op.state ?? "open",
-        }),
-      catch: toApiError,
-    })
+    const items = yield* withRateLimitRetry(() =>
+      octokit.paginate(octokit.rest.issues.listMilestones, {
+        owner: repo.owner,
+        repo: repo.repo,
+        state: op.state ?? "open",
+      }),
+    )
     return { action: "list" as const, items: items.map(normalizeMilestone) }
   })
 }
 
 function get(octokit: Octokit, repo: { owner: string; repo: string }, op: { number: number }) {
   return Effect.gen(function* () {
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        octokit.rest.issues.getMilestone({
-          owner: repo.owner,
-          repo: repo.repo,
-          milestone_number: op.number,
-        }),
-      catch: toApiError,
-    })
+    const response = yield* withRateLimitRetry(() =>
+      octokit.rest.issues.getMilestone({
+        owner: repo.owner,
+        repo: repo.repo,
+        milestone_number: op.number,
+      }),
+    )
     return { action: "get" as const, item: normalizeMilestone(response.data) }
   })
 }
@@ -95,17 +87,15 @@ function create(
   op: { title: string; description?: string; due_on?: string },
 ) {
   return Effect.gen(function* () {
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        octokit.rest.issues.createMilestone({
-          owner: repo.owner,
-          repo: repo.repo,
-          title: op.title,
-          ...(op.description !== undefined ? { description: op.description } : {}),
-          ...(op.due_on !== undefined ? { due_on: op.due_on } : {}),
-        }),
-      catch: toApiError,
-    })
+    const response = yield* withRateLimitRetry(() =>
+      octokit.rest.issues.createMilestone({
+        owner: repo.owner,
+        repo: repo.repo,
+        title: op.title,
+        ...(op.description !== undefined ? { description: op.description } : {}),
+        ...(op.due_on !== undefined ? { due_on: op.due_on } : {}),
+      }),
+    )
     return { action: "create" as const, item: normalizeMilestone(response.data) }
   })
 }
@@ -122,19 +112,17 @@ function update(
   },
 ) {
   return Effect.gen(function* () {
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        octokit.rest.issues.updateMilestone({
-          owner: repo.owner,
-          repo: repo.repo,
-          milestone_number: op.number,
-          ...(op.title !== undefined ? { title: op.title } : {}),
-          ...(op.description !== undefined ? { description: op.description } : {}),
-          ...(op.due_on !== undefined ? { due_on: op.due_on } : {}),
-          ...(op.state !== undefined ? { state: op.state } : {}),
-        }),
-      catch: toApiError,
-    })
+    const response = yield* withRateLimitRetry(() =>
+      octokit.rest.issues.updateMilestone({
+        owner: repo.owner,
+        repo: repo.repo,
+        milestone_number: op.number,
+        ...(op.title !== undefined ? { title: op.title } : {}),
+        ...(op.description !== undefined ? { description: op.description } : {}),
+        ...(op.due_on !== undefined ? { due_on: op.due_on } : {}),
+        ...(op.state !== undefined ? { state: op.state } : {}),
+      }),
+    )
     return { action: "update" as const, item: normalizeMilestone(response.data) }
   })
 }

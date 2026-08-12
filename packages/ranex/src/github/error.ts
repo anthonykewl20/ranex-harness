@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 
 export class GitHubError extends Schema.TaggedErrorClass<GitHubError>()("GitHub.Error", {
   message: Schema.String,
@@ -27,4 +27,20 @@ export function toApiError(error: unknown): ApiError {
     })
   }
   return new ApiError({ message: error instanceof Error ? error.message : String(error) })
+}
+
+export function isRateLimited(error: ApiError): boolean {
+  if (error.status === 429) return true
+  if (error.status === 403 && error.message.toLowerCase().includes("rate limit")) return true
+  return false
+}
+
+export function withRateLimitRetry<T>(fn: () => Promise<T>): Effect.Effect<T, ApiError> {
+  const attempt = () => Effect.tryPromise({ try: fn, catch: toApiError })
+  return attempt().pipe(
+    Effect.catch((error) => {
+      if (!isRateLimited(error)) return Effect.fail(error)
+      return Effect.sleep("60 seconds").pipe(Effect.flatMap(attempt))
+    }),
+  )
 }

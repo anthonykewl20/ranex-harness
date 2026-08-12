@@ -2,13 +2,26 @@ import { describe, expect, test } from "bun:test"
 import type { graphql } from "@octokit/graphql"
 import type { Octokit } from "@octokit/rest"
 import { Cause, Effect, Exit } from "effect"
-import { ApiError } from "../../src/github/error"
+import { ApiError, isRateLimited } from "../../src/github/error"
 
 const Issues = await import("../../src/github/issues")
 const Milestones = await import("../../src/github/milestones")
 const Projects = await import("../../src/github/projects")
 
 const repo = { owner: "acme", repo: "widgets" }
+
+test("isRateLimited detects 429 status", () => {
+  expect(isRateLimited(new ApiError({ message: "Too Many Requests", status: 429 }))).toBe(true)
+})
+
+test("isRateLimited detects 403 with rate limit message", () => {
+  expect(isRateLimited(new ApiError({ message: "API rate limit exceeded", status: 403 }))).toBe(true)
+})
+
+test("isRateLimited rejects non-rate-limit errors", () => {
+  expect(isRateLimited(new ApiError({ message: "Not Found", status: 404 }))).toBe(false)
+  expect(isRateLimited(new ApiError({ message: "Forbidden", status: 403 }))).toBe(false)
+})
 
 const sampleIssue = {
   id: 12345,
@@ -264,9 +277,7 @@ describe("github issue handlers", () => {
       issuesGet: async () => Promise.reject({ status: 404, message: "Not Found" }),
     })
 
-    const exit = await Effect.runPromise(
-      Effect.exit(Issues.handle(octokit, repo, { action: "get", number: 404 })),
-    )
+    const exit = await Effect.runPromise(Effect.exit(Issues.handle(octokit, repo, { action: "get", number: 404 })))
 
     expect(Exit.isFailure(exit)).toBe(true)
     if (Exit.isFailure(exit)) {
@@ -340,9 +351,7 @@ describe("github milestone handlers", () => {
       },
     })
 
-    const result = await Effect.runPromise(
-      Milestones.handle(octokit, repo, { action: "close", number: 5 }),
-    )
+    const result = await Effect.runPromise(Milestones.handle(octokit, repo, { action: "close", number: 5 }))
 
     if (result.action !== "close") throw new Error(`Expected close result, received ${result.action}`)
     expect(calls[0]).toEqual({

@@ -1,7 +1,7 @@
 import type { graphql } from "@octokit/graphql"
 import type { Octokit } from "@octokit/rest"
 import { Effect, Schema } from "effect"
-import { ApiError, toApiError } from "./error"
+import { ApiError, withRateLimitRetry } from "./error"
 
 export const ProjectInfo = Schema.Struct({
   number: Schema.Number,
@@ -66,18 +66,13 @@ export function handle(clients: Clients, op: Operation): Effect.Effect<Result, A
 function list(clients: Clients, op: { owner: string }) {
   return Effect.gen(function* () {
     const items = yield* withUserFallback(
-      Effect.tryPromise({
-        try: () => clients.octokit.paginate(clients.octokit.rest.projects.listForOrg, { org: op.owner }),
-        catch: toApiError,
-      }),
+      withRateLimitRetry(() => clients.octokit.paginate(clients.octokit.rest.projects.listForOrg, { org: op.owner })),
       () =>
-        Effect.tryPromise({
-          try: () =>
-            clients.octokit.paginate(clients.octokit.rest.projects.listForUser, {
-              username: op.owner,
-            }),
-          catch: toApiError,
-        }),
+        withRateLimitRetry(() =>
+          clients.octokit.paginate(clients.octokit.rest.projects.listForUser, {
+            username: op.owner,
+          }),
+        ),
     )
     return { action: "list" as const, items: items.map(normalizeProject) }
   })
@@ -86,21 +81,15 @@ function list(clients: Clients, op: { owner: string }) {
 function get(clients: Clients, op: { owner: string; number: number }) {
   return Effect.gen(function* () {
     const response = yield* withUserFallback(
-      Effect.tryPromise({
-        try: () =>
-          clients.octokit.rest.projects.getForOrg({ org: op.owner, project_number: op.number }),
-        catch: toApiError,
-      }),
+      withRateLimitRetry(() => clients.octokit.rest.projects.getForOrg({ org: op.owner, project_number: op.number })),
       () =>
-        Effect.tryPromise({
-          try: () =>
-            clients.octokit.rest.projects.getForUser({
-              // GitHub accepts username string in user_id path parameter
-              user_id: op.owner as unknown as number,
-              project_number: op.number,
-            } as never),
-          catch: toApiError,
-        }),
+        withRateLimitRetry(() =>
+          clients.octokit.rest.projects.getForUser({
+            // GitHub accepts username string in user_id path parameter
+            user_id: op.owner as unknown as number,
+            project_number: op.number,
+          } as never),
+        ),
     )
     return { action: "get" as const, item: normalizeProject(response.data) }
   })
@@ -109,21 +98,18 @@ function get(clients: Clients, op: { owner: string; number: number }) {
 function create(clients: Clients, op: { owner: string; title: string }) {
   return Effect.gen(function* () {
     const ownerId = yield* resolveOwnerId(clients, op.owner)
-    const result = yield* Effect.tryPromise({
-      try: () =>
-        clients.graphql(
-          `mutation($ownerId: ID!, $title: String!) {
+    const result = yield* withRateLimitRetry(() =>
+      clients.graphql(
+        `mutation($ownerId: ID!, $title: String!) {
             createProjectV2(input: { ownerId: $ownerId, title: $title }) {
               projectV2 { number title url }
             }
           }`,
-          { ownerId, title: op.title },
-        ),
-      catch: toApiError,
-    })
-    const project = (
-      result as { createProjectV2: { projectV2: { number: number; title: string; url: string } } }
-    ).createProjectV2.projectV2
+        { ownerId, title: op.title },
+      ),
+    )
+    const project = (result as { createProjectV2: { projectV2: { number: number; title: string; url: string } } })
+      .createProjectV2.projectV2
     return {
       action: "create" as const,
       item: { number: project.number, title: project.title, url: project.url },
@@ -133,18 +119,15 @@ function create(clients: Clients, op: { owner: string; title: string }) {
 
 function resolveOwnerId(clients: Clients, login: string): Effect.Effect<string, ApiError> {
   return Effect.gen(function* () {
-    const orgResult = yield* Effect.tryPromise({
-      try: () =>
-        clients.graphql(`query($login: String!) { organization(login: $login) { id } }`, { login }),
-      catch: toApiError,
-    }).pipe(Effect.catch(() => Effect.succeed(null)))
+    const orgResult = yield* withRateLimitRetry(() =>
+      clients.graphql(`query($login: String!) { organization(login: $login) { id } }`, { login }),
+    ).pipe(Effect.catch(() => Effect.succeed(null)))
     const orgId = (orgResult as { organization: { id: string } | null } | null)?.organization?.id
     if (orgId) return orgId
 
-    const userResult = yield* Effect.tryPromise({
-      try: () => clients.graphql(`query($login: String!) { user(login: $login) { id } }`, { login }),
-      catch: toApiError,
-    })
+    const userResult = yield* withRateLimitRetry(() =>
+      clients.graphql(`query($login: String!) { user(login: $login) { id } }`, { login }),
+    )
     const userId = (userResult as { user: { id: string } | null }).user?.id
     if (!userId) return yield* new ApiError({ message: `Could not resolve owner ID for "${login}"` })
     return userId
@@ -160,38 +143,32 @@ function addItem(
   },
 ) {
   return Effect.gen(function* () {
-    const issue = yield* Effect.tryPromise({
-      try: () =>
-        clients.octokit.rest.issues.get({
-          owner: op.content.owner,
-          repo: op.content.repo,
-          issue_number: op.content.number,
-        }),
-      catch: toApiError,
-    })
+    const issue = yield* withRateLimitRetry(() =>
+      clients.octokit.rest.issues.get({
+        owner: op.content.owner,
+        repo: op.content.repo,
+        issue_number: op.content.number,
+      }),
+    )
     const response = yield* withUserFallback(
-      Effect.tryPromise({
-        try: () =>
-          clients.octokit.rest.projects.addItemForOrg({
-            org: op.owner,
+      withRateLimitRetry(() =>
+        clients.octokit.rest.projects.addItemForOrg({
+          org: op.owner,
+          project_number: op.number,
+          type: "Issue",
+          id: issue.data.id,
+        }),
+      ),
+      () =>
+        withRateLimitRetry(() =>
+          clients.octokit.rest.projects.addItemForUser({
+            // GitHub accepts username string in user_id path parameter
+            user_id: op.owner as unknown as number,
             project_number: op.number,
             type: "Issue",
             id: issue.data.id,
-          }),
-        catch: toApiError,
-      }),
-      () =>
-        Effect.tryPromise({
-          try: () =>
-            clients.octokit.rest.projects.addItemForUser({
-              // GitHub accepts username string in user_id path parameter
-              user_id: op.owner as unknown as number,
-              project_number: op.number,
-              type: "Issue",
-              id: issue.data.id,
-            } as never),
-          catch: toApiError,
-        }),
+          } as never),
+        ),
     )
     return { action: "add_item" as const, item: yield* normalizeItem(response.data) }
   })
@@ -209,38 +186,28 @@ function setField(
 ) {
   return Effect.gen(function* () {
     const project = yield* withUserFallback(
-      Effect.tryPromise({
-        try: () =>
-          clients.octokit.rest.projects.getForOrg({ org: op.owner, project_number: op.number }),
-        catch: toApiError,
-      }),
+      withRateLimitRetry(() => clients.octokit.rest.projects.getForOrg({ org: op.owner, project_number: op.number })),
       () =>
-        Effect.tryPromise({
-          try: () =>
-            clients.octokit.rest.projects.getForUser({
-              // GitHub accepts username string in user_id path parameter
-              user_id: op.owner as unknown as number,
-              project_number: op.number,
-            } as never),
-          catch: toApiError,
-        }),
+        withRateLimitRetry(() =>
+          clients.octokit.rest.projects.getForUser({
+            // GitHub accepts username string in user_id path parameter
+            user_id: op.owner as unknown as number,
+            project_number: op.number,
+          } as never),
+        ),
     )
     const fieldsResponse = yield* withUserFallback(
-      Effect.tryPromise({
-        try: () =>
-          clients.octokit.rest.projects.listFieldsForOrg({ org: op.owner, project_number: op.number }),
-        catch: toApiError,
-      }),
+      withRateLimitRetry(() =>
+        clients.octokit.rest.projects.listFieldsForOrg({ org: op.owner, project_number: op.number }),
+      ),
       () =>
-        Effect.tryPromise({
-          try: () =>
-            clients.octokit.rest.projects.listFieldsForUser({
-              // GitHub accepts username string in user_id path parameter
-              user_id: op.owner as unknown as number,
-              project_number: op.number,
-            } as never),
-          catch: toApiError,
-        }),
+        withRateLimitRetry(() =>
+          clients.octokit.rest.projects.listFieldsForUser({
+            // GitHub accepts username string in user_id path parameter
+            user_id: op.owner as unknown as number,
+            project_number: op.number,
+          } as never),
+        ),
     )
     const field = fieldsResponse.data.find((item) => item.name === op.field_name)
     if (!field) {
@@ -257,21 +224,17 @@ function setField(
     }
 
     const itemsResponse = yield* withUserFallback(
-      Effect.tryPromise({
-        try: () =>
-          clients.octokit.rest.projects.listItemsForOrg({ org: op.owner, project_number: op.number }),
-        catch: toApiError,
-      }),
+      withRateLimitRetry(() =>
+        clients.octokit.rest.projects.listItemsForOrg({ org: op.owner, project_number: op.number }),
+      ),
       () =>
-        Effect.tryPromise({
-          try: () =>
-            clients.octokit.rest.projects.listItemsForUser({
-              // GitHub accepts username string in user_id path parameter
-              user_id: op.owner as unknown as number,
-              project_number: op.number,
-            } as never),
-          catch: toApiError,
-        }),
+        withRateLimitRetry(() =>
+          clients.octokit.rest.projects.listItemsForUser({
+            // GitHub accepts username string in user_id path parameter
+            user_id: op.owner as unknown as number,
+            project_number: op.number,
+          } as never),
+        ),
     )
     const item = itemsResponse.data.find((candidate) => {
       const content = candidate.content as
@@ -290,23 +253,21 @@ function setField(
     }
     if (!item.node_id) return yield* new ApiError({ message: "Project item does not have a node ID" })
 
-    yield* Effect.tryPromise({
-      try: () =>
-        clients.graphql(
-          `mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: ProjectV2FieldValue!) {
+    yield* withRateLimitRetry(() =>
+      clients.graphql(
+        `mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: ProjectV2FieldValue!) {
             updateProjectV2ItemFieldValue(input: {
               projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: $value
             }) { projectV2Item { id } }
           }`,
-          {
-            projectId: project.data.node_id,
-            itemId: item.node_id,
-            fieldId: field.node_id,
-            value: fieldValue,
-          },
-        ),
-      catch: toApiError,
-    })
+        {
+          projectId: project.data.node_id,
+          itemId: item.node_id,
+          fieldId: field.node_id,
+          value: fieldValue,
+        },
+      ),
+    )
 
     const content = item.content as { title?: string; number?: number } | null | undefined
     return {
@@ -358,12 +319,7 @@ function withUserFallback<A>(
   )
 }
 
-function normalizeProject(data: {
-  number: number
-  title: string
-  html_url?: string
-  url?: string
-}): ProjectInfo {
+function normalizeProject(data: { number: number; title: string; html_url?: string; url?: string }): ProjectInfo {
   return { number: data.number, title: data.title, url: data.html_url ?? data.url ?? "" }
 }
 

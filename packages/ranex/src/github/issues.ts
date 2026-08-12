@@ -1,6 +1,6 @@
 import type { Octokit } from "@octokit/rest"
 import { Effect, Schema } from "effect"
-import { ApiError, toApiError } from "./error"
+import { ApiError, withRateLimitRetry } from "./error"
 
 export const IssueInfo = Schema.Struct({
   number: Schema.Number,
@@ -74,28 +74,24 @@ function list(
   op: { state?: "open" | "closed" | "all"; labels?: string[]; milestone?: number },
 ) {
   return Effect.gen(function* () {
-    const items = yield* Effect.tryPromise({
-      try: () =>
-        octokit.paginate(octokit.rest.issues.listForRepo, {
-          owner: repo.owner,
-          repo: repo.repo,
-          state: op.state ?? "open",
-          ...(op.labels ? { labels: op.labels.join(",") } : {}),
-          ...(op.milestone !== undefined ? { milestone: op.milestone as unknown as string } : {}),
-        }),
-      catch: toApiError,
-    })
+    const items = yield* withRateLimitRetry(() =>
+      octokit.paginate(octokit.rest.issues.listForRepo, {
+        owner: repo.owner,
+        repo: repo.repo,
+        state: op.state ?? "open",
+        ...(op.labels ? { labels: op.labels.join(",") } : {}),
+        ...(op.milestone !== undefined ? { milestone: op.milestone as unknown as string } : {}),
+      }),
+    )
     return { action: "list" as const, items: items.filter(isIssue).map(normalizeIssue) }
   })
 }
 
 function get(octokit: Octokit, repo: { owner: string; repo: string }, op: { number: number }) {
   return Effect.gen(function* () {
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        octokit.rest.issues.get({ owner: repo.owner, repo: repo.repo, issue_number: op.number }),
-      catch: toApiError,
-    })
+    const response = yield* withRateLimitRetry(() =>
+      octokit.rest.issues.get({ owner: repo.owner, repo: repo.repo, issue_number: op.number }),
+    )
     return { action: "get" as const, item: normalizeIssue(response.data) }
   })
 }
@@ -112,19 +108,17 @@ function create(
   },
 ) {
   return Effect.gen(function* () {
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        octokit.rest.issues.create({
-          owner: repo.owner,
-          repo: repo.repo,
-          title: op.title,
-          ...(op.body !== undefined ? { body: op.body } : {}),
-          ...(op.labels ? { labels: op.labels } : {}),
-          ...(op.assignees ? { assignees: op.assignees } : {}),
-          ...(op.milestone !== undefined ? { milestone: op.milestone } : {}),
-        }),
-      catch: toApiError,
-    })
+    const response = yield* withRateLimitRetry(() =>
+      octokit.rest.issues.create({
+        owner: repo.owner,
+        repo: repo.repo,
+        title: op.title,
+        ...(op.body !== undefined ? { body: op.body } : {}),
+        ...(op.labels ? { labels: op.labels } : {}),
+        ...(op.assignees ? { assignees: op.assignees } : {}),
+        ...(op.milestone !== undefined ? { milestone: op.milestone } : {}),
+      }),
+    )
     return { action: "create" as const, item: normalizeIssue(response.data) }
   })
 }
@@ -135,38 +129,30 @@ function update(
   op: { number: number; title?: string; body?: string; state?: "open" | "closed" },
 ) {
   return Effect.gen(function* () {
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        octokit.rest.issues.update({
-          owner: repo.owner,
-          repo: repo.repo,
-          issue_number: op.number,
-          ...(op.title !== undefined ? { title: op.title } : {}),
-          ...(op.body !== undefined ? { body: op.body } : {}),
-          ...(op.state !== undefined ? { state: op.state } : {}),
-        }),
-      catch: toApiError,
-    })
+    const response = yield* withRateLimitRetry(() =>
+      octokit.rest.issues.update({
+        owner: repo.owner,
+        repo: repo.repo,
+        issue_number: op.number,
+        ...(op.title !== undefined ? { title: op.title } : {}),
+        ...(op.body !== undefined ? { body: op.body } : {}),
+        ...(op.state !== undefined ? { state: op.state } : {}),
+      }),
+    )
     return { action: "update" as const, item: normalizeIssue(response.data) }
   })
 }
 
-function createComment(
-  octokit: Octokit,
-  repo: { owner: string; repo: string },
-  op: { number: number; body: string },
-) {
+function createComment(octokit: Octokit, repo: { owner: string; repo: string }, op: { number: number; body: string }) {
   return Effect.gen(function* () {
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        octokit.rest.issues.createComment({
-          owner: repo.owner,
-          repo: repo.repo,
-          issue_number: op.number,
-          body: op.body,
-        }),
-      catch: toApiError,
-    })
+    const response = yield* withRateLimitRetry(() =>
+      octokit.rest.issues.createComment({
+        owner: repo.owner,
+        repo: repo.repo,
+        issue_number: op.number,
+        body: op.body,
+      }),
+    )
     return {
       action: "comment" as const,
       item: {
