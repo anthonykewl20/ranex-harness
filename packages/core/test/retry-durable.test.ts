@@ -596,3 +596,74 @@ drivingIt.effect("mixed 503 then overflow preserves the retry attempt through co
     expect(globalTransportCalls).toBe(1)
   }),
 )
+
+it.effect("caps the durable exponential retry delay at ten seconds", () =>
+  Effect.gen(function* () {
+    yield* seed
+    const events = yield* EventV2.Service
+    const db = (yield* Database.Service).db
+    yield* events.publish(SessionEvent.Retried, {
+      sessionID,
+      timestamp: DateTime.makeUnsafe(0),
+      attempt: 4,
+      error: { message: "unavailable", statusCode: 503, isRetryable: true },
+    })
+    expect(
+      (
+        yield* db
+          .select({ next: SessionTable.retry_next_attempt_at })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, sessionID))
+          .get()
+      )?.next,
+    ).toBe(8_000)
+    yield* events.publish(SessionEvent.Retried, {
+      sessionID,
+      timestamp: DateTime.makeUnsafe(0),
+      attempt: 5,
+      error: { message: "unavailable", statusCode: 503, isRetryable: true },
+    })
+    expect(
+      (
+        yield* db
+          .select({ next: SessionTable.retry_next_attempt_at })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, sessionID))
+          .get()
+      )?.next,
+    ).toBe(10_000)
+  }),
+)
+
+drivingIt.effect("does not retry after an assistant message has started", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_started_guard")
+    yield* insertDrivingSession(id)
+    const session = yield* SessionV2.Service
+    const sessionExecution = yield* SessionExecution.Service
+    turnStreams = [
+      Stream.concat(
+        Stream.fromIterable([
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.textStart({ id: "text-started" }),
+          LLMEvent.textDelta({ id: "text-started", text: "Partial" }),
+        ]),
+        Stream.fail(unavailable()),
+      ),
+    ]
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Do not replay" }), resume: false })
+    const exit = yield* sessionExecution.resume(id).pipe(Effect.exit)
+    expect(Exit.isFailure(exit)).toBeTrue()
+    expect(turnCalls).toBe(1)
+    expect(yield* retriedAttempts(id)).toEqual([])
+    expect(yield* session.context(id)).toMatchObject([
+      { type: "user", text: "Do not replay" },
+      {
+        type: "assistant",
+        finish: "error",
+        error: { type: "unknown", message: "Provider unavailable" },
+        content: [{ type: "text", text: "Partial" }],
+      },
+    ])
+  }),
+)
