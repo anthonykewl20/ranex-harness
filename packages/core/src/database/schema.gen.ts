@@ -93,7 +93,8 @@ export default {
           \`data\` text NOT NULL,
           \`agent\` text,
           \`time_created\` integer NOT NULL,
-          \`time_updated\` integer NOT NULL
+          \`time_updated\` integer NOT NULL,
+          CONSTRAINT \`fk_permission_request_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
         );
       `)
       yield* tx.run(`
@@ -140,7 +141,8 @@ export default {
           \`session_id\` text NOT NULL,
           \`data\` text NOT NULL,
           \`time_created\` integer NOT NULL,
-          \`time_updated\` integer NOT NULL
+          \`time_updated\` integer NOT NULL,
+          CONSTRAINT \`fk_question_request_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
         );
       `)
       yield* tx.run(`

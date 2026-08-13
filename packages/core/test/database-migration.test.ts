@@ -15,6 +15,7 @@ import eventSourcedSessionInputMigration from "@ranex/core/database/migration/20
 import contextEpochAgentMigration from "@ranex/core/database/migration/20260605042240_add_context_epoch_agent"
 import simplifyIntegrationCredentialsMigration from "@ranex/core/database/migration/20260611192811_lush_chimera"
 import simplifySessionInputMigration from "@ranex/core/database/migration/20260622202450_simplify_session_input"
+import sessionBlockerCascadeMigration from "@ranex/core/database/migration/20260813173227_session_blocker_cascade"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { EventV2 } from "@ranex/core/event"
@@ -100,6 +101,81 @@ describe("DatabaseMigration", () => {
           { name: "session_message_session_time_created_id_idx" },
           { name: "session_message_session_type_seq_idx" },
         ])
+      }),
+    )
+  })
+
+  test("cascades session deletion to blocker requests", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`PRAGMA foreign_keys = ON`)
+        yield* DatabaseMigration.apply(db)
+        yield* db.run(
+          sql`INSERT INTO project (id, worktree, sandboxes, time_created, time_updated) VALUES ('project', '/project', '[]', 1, 1)`,
+        )
+        yield* db.run(
+          sql`INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES ('session', 'project', 'session', '/project', 'Session', 'test', 1, 1)`,
+        )
+        yield* db.run(
+          sql`INSERT INTO permission_request (id, session_id, data, time_created, time_updated) VALUES ('permission', 'session', '{}', 1, 1)`,
+        )
+        yield* db.run(
+          sql`INSERT INTO question_request (id, session_id, data, time_created, time_updated) VALUES ('question', 'session', '{}', 1, 1)`,
+        )
+
+        yield* db.run(sql`DELETE FROM session WHERE id = 'session'`)
+
+        expect(yield* db.all(sql`SELECT id FROM permission_request`)).toEqual([])
+        expect(yield* db.all(sql`SELECT id FROM question_request`)).toEqual([])
+      }),
+    )
+  })
+
+  test("rebuilds blocker requests after pruning orphaned rows", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`PRAGMA foreign_keys = ON`)
+        yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY)`)
+        yield* db.run(
+          sql`CREATE TABLE permission_request (id text PRIMARY KEY, session_id text NOT NULL, data text NOT NULL, agent text, time_created integer NOT NULL, time_updated integer NOT NULL)`,
+        )
+        yield* db.run(
+          sql`CREATE TABLE question_request (id text PRIMARY KEY, session_id text NOT NULL, data text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL)`,
+        )
+        yield* db.run(sql`INSERT INTO session (id) VALUES ('session')`)
+        yield* db.run(
+          sql`INSERT INTO permission_request (id, session_id, data, time_created, time_updated) VALUES ('permission', 'session', '{}', 1, 1), ('orphan_permission', 'orphan', '{}', 1, 1)`,
+        )
+        yield* db.run(
+          sql`INSERT INTO question_request (id, session_id, data, time_created, time_updated) VALUES ('question', 'session', '{}', 1, 1), ('orphan_question', 'orphan', '{}', 1, 1)`,
+        )
+
+        yield* DatabaseMigration.applyOnly(db, [sessionBlockerCascadeMigration])
+
+        expect((yield* db.all<{ name: string }>(sql`PRAGMA table_info(permission_request)`)).map((column) => column.name)).toEqual([
+          "id",
+          "session_id",
+          "data",
+          "agent",
+          "time_created",
+          "time_updated",
+        ])
+        expect((yield* db.all<{ name: string }>(sql`PRAGMA table_info(question_request)`)).map((column) => column.name)).toEqual([
+          "id",
+          "session_id",
+          "data",
+          "time_created",
+          "time_updated",
+        ])
+        expect(yield* db.all(sql`SELECT id FROM permission_request`)).toEqual([{ id: "permission" }])
+        expect(yield* db.all(sql`SELECT id FROM question_request`)).toEqual([{ id: "question" }])
+
+        yield* db.run(sql`DELETE FROM session WHERE id = 'session'`)
+
+        expect(yield* db.all(sql`SELECT id FROM permission_request`)).toEqual([])
+        expect(yield* db.all(sql`SELECT id FROM question_request`)).toEqual([])
       }),
     )
   })

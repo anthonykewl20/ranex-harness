@@ -4,12 +4,16 @@ import type { AgentV2 } from "../agent"
 import { ProjectV2 } from "../project"
 import { ProjectTable } from "../project/sql"
 import type { SessionV2 } from "../session"
+import { SessionTable } from "../session/sql"
 import type { PermissionV2 } from "../permission"
 import type { PermissionSaved } from "./saved"
 
 export const PermissionRequestTable = sqliteTable("permission_request", {
   id: text().$type<PermissionV2.ID>().primaryKey(),
-  session_id: text().$type<SessionV2.ID>().notNull(),
+  session_id: text()
+    .$type<SessionV2.ID>()
+    .notNull()
+    .references(() => SessionTable.id, { onDelete: "cascade" }),
   data: text({ mode: "json" }).$type<PermissionV2.Request>().notNull(),
   agent: text().$type<AgentV2.ID>(),
   ...Timestamps,
