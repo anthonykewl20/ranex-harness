@@ -120,15 +120,23 @@ const layer = Layer.effect(
     const { db } = yield* Database.Service
     const pending = new Map<ID, Pending>()
 
-    yield* EffectRuntime.forEach(yield* db.select().from(PermissionRequestTable).all().pipe(EffectRuntime.orDie), (row) =>
-      EffectRuntime.gen(function* () {
-        const request = yield* Schema.decodeUnknownEffect(Request)(row.data).pipe(EffectRuntime.orDie)
-        pending.set(request.id, {
-          request,
-          agent: row.agent ?? undefined,
-          deferred: yield* Deferred.make<void, DeclinedError | CorrectedError>(),
-        })
-      }),
+    const ownsSession = (session: SessionV2.Info) =>
+      session.location.directory === location.directory && session.location.workspaceID === location.workspaceID
+    const sessionIDs = new Set((yield* sessions.list()).filter(ownsSession).map((session) => session.id))
+
+    yield* EffectRuntime.forEach(
+      (yield* db.select().from(PermissionRequestTable).all().pipe(EffectRuntime.orDie)).filter((row) =>
+        sessionIDs.has(row.session_id),
+      ),
+      (row) =>
+        EffectRuntime.gen(function* () {
+          const request = yield* Schema.decodeUnknownEffect(Request)(row.data).pipe(EffectRuntime.orDie)
+          pending.set(request.id, {
+            request,
+            agent: row.agent ?? undefined,
+            deferred: yield* Deferred.make<void, DeclinedError | CorrectedError>(),
+          })
+        }),
     )
 
     yield* EffectRuntime.addFinalizer(() =>
@@ -154,7 +162,7 @@ const layer = Layer.effect(
       agentID?: AgentV2.ID,
     ) {
       const session = yield* sessions.get(sessionID)
-      if (!session) return yield* new SessionV2.NotFoundError({ sessionID })
+      if (!session || !ownsSession(session)) return yield* new SessionV2.NotFoundError({ sessionID })
       const agent = yield* agents.resolve(agentID ?? session.agent)
       return agent?.permissions ?? missingAgentPermissions
     })
@@ -263,18 +271,18 @@ const layer = Layer.effect(
       EffectRuntime.uninterruptible(
         EffectRuntime.gen(function* () {
           const existing = pending.get(input.requestID)
+          if (!existing) return yield* new NotFoundError({ requestID: input.requestID })
 
-          if (input.reply === "always" && existing?.request.save?.length) {
+          const won = yield* claimSettlement(input.requestID)
+          if (!won) return yield* new NotFoundError({ requestID: input.requestID })
+
+          if (input.reply === "always" && existing.request.save?.length) {
             yield* saved.add({
               projectID: location.project.id,
               action: existing.request.action,
               resources: existing.request.save,
             })
           }
-
-          const won = yield* claimSettlement(input.requestID)
-          if (!won) return yield* new NotFoundError({ requestID: input.requestID })
-          if (!existing) return
 
           if (input.reply === "reject") {
             yield* Deferred.fail(
@@ -350,13 +358,13 @@ const layer = Layer.effect(
     )
 
     const list = EffectRuntime.fn("PermissionV2.list")(function* () {
-      const rows = yield* db.select().from(PermissionRequestTable).all().pipe(EffectRuntime.orDie)
-      return yield* EffectRuntime.forEach(rows, (row) =>
-        Schema.decodeUnknownEffect(Request)(row.data).pipe(EffectRuntime.orDie),
+      return yield* EffectRuntime.forEach(pending.values(), (item) =>
+        EffectRuntime.succeed(item.request),
       )
     })
 
     const get = EffectRuntime.fn("PermissionV2.get")(function* (id: ID) {
+      if (!pending.has(id)) return undefined
       const row = yield* db
         .select()
         .from(PermissionRequestTable)
@@ -368,6 +376,8 @@ const layer = Layer.effect(
     })
 
     const forSession = EffectRuntime.fn("PermissionV2.forSession")(function* (sessionID: SessionV2.ID) {
+      const session = yield* sessions.get(sessionID)
+      if (!session || !ownsSession(session)) return []
       const rows = yield* db
         .select()
         .from(PermissionRequestTable)

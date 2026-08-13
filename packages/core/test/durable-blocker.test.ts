@@ -8,7 +8,7 @@ import { LayerNode } from "@ranex/core/effect/layer-node"
 import { EventV2 } from "@ranex/core/event"
 import { Location } from "@ranex/core/location"
 import { PermissionV2 } from "@ranex/core/permission"
-import { PermissionRequestTable } from "@ranex/core/permission/sql"
+import { PermissionRequestTable, PermissionTable } from "@ranex/core/permission/sql"
 import { PermissionSaved } from "@ranex/core/permission/saved"
 import { Project } from "@ranex/core/project"
 import { ProjectTable } from "@ranex/core/project/sql"
@@ -27,13 +27,17 @@ const current = Layer.succeed(
   Location.Service,
   Location.Service.of(location({ directory: AbsolutePath.make("/project") })),
 )
+const other = Layer.succeed(
+  Location.Service,
+  Location.Service.of(location({ directory: AbsolutePath.make("/other") })),
+)
 const question = {
   question: "Which option?",
   header: "Option",
   options: [{ label: "One", description: "First option" }],
 } satisfies QuestionV2.Info
 
-function layer(filename: string) {
+function layer(filename: string, locationLayer = current) {
   return AppNodeBuilder.build(
     LayerNode.group([
       Database.node,
@@ -46,13 +50,13 @@ function layer(filename: string) {
     ]),
     [
       [Database.node, Database.layerFromPath(filename)],
-      [Location.node, current],
+      [Location.node, locationLayer],
     ],
   )
 }
 
-function graph<A, E>(filename: string, effect: Effect.Effect<A, E, Scope.Scope | PermissionV2.Service | QuestionV2.Service | EventV2.Service | Database.Service | AgentV2.Service>) {
-  return Effect.runPromise(effect.pipe(Effect.scoped, Effect.provide(layer(filename))))
+function graph<A, E>(filename: string, effect: Effect.Effect<A, E, Scope.Scope | PermissionV2.Service | QuestionV2.Service | EventV2.Service | Database.Service | AgentV2.Service>, locationLayer = current) {
+  return Effect.runPromise(effect.pipe(Effect.scoped, Effect.provide(layer(filename, locationLayer))))
 }
 
 const setup = Effect.gen(function* () {
@@ -151,6 +155,55 @@ describe("durable permission and question blockers", () => {
       expect(yield* service.reply({ requestID: id, reply: "reject" }).pipe(Effect.flip)).toBeInstanceOf(PermissionV2.NotFoundError)
     }))
     expect(await graph(filename, Database.Service.use(({ db }) => db.select().from(PermissionRequestTable).where(eq(PermissionRequestTable.id, id)).get().pipe(Effect.orDie)))).toBeUndefined()
+  })
+
+  test("permission hydration and settlement are scoped to the owning location", async () => {
+    await using tmp = await tmpdir()
+    const filename = path.join(tmp.path, "blockers.sqlite")
+    const localID = PermissionV2.ID.create("per_location_local")
+    const otherID = PermissionV2.ID.create("per_location_other")
+    const otherSessionID = SessionV2.ID.make("ses_durable_blocker_other")
+    await graph(filename, Effect.gen(function* () {
+      yield* setup
+      const service = yield* PermissionV2.Service
+      yield* service.ask(permission(localID))
+    }))
+    await graph(filename, Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: otherSessionID,
+          project_id: Project.ID.global,
+          slug: "other",
+          directory: "/other",
+          title: "other",
+          version: "test",
+          agent: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+      const agents = yield* AgentV2.Service
+      yield* agents.transform((editor) =>
+        editor.update(AgentV2.ID.make("test"), (agent) => {
+          agent.permissions = []
+        }),
+      )
+      const service = yield* PermissionV2.Service
+      yield* service.ask(permission(otherID, { sessionID: otherSessionID }))
+    }), other)
+    await graph(filename, Effect.gen(function* () {
+      const service = yield* PermissionV2.Service
+      expect((yield* service.list()).map((item) => item.id)).toEqual([localID])
+      expect(yield* service.forSession(otherSessionID)).toEqual([])
+      expect(yield* service.get(otherID)).toBeUndefined()
+      expect(yield* service.reply({ requestID: otherID, reply: "once" }).pipe(Effect.flip)).toBeInstanceOf(PermissionV2.NotFoundError)
+    }))
+    await graph(filename, Effect.gen(function* () {
+      const service = yield* PermissionV2.Service
+      expect((yield* service.list()).map((item) => item.id)).toEqual([otherID])
+      yield* service.reply({ requestID: otherID, reply: "once" })
+    }), other)
   })
 
   test("question reply survives teardown and settles exactly once", async () => {
@@ -275,6 +328,26 @@ describe("durable permission and question blockers", () => {
       expect(exits.filter(Exit.isFailure)).toHaveLength(1)
       expect(exits.find(Exit.isFailure)!.cause.toString()).toContain("PermissionV2.NotFoundError")
       expect(replied).toEqual([id])
+    }))
+  })
+
+  test("a losing always reply does not persist its grant", async () => {
+    await using tmp = await tmpdir()
+    const filename = path.join(tmp.path, "blockers.sqlite")
+    const id = PermissionV2.ID.create("per_lost_always")
+    await graph(filename, Effect.gen(function* () {
+      yield* setup
+      const service = yield* PermissionV2.Service
+      yield* service.ask(permission(id, { save: ["src/*"] }))
+    }))
+    await graph(filename, Effect.gen(function* () {
+      const service = yield* PermissionV2.Service
+      yield* Effect.promise(() => graph(filename, PermissionV2.Service.use((winner) =>
+        winner.reply({ requestID: id, reply: "once" }),
+      ))).pipe(Effect.orDie)
+      expect(yield* service.reply({ requestID: id, reply: "always" }).pipe(Effect.flip)).toBeInstanceOf(PermissionV2.NotFoundError)
+      const { db } = yield* Database.Service
+      expect(yield* db.select().from(PermissionTable).all().pipe(Effect.orDie)).toEqual([])
     }))
   })
 
