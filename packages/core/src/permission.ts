@@ -273,16 +273,31 @@ const layer = Layer.effect(
           const existing = pending.get(input.requestID)
           if (!existing) return yield* new NotFoundError({ requestID: input.requestID })
 
-          const won = yield* claimSettlement(input.requestID)
+          const save = input.reply === "always" ? existing.request.save : undefined
+          const won = save?.length
+            ? yield* db
+                .transaction((tx) =>
+                  EffectRuntime.gen(function* () {
+                    const claimed = yield* tx
+                      .delete(PermissionRequestTable)
+                      .where(eq(PermissionRequestTable.id, input.requestID))
+                      .returning()
+                      .get()
+                    if (!claimed) return undefined
+                    yield* saved.add(
+                      {
+                        projectID: location.project.id,
+                        action: existing.request.action,
+                        resources: save,
+                      },
+                      tx,
+                    )
+                    return claimed
+                  }),
+                )
+                .pipe(EffectRuntime.orDie)
+            : yield* claimSettlement(input.requestID)
           if (!won) return yield* new NotFoundError({ requestID: input.requestID })
-
-          if (input.reply === "always" && existing.request.save?.length) {
-            yield* saved.add({
-              projectID: location.project.id,
-              action: existing.request.action,
-              resources: existing.request.save,
-            })
-          }
 
           if (input.reply === "reject") {
             yield* Deferred.fail(

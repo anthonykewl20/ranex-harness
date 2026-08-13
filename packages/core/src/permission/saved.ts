@@ -26,9 +26,11 @@ export const AddInput = Schema.Struct({
 }).annotate({ identifier: "PermissionSaved.AddInput" })
 export type AddInput = typeof AddInput.Type
 
+type InsertClient = Pick<Database.Interface["db"], "insert">
+
 export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<ReadonlyArray<Info>>
-  readonly add: (input: AddInput) => Effect.Effect<void>
+  readonly add: (input: AddInput, client?: InsertClient) => Effect.Effect<void>
   readonly remove: (id: ID) => Effect.Effect<void>
 }
 
@@ -51,9 +53,9 @@ const layer = Layer.effect(
       )
     })
 
-    const add = Effect.fn("PermissionSaved.add")(function* (input: AddInput) {
+    const add = Effect.fn("PermissionSaved.add")(function* (input: AddInput, client: InsertClient = db) {
       if (!input.resources.length) return
-      yield* db
+      yield* client
         .insert(PermissionTable)
         .values(
           input.resources.map((resource) => ({
