@@ -4,7 +4,7 @@ import { PermissionSaved } from "@ranex/core/permission/saved"
 import { Effect } from "effect"
 import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
 import { Api } from "../api"
-import { PermissionNotFoundError, SessionNotFoundError } from "@ranex/protocol/errors"
+import { PermissionNotFoundError, SessionNotFoundError, UnknownError } from "@ranex/protocol/errors"
 import { response } from "../location"
 
 function missingRequest(id: PermissionV2.ID) {
@@ -72,7 +72,17 @@ export const PermissionHandler = HttpApiBuilder.group(Api, "server.permission", 
           if (!request || request.sessionID !== ctx.params.sessionID) return yield* missingRequest(ctx.params.requestID)
           yield* permission
             .reply({ requestID: ctx.params.requestID, reply: ctx.payload.reply, message: ctx.payload.message })
-            .pipe(Effect.catchTag("PermissionV2.NotFoundError", () => missingRequest(ctx.params.requestID)))
+            .pipe(
+              Effect.catchTag("PermissionV2.NotFoundError", () => missingRequest(ctx.params.requestID)),
+              Effect.catchTag(
+                "PermissionV2.SettlementError",
+                (error) =>
+                  new UnknownError({
+                    message: "Unable to settle permission request. Retry the request.",
+                    ref: error.requestID,
+                  }),
+              ),
+            )
           return HttpApiSchema.NoContent.make()
         }),
       )
