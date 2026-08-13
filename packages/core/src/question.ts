@@ -4,7 +4,10 @@ import { makeLocationNode } from "./effect/app-node"
 import { Context, Deferred, Effect, Layer, Schema } from "effect"
 import { Question } from "@ranex/schema/question"
 import { EventV2 } from "./event"
+import { Location } from "./location"
+import { SessionV2 } from "./session"
 import { SessionSchema } from "./session/schema"
+import { SessionStore } from "./session/store"
 import { Database } from "./database/database"
 import { QuestionRequestTable } from "./question/sql"
 import { eq } from "drizzle-orm"
@@ -79,17 +82,27 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2.Service
+    const location = yield* Location.Service
+    const sessions = yield* SessionStore.Service
     const { db } = yield* Database.Service
     const pending = new Map<ID, Pending>()
 
-    yield* Effect.forEach(yield* db.select().from(QuestionRequestTable).all().pipe(Effect.orDie), (row) =>
-      Effect.gen(function* () {
-        const request = yield* Schema.decodeUnknownEffect(Request)(row.data).pipe(Effect.orDie)
-        pending.set(request.id, {
-          request,
-          deferred: yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>(),
-        })
-      }),
+    const ownsSession = (session: SessionV2.Info) =>
+      session.location.directory === location.directory && session.location.workspaceID === location.workspaceID
+    const sessionIDs = new Set((yield* sessions.list()).filter(ownsSession).map((session) => session.id))
+
+    yield* Effect.forEach(
+      (yield* db.select().from(QuestionRequestTable).all().pipe(Effect.orDie)).filter((row) =>
+        sessionIDs.has(row.session_id),
+      ),
+      (row) =>
+        Effect.gen(function* () {
+          const request = yield* Schema.decodeUnknownEffect(Request)(row.data).pipe(Effect.orDie)
+          pending.set(request.id, {
+            request,
+            deferred: yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>(),
+          })
+        }),
     )
 
     yield* Effect.addFinalizer(() =>
@@ -149,10 +162,12 @@ const layer = Layer.effect(
     const reply = Effect.fn("QuestionV2.reply")((input: ReplyInput) =>
       Effect.uninterruptible(
         Effect.gen(function* () {
+          const existing = pending.get(input.requestID)
+          if (!existing) return yield* new NotFoundError({ requestID: input.requestID })
+
           const won = yield* claimSettlement(input.requestID)
           if (!won) return yield* new NotFoundError({ requestID: input.requestID })
-          const existing = pending.get(input.requestID)
-          if (!existing) return
+
           yield* Deferred.succeed(existing.deferred, input.answers)
           pending.delete(input.requestID)
           yield* events.publish(Event.Replied, {
@@ -167,10 +182,12 @@ const layer = Layer.effect(
     const reject = Effect.fn("QuestionV2.reject")((requestID: ID) =>
       Effect.uninterruptible(
         Effect.gen(function* () {
+          const existing = pending.get(requestID)
+          if (!existing) return yield* new NotFoundError({ requestID })
+
           const won = yield* claimSettlement(requestID)
           if (!won) return yield* new NotFoundError({ requestID })
-          const existing = pending.get(requestID)
-          if (!existing) return
+
           yield* Deferred.fail(existing.deferred, new RejectedError())
           pending.delete(requestID)
           yield* events.publish(Event.Rejected, {
@@ -182,8 +199,7 @@ const layer = Layer.effect(
     )
 
     const list = Effect.fn("QuestionV2.list")(function* () {
-      const rows = yield* db.select().from(QuestionRequestTable).all().pipe(Effect.orDie)
-      return yield* Effect.forEach(rows, (row) => Schema.decodeUnknownEffect(Request)(row.data).pipe(Effect.orDie))
+      return yield* Effect.forEach(pending.values(), (item) => Effect.succeed(item.request))
     })
 
     return Service.of({ ask, reply, reject, list })
@@ -192,4 +208,8 @@ const layer = Layer.effect(
 
 export const locationLayer = layer
 
-export const node = makeLocationNode({ service: Service, layer, deps: [Database.node, EventV2.node] })
+export const node = makeLocationNode({
+  service: Service,
+  layer,
+  deps: [Database.node, EventV2.node, Location.node, SessionStore.node],
+})
