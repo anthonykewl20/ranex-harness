@@ -530,6 +530,48 @@ drivingIt.effect("GREEN: fresh drain honors persisted retry delay and resumes re
   }),
 )
 
+drivingIt.effect("retries retryable in-band provider errors durably", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_in_band_provider_error")
+    yield* insertDrivingSession(id)
+    const session = yield* SessionV2.Service
+    const sessionExecution = yield* SessionExecution.Service
+    turnStreams = [
+      Stream.fromIterable([LLMEvent.providerError({ message: "Bedrock throttled", retryable: true })]),
+      complete("recovered", "Recovered"),
+    ]
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Retry in-band failure" }), resume: false })
+    const drain = yield* sessionExecution.resume(id).pipe(Effect.exit, Effect.forkChild)
+    while ((yield* retriedAttempts(id)).length < 1) yield* Effect.yieldNow
+    expect(turnCalls).toBe(1)
+    yield* TestClock.adjust("500 millis")
+    expect(Exit.isSuccess(yield* Fiber.join(drain))).toBeTrue()
+    expect(turnCalls).toBe(2)
+    expect(yield* retriedAttempts(id)).toEqual([0])
+    expect(yield* session.context(id)).toMatchObject([
+      { type: "user", text: "Retry in-band failure" },
+      { type: "assistant", content: [{ type: "text", text: "Recovered" }] },
+    ])
+  }),
+)
+
+drivingIt.effect("keeps non-retryable in-band provider errors terminal", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_non_retryable_in_band_provider_error")
+    yield* insertDrivingSession(id)
+    const session = yield* SessionV2.Service
+    turnStreams = [Stream.fromIterable([LLMEvent.providerError({ message: "Invalid provider response" })])]
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Do not retry" }), resume: false })
+    yield* session.resume(id)
+    expect(turnCalls).toBe(1)
+    expect(yield* retriedAttempts(id)).toEqual([])
+    expect(yield* session.context(id)).toMatchObject([
+      { type: "user", text: "Do not retry" },
+      { type: "assistant", finish: "error", error: { message: "Invalid provider response" } },
+    ])
+  }),
+)
+
 drivingIt.effect("OVERFLOW: retryable failure after overflow compaction remains typed", () =>
   Effect.gen(function* () {
     const id = SessionV2.ID.make("ses_retry_driving_overflow")
