@@ -139,7 +139,8 @@ function computeReplacements(lines: ReadonlyArray<string>, path: string, chunks:
       lineIndex = context + 1
     }
     if (chunk.oldLines.length === 0) {
-      replacements.push([lines.length, 0, chunk.newLines])
+      const at = chunk.endOfFile || chunk.changeContext === undefined ? lines.length : lineIndex
+      replacements.push([at, 0, chunk.newLines])
       continue
     }
     let oldLines = chunk.oldLines

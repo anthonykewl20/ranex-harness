@@ -204,6 +204,76 @@ PATCH`
       }),
     )
 
+    it.live("should insert additions after their change context", () =>
+      Effect.gen(function* () {
+        const filePath = path.join(tempDir, "context-insertion.txt")
+        yield* Effect.promise(() => fs.writeFile(filePath, "line1\nline2\nline3\n"))
+
+        const patchText = `*** Begin Patch
+*** Update File: ${filePath}
+@@ line2
++inserted
+*** End Patch`
+
+        yield* Patch.applyPatch(patchText)
+
+        const content = yield* Effect.promise(() => fs.readFile(filePath, "utf-8"))
+        expect(content).toBe("line1\nline2\ninserted\nline3\n")
+      }),
+    )
+
+    it.live("should append additions without change context", () =>
+      Effect.gen(function* () {
+        const filePath = path.join(tempDir, "no-context-insertion.txt")
+        yield* Effect.promise(() => fs.writeFile(filePath, "a\nb\n"))
+
+        yield* Patch.applyPatch(`*** Begin Patch
+*** Update File: ${filePath}
+@@
++end
+*** End Patch`)
+
+        const content = yield* Effect.promise(() => fs.readFile(filePath, "utf-8"))
+        expect(content).toBe("a\nb\nend\n")
+      }),
+    )
+
+    it.live("should append pure additions marked as end of file", () =>
+      Effect.gen(function* () {
+        const filePath = path.join(tempDir, "end-of-file-insertion.txt")
+        yield* Effect.promise(() => fs.writeFile(filePath, "a\nb\n"))
+
+        yield* Patch.applyPatch(`*** Begin Patch
+*** Update File: ${filePath}
+@@
++done
+*** End of File
+*** End Patch`)
+
+        const content = yield* Effect.promise(() => fs.readFile(filePath, "utf-8"))
+        expect(content).toBe("a\nb\ndone\n")
+      }),
+    )
+
+    it.live("should not advance the original-file cursor after an insertion", () =>
+      Effect.gen(function* () {
+        const filePath = path.join(tempDir, "multi-chunk-insertion.txt")
+        yield* Effect.promise(() => fs.writeFile(filePath, "a\nc\nc\nd\n"))
+
+        yield* Patch.applyPatch(`*** Begin Patch
+*** Update File: ${filePath}
+@@ a
++X
+@@
+-c
++C
+*** End Patch`)
+
+        const content = yield* Effect.promise(() => fs.readFile(filePath, "utf-8"))
+        expect(content).toBe("a\nX\nC\nc\nd\n")
+      }),
+    )
+
     it.live("should move and update a file", () =>
       Effect.gen(function* () {
         const oldPath = path.join(tempDir, "old-name.txt")
