@@ -3,11 +3,22 @@ import { Context, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { EventV2 } from "@ranex/core/event"
+import { Location } from "@ranex/core/location"
 import { QuestionV2 } from "@ranex/core/question"
+import { AbsolutePath } from "@ranex/core/schema"
 import { SessionV2 } from "@ranex/core/session"
+import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 
-const questions = AppNodeBuilder.build(LayerNode.group([EventV2.node, QuestionV2.node]))
+const questions = AppNodeBuilder.build(LayerNode.group([EventV2.node, QuestionV2.node]), [
+  [
+    Location.node,
+    Layer.succeed(
+      Location.Service,
+      Location.Service.of(location({ directory: AbsolutePath.make("/project") })),
+    ),
+  ],
+])
 const it = testEffect(questions)
 
 const sessionID = SessionV2.ID.make("ses_question_test")
