@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
-import { Deferred, Effect, Exit, Fiber, Layer, Scope, Stream } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer, Option, Scope, Stream } from "effect"
 import { AgentV2 } from "@ranex/core/agent"
 import { Database } from "@ranex/core/database/database"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
@@ -445,9 +445,15 @@ describe("durable permission and question blockers", () => {
         END
       `).pipe(Effect.orDie)
 
-      expect(Exit.isFailure(yield* service.reply({ requestID: id, reply: "always" }).pipe(Effect.exit))).toBe(true)
+      const reply = yield* service.reply({ requestID: id, reply: "always" }).pipe(Effect.exit)
+      expect(Exit.isFailure(reply)).toBe(true)
+      if (Exit.isFailure(reply)) {
+        expect(reply.cause.toString()).toContain("PermissionV2.SettlementError")
+        expect(reply.cause.toString()).not.toContain("Die")
+      }
       expect(yield* db.select().from(PermissionRequestTable).where(eq(PermissionRequestTable.id, id)).get().pipe(Effect.orDie)).toBeDefined()
       expect(yield* db.select().from(PermissionTable).all().pipe(Effect.orDie)).toEqual([])
+      expect(yield* Fiber.await(fiber).pipe(Effect.timeoutOption("1 millis"))).toEqual(Option.none())
 
       yield* db.run("DROP TRIGGER fail_permission_save").pipe(Effect.orDie)
       yield* service.reply({ requestID: id, reply: "always" })

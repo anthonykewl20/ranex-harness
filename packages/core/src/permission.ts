@@ -74,6 +74,10 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Per
   requestID: ID,
 }) {}
 
+export class SettlementError extends Schema.TaggedErrorClass<SettlementError>()("PermissionV2.SettlementError", {
+  requestID: ID,
+}) {}
+
 export type Error = BlockedError | CorrectedError
 
 export function evaluate(action: string, resource: string, ...rulesets: Permission.Ruleset[]): Permission.Rule {
@@ -95,7 +99,7 @@ export function merge(...rulesets: Permission.Ruleset[]): Permission.Ruleset {
 export interface Interface {
   readonly ask: (input: AssertInput) => EffectRuntime.Effect<AskResult, SessionV2.NotFoundError>
   readonly assert: (input: AssertInput) => EffectRuntime.Effect<void, Error | SessionV2.NotFoundError>
-  readonly reply: (input: ReplyInput) => EffectRuntime.Effect<void, NotFoundError>
+  readonly reply: (input: ReplyInput) => EffectRuntime.Effect<void, NotFoundError | SettlementError>
   readonly get: (id: ID) => EffectRuntime.Effect<Request | undefined>
   readonly forSession: (sessionID: SessionV2.ID) => EffectRuntime.Effect<ReadonlyArray<Request>>
   readonly list: () => EffectRuntime.Effect<ReadonlyArray<Request>>
@@ -295,7 +299,11 @@ const layer = Layer.effect(
                     return claimed
                   }),
                 )
-                .pipe(EffectRuntime.orDie)
+                .pipe(
+                  EffectRuntime.catchCause(() =>
+                    EffectRuntime.fail(new SettlementError({ requestID: input.requestID })),
+                  ),
+                )
             : yield* claimSettlement(input.requestID)
           if (!won) return yield* new NotFoundError({ requestID: input.requestID })
 
