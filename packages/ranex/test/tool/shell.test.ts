@@ -263,6 +263,65 @@ describe("tool.shell permissions", () => {
     }),
   )
 
+  each("asks for bash permission with the raw command when parsing fails", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      yield* runIn(
+        tmp,
+        Effect.gen(function* () {
+          const err = new Error("stop after permission")
+          const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
+          const command = "echo '"
+          expect(yield* fail({ command }, capture(requests, err))).toMatchObject({ message: err.message })
+          const bashReq = requests.find((request) => request.permission === "bash")
+          expect(bashReq).toBeDefined()
+          expect(bashReq!.patterns).toEqual([command])
+          expect(bashReq!.always).toEqual([])
+        }),
+      )
+    }),
+  )
+
+  each("asks for bash permission with the raw command when parsing finds no commands", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      yield* runIn(
+        tmp,
+        Effect.gen(function* () {
+          const err = new Error("stop after permission")
+          const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
+          const command = "# nothing here"
+          expect(yield* fail({ command }, capture(requests, err))).toMatchObject({ message: err.message })
+          const bashReq = requests.find((request) => request.permission === "bash")
+          expect(bashReq).toBeDefined()
+          expect(bashReq!.patterns).toEqual([command])
+          expect(bashReq!.always).toEqual([])
+        }),
+      )
+    }),
+  )
+
+  for (const item of ps) {
+    it.live(`asks for bash permission for trailing PowerShell argument separator [${item.label}]`, () =>
+      withShell(
+        item,
+        runIn(
+          projectRoot,
+          Effect.gen(function* () {
+            const err = new Error("stop after permission")
+            const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
+            const command = "git diff --"
+            expect(yield* fail({ command }, capture(requests, err))).toMatchObject({ message: err.message })
+            const bashReq = requests.find((request) => request.permission === "bash")
+            expect(bashReq).toBeDefined()
+            expect(bashReq!.patterns).toEqual([command])
+            expect(bashReq!.always).toEqual([])
+          }),
+        ),
+      ),
+    )
+  }
+
   for (const item of ps) {
     it.live(`parses PowerShell conditionals for permission prompts [${item.label}]`, () =>
       withShell(
