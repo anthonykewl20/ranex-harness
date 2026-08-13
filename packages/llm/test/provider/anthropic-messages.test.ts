@@ -477,7 +477,9 @@ describe("Anthropic Messages route", () => {
 
       // Prefix the error type so consumers can distinguish overloads, rate
       // limits, and quota errors without parsing the message string.
-      expect(response.events).toEqual([{ type: "provider-error", message: "overloaded_error: Overloaded" }])
+      expect(response.events).toEqual([
+        { type: "provider-error", message: "overloaded_error: Overloaded", retryable: true },
+      ])
     }),
   )
 
@@ -510,7 +512,7 @@ describe("Anthropic Messages route", () => {
         Effect.provide(fixedResponse(sseEvents({ type: "error", error: { type: "overloaded_error", message: "" } }))),
       )
 
-      expect(response.events).toEqual([{ type: "provider-error", message: "overloaded_error" }])
+      expect(response.events).toEqual([{ type: "provider-error", message: "overloaded_error", retryable: true }])
     }),
   )
 
