@@ -1674,8 +1674,18 @@ const layer = Layer.effect(
     const list = Effect.fn("Provider.list")(() => InstanceState.use(state, (s) => s.providers))
 
     async function resolveSDK(model: Model, s: State, envs: Record<string, string | undefined>) {
+      const provider = s.providers[model.providerID]
+      if (!provider) {
+        const catalogProvider = s.catalog[model.providerID]
+        const suggestions = catalogProvider
+          ? modelSuggestions(catalogProvider, model.id, runtimeFlags.enableExperimentalModels)
+          : fuzzysort
+              .go(model.providerID, Object.keys({ ...s.catalog, ...s.providers }), { limit: 3, threshold: -10000 })
+              .map((m) => m.target)
+        throw new ModelNotFoundError({ providerID: model.providerID, modelID: model.id, suggestions })
+      }
+
       try {
-        const provider = s.providers[model.providerID]
         const options = { ...provider.options }
 
         if (
@@ -1843,6 +1853,16 @@ const layer = Layer.effect(
       if (model.providerID === "ranex-noop" && model.id === "noop") return RanexNoop.language
 
       const provider = s.providers[model.providerID]
+      if (!provider) {
+        const catalogProvider = s.catalog[model.providerID]
+        const suggestions = catalogProvider
+          ? modelSuggestions(catalogProvider, model.id, runtimeFlags.enableExperimentalModels)
+          : fuzzysort
+              .go(model.providerID, Object.keys({ ...s.catalog, ...s.providers }), { limit: 3, threshold: -10000 })
+              .map((m) => m.target)
+        return yield* new ModelNotFoundError({ providerID: model.providerID, modelID: model.id, suggestions })
+      }
+
       return yield* EffectPromise.refineRejection(
         async () => {
           const sdk = await resolveSDK(model, s, envs)
