@@ -84,7 +84,8 @@ describe("GitHub tools", () => {
       GitHubIssueTool,
       input,
       GitHub.Service.of({
-        resolveOwnerRepo: (placement) => Effect.sync(() => (calls.push(placement), { owner: "acme", repo: "app" })),
+        resolveOwnerRepo: (placement) =>
+          Effect.sync(() => (calls.push(placement), { host: "github.com", owner: "acme", repo: "app" })),
         issue: (placement, op) =>
           Effect.sync(() => {
             calls.push({ placement, op })
@@ -100,7 +101,10 @@ describe("GitHub tools", () => {
       asks,
     )
     expect(calls[0]).toEqual({ owner: undefined, repo: undefined })
-    expect(calls[1]).toMatchObject({ placement: { owner: "acme", repo: "app" }, op: { action: input.action } })
+    expect(calls[1]).toMatchObject({
+      placement: { host: "github.com", owner: "acme", repo: "app" },
+      op: { action: input.action },
+    })
     if ("number" in input) expect(calls[1]).toMatchObject({ op: { number: 42 } })
     expect(asks[0]).toMatchObject({ patterns: [`issues:${mode}:acme/app`], always: [`issues:${mode}:acme/app`] })
     expect(result.metadata).toMatchObject({ action: input.action, owner: "acme", repo: "app", truncated: false })
@@ -136,7 +140,7 @@ describe("GitHub tools", () => {
       GitHubIssueTool,
       input,
       GitHub.Service.of({
-        resolveOwnerRepo: () => Effect.succeed({ owner: "acme", repo: "app" }),
+        resolveOwnerRepo: () => Effect.succeed({ host: "github.com", owner: "acme", repo: "app" }),
         issue: (placement, op) => {
           calls.push({ placement, op })
           if (op.action !== "create" && op.action !== "update") return Effect.die("unexpected")
@@ -147,7 +151,7 @@ describe("GitHub tools", () => {
       }),
       [],
     )
-    expect(calls[0]).toEqual({ placement: { owner: "acme", repo: "app" }, op: expected })
+    expect(calls[0]).toEqual({ placement: { host: "github.com", owner: "acme", repo: "app" }, op: expected })
   })
 
   test.each([
@@ -163,7 +167,8 @@ describe("GitHub tools", () => {
       GitHubMilestoneTool,
       input,
       GitHub.Service.of({
-        resolveOwnerRepo: (placement) => Effect.sync(() => (calls.push(placement), { owner: "acme", repo: "app" })),
+        resolveOwnerRepo: (placement) =>
+          Effect.sync(() => (calls.push(placement), { host: "github.com", owner: "acme", repo: "app" })),
         issue: () => Effect.die("unexpected"),
         milestone: (placement, op) =>
           Effect.sync(() => {
@@ -175,7 +180,10 @@ describe("GitHub tools", () => {
       asks,
     )
     expect(calls[0]).toEqual({ owner: "acme", repo: "app" })
-    expect(calls[1]).toMatchObject({ placement: { owner: "acme", repo: "app" }, op: { action: input.action } })
+    expect(calls[1]).toMatchObject({
+      placement: { host: "github.com", owner: "acme", repo: "app" },
+      op: { action: input.action },
+    })
     if ("number" in input) expect(calls[1]).toMatchObject({ op: { number: 3 } })
     expect(asks[0]).toMatchObject({ patterns: [`milestones:${mode}:acme/app`] })
     expect(result.title).toContain(input.action === "list" ? "milestones" : "v2")
@@ -197,7 +205,7 @@ describe("GitHub tools", () => {
       GitHubMilestoneTool,
       input,
       GitHub.Service.of({
-        resolveOwnerRepo: () => Effect.succeed({ owner: "acme", repo: "app" }),
+        resolveOwnerRepo: () => Effect.succeed({ host: "github.com", owner: "acme", repo: "app" }),
         issue: () => Effect.die("unexpected"),
         milestone: (placement, op) => {
           calls.push({ placement, op })
@@ -208,7 +216,7 @@ describe("GitHub tools", () => {
       }),
       [],
     )
-    expect(calls[0]).toEqual({ placement: { owner: "acme", repo: "app" }, op: expected })
+    expect(calls[0]).toEqual({ placement: { host: "github.com", owner: "acme", repo: "app" }, op: expected })
   })
 
   test.each([

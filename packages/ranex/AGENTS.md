@@ -138,9 +138,12 @@ Three built-in tools for managing GitHub issues, milestones, and Projects (v2):
 ### Setup
 
 The tools resolve credentials in this order:
-1. `GITHUB_TOKEN` environment variable
-2. `~/.config/opencode/github-token` file
-3. `gh auth token` (system keyring — works automatically if `gh` CLI is authenticated)
+1. Environment variable (`GH_TOKEN`/`GITHUB_TOKEN` for github.com; `GH_ENTERPRISE_TOKEN`/`GITHUB_ENTERPRISE_TOKEN` for enterprise hosts)
+2. `~/.config/gh/hosts.yml` entry for the host
+3. `~/.config/opencode/github-token` file (github.com only)
+4. `gh auth token --hostname <host>` (system keyring — works automatically if `gh` CLI is authenticated)
+
+The host is derived from `GH_HOST` or the git origin remote.
 
 If none are available, tool calls fail with `AuthMissing`. The token needs `repo` scope
 for issues and milestones; add `project` scope for Projects v2 operations.

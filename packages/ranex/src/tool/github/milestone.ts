@@ -75,7 +75,7 @@ export const GitHubMilestoneTool = Tool.define<typeof Parameters, Metadata, GitH
       parameters: Parameters,
       execute: (params, ctx) =>
         Effect.gen(function* () {
-          const { owner, repo } = yield* github.resolveOwnerRepo({
+          const { host, owner, repo } = yield* github.resolveOwnerRepo({
             owner: params.owner,
             repo: params.repo,
           })
@@ -92,7 +92,7 @@ export const GitHubMilestoneTool = Tool.define<typeof Parameters, Metadata, GitH
             },
           })
 
-          const result = yield* github.milestone({ owner, repo }, milestoneOperation(params))
+          const result = yield* github.milestone({ host, owner, repo }, milestoneOperation(params))
 
           return {
             title: titleFor(result, owner, repo),

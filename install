@@ -29,6 +29,16 @@ EOF
 requested_version=${VERSION:-}
 no_modify_path=false
 binary_path=""
+GITHUB_TOKEN_FOR_INSTALL="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+gh_config_arg=()
+gh_cfg=""
+if [ -n "$GITHUB_TOKEN_FOR_INSTALL" ]; then
+    gh_cfg=$(mktemp)
+    printf 'header = "Authorization: Bearer %s"\n' "$GITHUB_TOKEN_FOR_INSTALL" > "$gh_cfg"
+    chmod 600 "$gh_cfg"
+    gh_config_arg=(--config "$gh_cfg")
+fi
+trap '[ -z "${gh_cfg:-}" ] || rm -f "$gh_cfg"' EXIT
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -182,9 +192,12 @@ else
 
     if [ -z "$requested_version" ]; then
         url="https://github.com/anomalyco/opencode/releases/latest/download/$filename"
-        specific_version=$(curl -s https://api.github.com/repos/anomalyco/opencode/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+        set +o pipefail
+        specific_version=$(curl -s "${gh_config_arg[@]+"${gh_config_arg[@]}"}" https://api.github.com/repos/anomalyco/opencode/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+        version_status=$?
+        set -o pipefail
 
-        if [[ $? -ne 0 || -z "$specific_version" ]]; then
+        if [ "$version_status" -ne 0 ] || [ -z "$specific_version" ]; then
             echo -e "${RED}Failed to fetch version information${NC}"
             exit 1
         fi
@@ -195,7 +208,7 @@ else
         specific_version=$requested_version
 
         # Verify the release exists before downloading
-        http_status=$(curl -sI -o /dev/null -w "%{http_code}" "https://github.com/anomalyco/opencode/releases/tag/v${requested_version}")
+        http_status=$(curl -sI -o /dev/null -w "%{http_code}" "${gh_config_arg[@]+"${gh_config_arg[@]}"}" "https://github.com/anomalyco/opencode/releases/tag/v${requested_version}")
         if [ "$http_status" = "404" ]; then
             echo -e "${RED}Error: Release v${requested_version} not found${NC}"
             echo -e "${MUTED}Available releases: https://github.com/anomalyco/opencode/releases${NC}"
@@ -280,6 +293,7 @@ download_with_progress() {
 
     rm -f "$tracefile"
     mkfifo "$tracefile"
+    chmod 600 "$tracefile"
 
     # Hide cursor
     printf "\033[?25l" >&4
@@ -287,7 +301,7 @@ download_with_progress() {
     trap "trap - RETURN; rm -f \"$tracefile\"; printf '\033[?25h' >&4; exec 4>&-" RETURN
 
     (
-        curl --trace-ascii "$tracefile" -s -L -o "$output" "$url"
+        curl --trace-ascii "$tracefile" -s -L "${gh_config_arg[@]+"${gh_config_arg[@]}"}" -o "$output" "$url"
     ) &
     local curl_pid=$!
 
@@ -331,7 +345,7 @@ download_and_install() {
 
     if [[ "$os" == "windows" ]] || ! [ -t 2 ] || ! download_with_progress "$url" "$tmp_dir/$filename"; then
         # Fallback to standard curl on Windows, non-TTY environments, or if custom progress fails
-        curl -# -L -o "$tmp_dir/$filename" "$url"
+        curl -# -L "${gh_config_arg[@]+"${gh_config_arg[@]}"}" -o "$tmp_dir/$filename" "$url"
     fi
 
     if [ "$os" = "linux" ]; then

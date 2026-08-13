@@ -3,8 +3,8 @@ import { exec } from "child_process"
 import { Filesystem } from "@/util/filesystem"
 import * as prompts from "@clack/prompts"
 import { map, pipe, sortBy, values } from "remeda"
-import { Octokit } from "@octokit/rest"
-import { graphql } from "@octokit/graphql"
+import type { Octokit } from "@octokit/rest"
+import type { graphql } from "@octokit/graphql"
 import * as core from "@actions/core"
 import * as github from "@actions/github"
 import type { Context } from "@actions/github/lib/context"
@@ -16,6 +16,8 @@ import type {
   WorkflowRunEvent,
   PullRequestEvent,
 } from "@octokit/webhooks-types"
+import { makeGraphqlClient, makeRestClient } from "@/github/clients"
+import { getOidcToken } from "@/github/oidc"
 import { UI } from "../ui"
 import { ModelsDev } from "@ranex/core/models-dev"
 import { InstanceRef } from "@/effect/instance-ref"
@@ -476,13 +478,11 @@ export const githubRun = Effect.fn("Cli.github.run")(function* (args: { event?: 
         }
         appToken = githubToken
       } else {
-        const actionToken = isMock ? args.token! : await getOidcToken()
+        const actionToken = isMock ? args.token! : await Effect.runPromise(getOidcToken("opencode-github-action"))
         appToken = await exchangeForAppToken(actionToken)
       }
-      octoRest = new Octokit({ auth: appToken })
-      octoGraph = graphql.defaults({
-        headers: { authorization: `token ${appToken}` },
-      })
+      octoRest = makeRestClient(appToken)
+      octoGraph = makeGraphqlClient(appToken)
 
       const { userPrompt, promptFiles } = await getUserPrompt()
       if (!useGithubToken) {
@@ -971,18 +971,6 @@ export const githubRun = Effect.fn("Cli.github.run")(function* (args: { event?: 
           return summaryText
         }),
       )
-    }
-
-    async function getOidcToken() {
-      try {
-        return await core.getIDToken("opencode-github-action")
-      } catch (error) {
-        console.error("Failed to get OIDC token:", error instanceof Error ? error.message : error)
-        throw new Error(
-          "Could not fetch an OIDC token. Make sure to add `id-token: write` to your workflow permissions.",
-          { cause: error },
-        )
-      }
     }
 
     async function exchangeForAppToken(token: string) {

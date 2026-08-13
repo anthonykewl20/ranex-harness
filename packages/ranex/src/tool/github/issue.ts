@@ -80,7 +80,7 @@ export const GitHubIssueTool = Tool.define<typeof Parameters, Metadata, GitHub.S
       parameters: Parameters,
       execute: (params, ctx) =>
         Effect.gen(function* () {
-          const { owner, repo } = yield* github.resolveOwnerRepo({
+          const { host, owner, repo } = yield* github.resolveOwnerRepo({
             owner: params.owner,
             repo: params.repo,
           })
@@ -97,7 +97,7 @@ export const GitHubIssueTool = Tool.define<typeof Parameters, Metadata, GitHub.S
             },
           })
 
-          const result = yield* github.issue({ owner, repo }, issueOperation(params))
+          const result = yield* github.issue({ host, owner, repo }, issueOperation(params))
 
           return {
             title: titleFor(

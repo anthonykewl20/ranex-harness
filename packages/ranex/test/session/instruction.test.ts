@@ -1,10 +1,10 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect } from "bun:test"
 import { SessionV1 } from "@ranex/core/v1/session"
 import path from "path"
 import { Effect, FileSystem, Layer } from "effect"
 import { CrossSpawnSpawner } from "@ranex/core/cross-spawn-spawner"
 
-import { Instruction } from "../../src/session/instruction"
+import { githubHostFromUrl, Instruction } from "../../src/session/instruction"
 import type { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { Global } from "@ranex/core/global"
@@ -20,6 +20,7 @@ import { LayerNodePlatform } from "@ranex/core/effect/app-node-platform"
 import { InstanceStore } from "@/project/instance-store"
 import { InstanceBootstrap } from "@/project/bootstrap"
 import { Config } from "@/config/config"
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 
 const it = testEffect(
   AppNodeBuilder.build(LayerNode.group([CrossSpawnSpawner.node, LayerNodePlatform.filesystem, InstanceStore.node]), [
@@ -32,12 +33,43 @@ const it = testEffect(
 
 const configLayer = Layer.succeed(Config.Service, TestConfig.make())
 
+function mockHttpClient(handler: (request: HttpClientRequest.HttpClientRequest) => Response) {
+  return Layer.succeed(
+    HttpClient.HttpClient,
+    HttpClient.make((request) => Effect.succeed(HttpClientResponse.fromWeb(request, handler(request)))),
+  )
+}
+
 const instructionLayer = (global: Partial<Global.Interface>, flags: Partial<RuntimeFlags.Info> = {}) =>
   AppNodeBuilder.build(Instruction.node, [
     [Config.node, configLayer],
     [Global.node, Global.layerWith(global)],
     [RuntimeFlags.node, RuntimeFlags.layer(flags)],
   ])
+
+const remoteInstructionLayer = (
+  handler: (request: HttpClientRequest.HttpClientRequest) => Response,
+  url = "https://raw.githubusercontent.com/acme/private/main/AGENTS.md",
+) =>
+  AppNodeBuilder.build(Instruction.node, [
+    [
+      Config.node,
+      Layer.succeed(
+        Config.Service,
+        TestConfig.make({
+          get: () => Effect.succeed({ instructions: [url] }),
+        }),
+      ),
+    ],
+    [Global.node, Global.layerWith({})],
+    [RuntimeFlags.node, RuntimeFlags.layer({})],
+    [LayerNodePlatform.httpClient, mockHttpClient(handler)],
+  ])
+
+const provideRemoteInstruction =
+  (handler: (request: HttpClientRequest.HttpClientRequest) => Response, url?: string) =>
+  <A, E, R>(self: Effect.Effect<A, E, R>) =>
+    self.pipe(Effect.provide(remoteInstructionLayer(handler, url)))
 
 const provideInstruction =
   (global: Partial<Global.Interface>, flags?: Partial<RuntimeFlags.Info>) =>
@@ -206,7 +238,137 @@ describe("Instruction.resolve", () => {
     ),
   )
 
-  test.todo("fetches remote instructions from config URLs via HttpClient", () => {})
+})
+
+const previousGithubHost = process.env.GH_HOST
+
+describe("githubHostFromUrl", () => {
+  beforeEach(() => delete process.env.GH_HOST)
+
+  afterEach(() => {
+    if (previousGithubHost === undefined) delete process.env.GH_HOST
+    if (previousGithubHost !== undefined) process.env.GH_HOST = previousGithubHost
+  })
+
+  const cases = [
+    ["https://raw.githubusercontent.com/acme/private/main/AGENTS.md", "github.com"],
+    ["https://github.com/acme/private/raw/main/AGENTS.md", "github.com"],
+    ["https://media.githubusercontent.com/acme/private/main/AGENTS.md", "github.com"],
+    ["http://github.com/o/r/raw/main/x", null],
+    ["https://github.example.com/acme/private/raw/main/AGENTS.md", null],
+    ["https://example.com/foo", null],
+    ["not a URL", null],
+  ] as const
+
+  cases.forEach(([url, host]) => {
+    it.live(`maps ${url} to ${host}`, () => Effect.sync(() => expect(githubHostFromUrl(url)).toBe(host)))
+  })
+})
+
+const githubEnv = [
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+  "GH_HOST",
+  "GH_CONFIG_DIR",
+  "HOME",
+  "PATH",
+] as const
+const previousGithubEnv = Object.fromEntries(githubEnv.map((key) => [key, process.env[key]]))
+
+describe.serial("Instruction.system remote authentication", () => {
+  beforeEach(() => {
+    githubEnv.forEach((key) => delete process.env[key])
+    process.env.PATH = ""
+  })
+
+  afterEach(() => {
+    githubEnv.forEach((key) => {
+      const value = previousGithubEnv[key]
+      if (value === undefined) delete process.env[key]
+      if (value !== undefined) process.env[key] = value
+    })
+  })
+
+  const authHeaders: Array<string | undefined> = []
+  it.live("authenticates private GitHub instructions when GH_TOKEN is set", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        process.env.GH_TOKEN = "instruction-token"
+        process.env.HOME = dir
+        process.env.GH_CONFIG_DIR = dir
+        const rules = yield* (yield* Instruction.Service).system()
+        expect(rules).toHaveLength(1)
+        expect(authHeaders.at(-1)).toBe("Bearer instruction-token")
+      }).pipe(
+        provideRemoteInstruction((request) => {
+          authHeaders.push(request.headers.authorization)
+          return new Response("private instructions")
+        }),
+      ),
+    ),
+  )
+
+  const enterpriseHeaders: Array<string | undefined> = []
+  it.live("authenticates private enterprise GitHub instructions when its host is configured", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const previousHost = process.env.GH_HOST
+        const previousToken = process.env.GH_ENTERPRISE_TOKEN
+        try {
+          process.env.HOME = dir
+          process.env.GH_CONFIG_DIR = dir
+          process.env.GH_HOST = "github.private.example"
+          process.env.GH_ENTERPRISE_TOKEN = "enterprise-instruction-token"
+          const rules = yield* (yield* Instruction.Service).system()
+          expect(rules).toHaveLength(1)
+          expect(enterpriseHeaders.at(-1)).toBe("Bearer enterprise-instruction-token")
+        } finally {
+          if (previousHost === undefined) delete process.env.GH_HOST
+          if (previousHost !== undefined) process.env.GH_HOST = previousHost
+          if (previousToken === undefined) delete process.env.GH_ENTERPRISE_TOKEN
+          if (previousToken !== undefined) process.env.GH_ENTERPRISE_TOKEN = previousToken
+        }
+      }).pipe(
+        provideRemoteInstruction(
+          (request) => {
+            enterpriseHeaders.push(request.headers.authorization)
+            return new Response("private enterprise instructions")
+          },
+          "https://github.private.example/acme/private/raw/main/AGENTS.md",
+        ),
+      ),
+    ),
+  )
+
+  const untrustedHeaders: Array<string | undefined> = []
+  it.live("does not send an enterprise token to an untrusted raw-like URL", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const previousToken = process.env.GH_ENTERPRISE_TOKEN
+        try {
+          process.env.HOME = dir
+          process.env.GH_CONFIG_DIR = dir
+          process.env.GH_ENTERPRISE_TOKEN = "enterprise-instruction-token"
+          const rules = yield* (yield* Instruction.Service).system()
+          expect(rules).toHaveLength(1)
+          expect(untrustedHeaders.at(-1)).toBeUndefined()
+        } finally {
+          if (previousToken === undefined) delete process.env.GH_ENTERPRISE_TOKEN
+          if (previousToken !== undefined) process.env.GH_ENTERPRISE_TOKEN = previousToken
+        }
+      }).pipe(
+        provideRemoteInstruction(
+          (request) => {
+            untrustedHeaders.push(request.headers.authorization)
+            return new Response("untrusted instructions")
+          },
+          "https://evil.com/a/raw/b",
+        ),
+      ),
+    ),
+  )
 })
 
 describe("Instruction.system", () => {

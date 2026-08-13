@@ -211,12 +211,18 @@ export function validateRepositoryBranch(branch: string) {
 }
 
 export function parseGitHubRemote(input: string) {
+  const parsed = parseGitHubRemoteHosted(input)
+  if (!parsed || parsed.host !== "github.com") return null
+  return { owner: parsed.owner, repo: parsed.repo }
+}
+
+export function parseGitHubRemoteHosted(input: string): { host: string; owner: string; repo: string } | null {
   const cleaned = normalizeRepositoryInput(input)
-  if (!cleaned.includes("://") && !cleaned.match(/^(?:[^@/\s]+@)?github\.com:/)) return null
+  if (!cleaned.includes("://") && !cleaned.match(/^(?:[^@/\s]+@)?[^\s:/.]+(?:\.[^\s:/.]+)+:/)) return null
 
   const parsed = parseRepositoryReference(cleaned)
-  if (!parsed || parsed.host !== "github.com" || !parsed.owner || parsed.segments.length !== 2) return null
-  return { owner: parsed.owner, repo: parsed.repo }
+  if (!parsed || !parsed.owner || parsed.segments.length !== 2) return null
+  return { host: parsed.host, owner: parsed.owner, repo: parsed.repo }
 }
 
 export function repositoryCachePath(input: Reference) {

@@ -13,6 +13,28 @@ import { withTransientReadRetry } from "@/util/effect-http-client"
 import { Global } from "@ranex/core/global"
 import type { MessageV2 } from "./message-v2"
 import type { MessageID } from "./schema"
+import { resolveHost, resolveTokenOptional } from "@/github/auth"
+
+export function githubHostFromUrl(url: string): string | null {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== "https:") return null
+  const hostname = parsed.hostname.toLowerCase()
+  if (
+    hostname === "github.com" ||
+    hostname === "raw.githubusercontent.com" ||
+    hostname.endsWith(".githubusercontent.com")
+  ) {
+    return "github.com"
+  }
+  const configured = resolveHost()
+  if (configured !== "github.com" && hostname === configured) return configured
+  return null
+}
 
 function extract(messages: SessionV1.WithParts[]) {
   const paths = new Set<string>()
@@ -93,7 +115,12 @@ const layer: Layer.Layer<
     })
 
     const fetch = Effect.fnUntraced(function* (url: string) {
-      const res = yield* http.execute(HttpClientRequest.get(url)).pipe(
+      const host = githubHostFromUrl(url)
+      const token = host ? yield* resolveTokenOptional({ host }) : null
+      const request = token
+        ? HttpClientRequest.get(url).pipe(HttpClientRequest.setHeaders({ Authorization: `Bearer ${token}` }))
+        : HttpClientRequest.get(url)
+      const res = yield* http.execute(request).pipe(
         Effect.timeout(5000),
         Effect.catch(() => Effect.succeed(null)),
       )
