@@ -406,6 +406,7 @@ export const githubRun = Effect.fn("Cli.github.run")(function* (args: { event?: 
 
     const { providerID, modelID } = normalizeModel()
     const variant = process.env["VARIANT"] || undefined
+    const agent = process.env["AGENT"] || undefined
     const runId = normalizeRunId()
     const share = normalizeShare()
     const oidcBaseUrl = normalizeOidcBaseUrl()
@@ -895,12 +896,12 @@ export const githubRun = Effect.fn("Cli.github.run")(function* (args: { event?: 
           const result = yield* prompt.prompt({
             sessionID: session.id,
             messageID: MessageID.ascending(),
+            agent,
             variant,
             model: {
               providerID,
               modelID,
             },
-            // agent is omitted - server will use default_agent from config or fall back to "build"
             parts: [
               {
                 id: PartID.ascending(),
@@ -943,6 +944,7 @@ export const githubRun = Effect.fn("Cli.github.run")(function* (args: { event?: 
           const summary = yield* prompt.prompt({
             sessionID: session.id,
             messageID: MessageID.ascending(),
+            agent,
             variant,
             model: {
               providerID,
@@ -1250,8 +1252,16 @@ export const githubRun = Effect.fn("Cli.github.run")(function* (args: { event?: 
     }
 
     async function createComment(body: string) {
-      // Only called for non-schedule events, so issueId is defined
       console.log("Creating comment...")
+      if (commentType === "pr_review" && triggerCommentId) {
+        return await octoRest.rest.pulls.createReplyForReviewComment({
+          owner,
+          repo,
+          pull_number: issueId!,
+          comment_id: triggerCommentId,
+          body,
+        })
+      }
       return await octoRest.rest.issues.createComment({
         owner,
         repo,
