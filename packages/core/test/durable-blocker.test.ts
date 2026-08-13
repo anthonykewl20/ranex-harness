@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
-import { Deferred, Effect, Exit, Layer, Scope, Stream } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer, Scope, Stream } from "effect"
 import { AgentV2 } from "@ranex/core/agent"
 import { Database } from "@ranex/core/database/database"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
@@ -348,6 +348,46 @@ describe("durable permission and question blockers", () => {
       expect(yield* service.reply({ requestID: id, reply: "always" }).pipe(Effect.flip)).toBeInstanceOf(PermissionV2.NotFoundError)
       const { db } = yield* Database.Service
       expect(yield* db.select().from(PermissionTable).all().pipe(Effect.orDie)).toEqual([])
+    }))
+  })
+
+  test("a failed always grant rolls back settlement and remains retryable", async () => {
+    await using tmp = await tmpdir()
+    const filename = path.join(tmp.path, "blockers.sqlite")
+    const id = PermissionV2.ID.create("per_failed_always")
+    await graph(filename, Effect.gen(function* () {
+      yield* setup
+      const service = yield* PermissionV2.Service
+      const events = yield* EventV2.Service
+      const asked = yield* Deferred.make<PermissionV2.Request>()
+      const unsubscribe = yield* events.listen((event) =>
+        event.type === PermissionV2.Event.Asked.type
+          ? Deferred.succeed(asked, event.data as PermissionV2.Request).pipe(Effect.asVoid)
+          : Effect.void,
+      )
+      yield* Effect.addFinalizer(() => unsubscribe)
+      const fiber = yield* service.assert(permission(id, { save: ["src/*"] })).pipe(Effect.forkScoped)
+      yield* Deferred.await(asked)
+      const { db } = yield* Database.Service
+      yield* db.run(`
+        CREATE TRIGGER fail_permission_save
+        BEFORE INSERT ON permission
+        BEGIN
+          SELECT RAISE(FAIL, 'forced saved.add failure');
+        END
+      `).pipe(Effect.orDie)
+
+      expect(Exit.isFailure(yield* service.reply({ requestID: id, reply: "always" }).pipe(Effect.exit))).toBe(true)
+      expect(yield* db.select().from(PermissionRequestTable).where(eq(PermissionRequestTable.id, id)).get().pipe(Effect.orDie)).toBeDefined()
+      expect(yield* db.select().from(PermissionTable).all().pipe(Effect.orDie)).toEqual([])
+
+      yield* db.run("DROP TRIGGER fail_permission_save").pipe(Effect.orDie)
+      yield* service.reply({ requestID: id, reply: "always" })
+      yield* Fiber.join(fiber)
+      expect(yield* db.select().from(PermissionRequestTable).where(eq(PermissionRequestTable.id, id)).get().pipe(Effect.orDie)).toBeUndefined()
+      expect(yield* db.select().from(PermissionTable).all().pipe(Effect.orDie)).toMatchObject([
+        { action: "read", resource: "src/*" },
+      ])
     }))
   })
 
