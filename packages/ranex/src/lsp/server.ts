@@ -12,12 +12,12 @@ import { which } from "@ranex/core/util/which"
 import { Module } from "@ranex/core/util/module"
 import { spawn } from "./launch"
 import { Npm } from "@ranex/core/npm"
+import { Effect } from "effect"
 import type { RuntimeFlags } from "@/effect/runtime-flags"
-import { AppRuntime } from "@/effect/app-runtime"
 import { resolveTokenOptional } from "@/github/auth"
 
 let tokenCache: Promise<string | null> | undefined
-const githubToken = () => (tokenCache ??= AppRuntime.runPromise(resolveTokenOptional()))
+const githubToken = () => (tokenCache ??= Effect.runPromise(resolveTokenOptional()))
 const githubApi = (url: string) =>
   githubToken().then((token) => fetch(url, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined))
 
