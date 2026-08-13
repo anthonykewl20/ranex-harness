@@ -90,6 +90,32 @@ it.instance("plan agent denies the general subagent by default", () =>
   }),
 )
 
+it.instance("plan agent guards shell and GitHub mutations", () =>
+  Effect.gen(function* () {
+    const plan = yield* load((svc) => svc.get("plan"))
+    expect(plan).toBeDefined()
+    const permission = plan!.permission
+
+    expect(Permission.evaluate("bash", "gh issue comment 123", permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "gh issue create --title x", permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "gh pr merge 5", permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "git push origin main", permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "git status", permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "gh issue list", permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "ls -la", permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "rg foo", permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "rm -rf /tmp", permission).action).toBe("ask")
+    expect(Permission.evaluate("bash", "npm publish", permission).action).toBe("ask")
+    expect(Permission.evaluate("bash", "git branch -D topic", permission).action).toBe("ask")
+    expect(Permission.evaluate("bash", "gh --repo o/r issue comment 123", permission).action).toBe("ask")
+    expect(Permission.evaluate("bash", "bun test", permission).action).toBe("ask")
+    expect(Permission.evaluate("bash", "gh api repos/o/r", permission).action).toBe("ask")
+    expect(Permission.evaluate("bash", "curl -s https://x", permission).action).toBe("ask")
+    expect(Permission.evaluate("github", "issues:write:o/r", permission).action).toBe("deny")
+    expect(Permission.evaluate("github", "issues:read:o/r", permission).action).toBe("allow")
+  }),
+)
+
 it.instance(
   "user permission can allow the general subagent from plan mode",
   () =>
