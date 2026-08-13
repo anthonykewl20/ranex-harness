@@ -8,7 +8,7 @@ import { LayerNode } from "@ranex/core/effect/layer-node"
 import { EventV2 } from "@ranex/core/event"
 import { Location } from "@ranex/core/location"
 import { PermissionV2 } from "@ranex/core/permission"
-import { PermissionRequestTable } from "@ranex/core/permission/sql"
+import { PermissionRequestTable, PermissionTable } from "@ranex/core/permission/sql"
 import { PermissionSaved } from "@ranex/core/permission/saved"
 import { Project } from "@ranex/core/project"
 import { ProjectTable } from "@ranex/core/project/sql"
@@ -328,6 +328,26 @@ describe("durable permission and question blockers", () => {
       expect(exits.filter(Exit.isFailure)).toHaveLength(1)
       expect(exits.find(Exit.isFailure)!.cause.toString()).toContain("PermissionV2.NotFoundError")
       expect(replied).toEqual([id])
+    }))
+  })
+
+  test("a losing always reply does not persist its grant", async () => {
+    await using tmp = await tmpdir()
+    const filename = path.join(tmp.path, "blockers.sqlite")
+    const id = PermissionV2.ID.create("per_lost_always")
+    await graph(filename, Effect.gen(function* () {
+      yield* setup
+      const service = yield* PermissionV2.Service
+      yield* service.ask(permission(id, { save: ["src/*"] }))
+    }))
+    await graph(filename, Effect.gen(function* () {
+      const service = yield* PermissionV2.Service
+      yield* Effect.promise(() => graph(filename, PermissionV2.Service.use((winner) =>
+        winner.reply({ requestID: id, reply: "once" }),
+      ))).pipe(Effect.orDie)
+      expect(yield* service.reply({ requestID: id, reply: "always" }).pipe(Effect.flip)).toBeInstanceOf(PermissionV2.NotFoundError)
+      const { db } = yield* Database.Service
+      expect(yield* db.select().from(PermissionTable).all().pipe(Effect.orDie)).toEqual([])
     }))
   })
 

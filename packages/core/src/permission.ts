@@ -273,16 +273,16 @@ const layer = Layer.effect(
           const existing = pending.get(input.requestID)
           if (!existing) return yield* new NotFoundError({ requestID: input.requestID })
 
-          if (input.reply === "always" && existing?.request.save?.length) {
+          const won = yield* claimSettlement(input.requestID)
+          if (!won) return yield* new NotFoundError({ requestID: input.requestID })
+
+          if (input.reply === "always" && existing.request.save?.length) {
             yield* saved.add({
               projectID: location.project.id,
               action: existing.request.action,
               resources: existing.request.save,
             })
           }
-
-          const won = yield* claimSettlement(input.requestID)
-          if (!won) return yield* new NotFoundError({ requestID: input.requestID })
 
           if (input.reply === "reject") {
             yield* Deferred.fail(
