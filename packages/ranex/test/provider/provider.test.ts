@@ -84,6 +84,7 @@ const paid = (providers: Record<string, { models: Record<string, { cost: { input
 const languageBaseURL = (language: unknown) => (language as { config: { baseURL: string } }).config.baseURL
 
 const it = testEffect(LayerNode.compile(LayerNode.group([Provider.node, Env.node, Plugin.node])))
+const providerWithModelsDev = testEffect(providerLayer())
 const experimentalModels = testEffect(providerLayer({ enableExperimentalModels: true }))
 
 const alphaProviderConfig = {
@@ -1196,6 +1197,17 @@ it.instance("ModelNotFoundError suggests catalog models for unloaded providers",
       .pipe(Effect.flip)
     if (!Provider.ModelNotFoundError.isInstance(error)) throw error
     expect(error.suggestions ?? []).toContain("claude-haiku-4-5")
+  }),
+)
+
+providerWithModelsDev.instance("getLanguage returns ModelNotFoundError for a catalog model whose provider is not loaded", () =>
+  Effect.gen(function* () {
+    yield* remove("ANTHROPIC_API_KEY")
+    const modelsDev = yield* ModelsDev.Service
+    const catalog = yield* modelsDev.get()
+    const model = Provider.fromModelsDevProvider(catalog.anthropic).models["claude-haiku-4-5"]
+    const error = yield* Provider.use.getLanguage(model).pipe(Effect.flip)
+    expect(Provider.ModelNotFoundError.isInstance(error)).toBe(true)
   }),
 )
 
