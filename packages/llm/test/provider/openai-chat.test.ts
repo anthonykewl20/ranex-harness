@@ -636,6 +636,36 @@ describe("OpenAI Chat route", () => {
     }),
   )
 
+  it.effect("marks retryable provider error events", () =>
+    Effect.gen(function* () {
+      const response = yield* LLMClient.generate(request).pipe(
+        Effect.provide(
+          fixedResponse(
+            sseEvents({ error: { type: "rate_limit_error", code: "rate_limit_exceeded", message: "Slow down" } }),
+          ),
+        ),
+      )
+
+      expect(response.events).toEqual([
+        { type: "provider-error", message: "rate_limit_exceeded: Slow down", retryable: true },
+      ])
+    }),
+  )
+
+  it.effect("leaves non-retryable provider error events unmarked", () =>
+    Effect.gen(function* () {
+      const response = yield* LLMClient.generate(request).pipe(
+        Effect.provide(
+          fixedResponse(
+            sseEvents({ error: { type: "invalid_request_error", code: "invalid_api_key", message: "Invalid key" } }),
+          ),
+        ),
+      )
+
+      expect(response.events).toEqual([{ type: "provider-error", message: "invalid_api_key: Invalid key" }])
+    }),
+  )
+
   it.effect("fails HTTP provider errors before stream parsing", () =>
     Effect.gen(function* () {
       const error = yield* LLMClient.generate(request).pipe(

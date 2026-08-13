@@ -907,6 +907,7 @@ const providerError = (event: OpenAIResponsesEvent, fallback: string) => {
   return LLMEvent.providerError({
     message,
     classification: code === "context_length_exceeded" || isContextOverflow(message) ? "context-overflow" : undefined,
+    retryable: code === "rate_limit_exceeded" || code === "server_error" ? true : undefined,
   })
 }
 

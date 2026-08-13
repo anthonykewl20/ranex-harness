@@ -1339,7 +1339,9 @@ describe("OpenAI Responses route", () => {
       // sometimes-generic provider message. The bare message alone meant
       // production errors like rate limits were indistinguishable from
       // unrelated stream failures.
-      expect(response.events).toEqual([{ type: "provider-error", message: "rate_limit_exceeded: Slow down" }])
+      expect(response.events).toEqual([
+        { type: "provider-error", message: "rate_limit_exceeded: Slow down", retryable: true },
+      ])
     }),
   )
 
@@ -1383,7 +1385,9 @@ describe("OpenAI Responses route", () => {
         ),
       )
 
-      expect(response.events).toEqual([{ type: "provider-error", message: "server_error: Upstream model unavailable" }])
+      expect(response.events).toEqual([
+        { type: "provider-error", message: "server_error: Upstream model unavailable", retryable: true },
+      ])
     }),
   )
 
