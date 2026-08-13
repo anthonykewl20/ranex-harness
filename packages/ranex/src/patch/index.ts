@@ -115,7 +115,11 @@ function parseUpdateFileChunks(lines: string[], startIdx: number): { chunks: Upd
       let isEndOfFile = false
 
       // Parse change lines
-      while (i < lines.length && !lines[i].startsWith("@@") && !lines[i].startsWith("***")) {
+      while (
+        i < lines.length &&
+        !lines[i].startsWith("@@") &&
+        (lines[i] === "*** End of File" || !lines[i].startsWith("***"))
+      ) {
         const changeLine = lines[i]
 
         if (changeLine === "*** End of File") {
@@ -359,11 +363,8 @@ function computeReplacements(
 
     // Handle pure addition (no old lines)
     if (chunk.old_lines.length === 0) {
-      const insertionIdx =
-        originalLines.length > 0 && originalLines[originalLines.length - 1] === ""
-          ? originalLines.length - 1
-          : originalLines.length
-      replacements.push([insertionIdx, 0, chunk.new_lines])
+      const at = chunk.is_end_of_file || chunk.change_context === undefined ? originalLines.length : lineIndex
+      replacements.push([at, 0, chunk.new_lines])
       continue
     }
 

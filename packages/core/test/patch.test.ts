@@ -31,6 +31,39 @@ describe("Patch", () => {
     expect(Patch.joinBom(update.content, update.bom)).toBe("\uFEFFnew\n")
   })
 
+  test("inserts additions after their change context", () => {
+    expect(
+      Patch.derive(
+        "f.txt",
+        [{ oldLines: [], newLines: ["inserted"], changeContext: "line2" }],
+        "line1\nline2\nline3\n",
+      ).content,
+    ).toBe("line1\nline2\ninserted\nline3\n")
+  })
+
+  test("appends additions without change context", () => {
+    expect(Patch.derive("f.txt", [{ oldLines: [], newLines: ["end"] }], "a\nb\n").content).toBe("a\nb\nend\n")
+  })
+
+  test("appends pure additions marked as end of file", () => {
+    expect(
+      Patch.derive("f.txt", [{ oldLines: [], newLines: ["done"], endOfFile: true }], "a\nb\n").content,
+    ).toBe("a\nb\ndone\n")
+  })
+
+  test("does not advance the original-file cursor after an insertion", () => {
+    expect(
+      Patch.derive(
+        "f.txt",
+        [
+          { oldLines: [], newLines: ["X"], changeContext: "a" },
+          { oldLines: ["c"], newLines: ["C"] },
+        ],
+        "a\nc\nc\nd\n",
+      ).content,
+    ).toBe("a\nX\nC\nc\nd\n")
+  })
+
   test("matches EOF-anchored chunks from the end", () => {
     expect(
       Patch.derive(
