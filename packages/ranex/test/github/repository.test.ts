@@ -19,6 +19,7 @@ describe("github.repository.resolveOwnerRepo", () => {
   it.instance("uses an explicit owner and repo as-is", () =>
     Effect.gen(function* () {
       expect(yield* resolveOwnerRepo({ owner: "TestOwner", repo: "TestRepo" })).toEqual({
+        host: "github.com",
         owner: "TestOwner",
         repo: "TestRepo",
       })
@@ -39,7 +40,7 @@ describe("github.repository.resolveOwnerRepo", () => {
     "resolves owner and repo from a GitHub origin",
     () =>
       Effect.gen(function* () {
-        expect(yield* resolveOwnerRepo({})).toEqual({ owner: "testowner", repo: "testrepo" })
+        expect(yield* resolveOwnerRepo({})).toEqual({ host: "github.com", owner: "testowner", repo: "testrepo" })
       }),
     {
       git: true,
@@ -51,19 +52,21 @@ describe("github.repository.resolveOwnerRepo", () => {
   )
 
   it.instance(
-    "rejects a non-GitHub origin",
+    "resolves an enterprise GitHub origin",
     () =>
       Effect.gen(function* () {
-        const exit = yield* resolveOwnerRepo({}).pipe(Effect.exit)
-        expect(Exit.isFailure(exit)).toBe(true)
-        if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(RepoNotResolved)
+        expect(yield* resolveOwnerRepo({})).toEqual({
+          host: "github.example.com",
+          owner: "testowner",
+          repo: "testrepo",
+        })
       }),
     {
       git: true,
       init: (directory) =>
-        Effect.promise(() => $`git remote add origin https://gitlab.com/testowner/testrepo.git`.cwd(directory).quiet()).pipe(
-          Effect.asVoid,
-        ),
+        Effect.promise(() =>
+          $`git remote add origin https://github.example.com/testowner/testrepo.git`.cwd(directory).quiet(),
+        ).pipe(Effect.asVoid),
     },
   )
 })

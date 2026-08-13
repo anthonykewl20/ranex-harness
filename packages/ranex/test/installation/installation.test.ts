@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { afterEach, beforeEach, describe, expect } from "bun:test"
 import { makeGlobalNode } from "@ranex/core/effect/app-node"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { httpClient } from "@ranex/core/effect/app-node-platform"
@@ -85,6 +85,65 @@ describe("installation", () => {
           expect(result).toBe("4.0.0-beta.1")
         }),
     )
+
+    const githubEnv = [
+      "GH_TOKEN",
+      "GITHUB_TOKEN",
+      "GH_ENTERPRISE_TOKEN",
+      "GITHUB_ENTERPRISE_TOKEN",
+      "GH_HOST",
+      "GH_CONFIG_DIR",
+      "HOME",
+      "PATH",
+    ] as const
+    const previousGithubEnv = Object.fromEntries(githubEnv.map((key) => [key, process.env[key]]))
+
+    describe.serial("GitHub authentication", () => {
+      beforeEach(() => {
+        githubEnv.forEach((key) => delete process.env[key])
+        process.env.PATH = ""
+      })
+
+      afterEach(() => {
+        githubEnv.forEach((key) => {
+          const value = previousGithubEnv[key]
+          if (value === undefined) delete process.env[key]
+          if (value !== undefined) process.env[key] = value
+        })
+      })
+
+      const authenticated: Array<string | undefined> = []
+      testEffect(
+        testLayer((request) => {
+          authenticated.push(request.headers.authorization)
+          return jsonResponse({ tag_name: "v1.2.3" })
+        }),
+      ).effect("attaches a bearer token when GH_TOKEN is set", () =>
+        Effect.gen(function* () {
+          process.env.GH_TOKEN = "installation-token"
+          yield* Installation.use.latest("unknown")
+          expect(authenticated.at(-1)).toBe("Bearer installation-token")
+        }),
+      )
+
+      const anonymous: Array<string | undefined> = []
+      testEffect(
+        testLayer((request) => {
+          anonymous.push(request.headers.authorization)
+          return jsonResponse({ tag_name: "v1.2.3" })
+        }),
+      ).effect("omits authorization when no token resolves", () =>
+        Effect.gen(function* () {
+          process.env.HOME = "/tmp/opencode-installation-auth-test"
+          process.env.GH_CONFIG_DIR = "/tmp/opencode-installation-auth-test"
+          process.env.GH_HOST = "github.private.example"
+          process.env.GH_ENTERPRISE_TOKEN = ""
+          process.env.GITHUB_ENTERPRISE_TOKEN = ""
+          yield* Installation.use.latest("unknown")
+          expect(anonymous.at(-1)).toBeUndefined()
+        }),
+      )
+    })
 
     const npmCalls: string[] = []
     testEffect(

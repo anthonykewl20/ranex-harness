@@ -8,6 +8,8 @@ import {
   UnsupportedLocalRepositoryError,
   isFileRepositoryReference,
   isRemoteRepositoryReference,
+  parseGitHubRemote,
+  parseGitHubRemoteHosted,
   parseRemoteRepositoryReference,
   parseRepositoryReference,
   repositoryCacheIdentity,
@@ -17,6 +19,29 @@ import {
 } from "../../src/util/repository"
 
 describe("util.repository", () => {
+  test("keeps github.com parsing while exposing hosted remotes", () => {
+    expect(parseGitHubRemote("git@github.com:owner/repo.git")).toEqual({ owner: "owner", repo: "repo" })
+    expect(parseGitHubRemote("https://github.com/owner/repo")).toEqual({ owner: "owner", repo: "repo" })
+    expect(parseGitHubRemote("https://ghe.example.com/o/r")).toBeNull()
+    expect(parseGitHubRemote("github:facebook/react")).toBeNull()
+    expect(parseGitHubRemoteHosted("github:facebook/react")).toBeNull()
+    expect(parseGitHubRemoteHosted("git@github.com:owner/repo.git")).toEqual({
+      host: "github.com",
+      owner: "owner",
+      repo: "repo",
+    })
+    expect(parseGitHubRemoteHosted("git@ghe.example.com:owner/repo.git")).toEqual({
+      host: "ghe.example.com",
+      owner: "owner",
+      repo: "repo",
+    })
+    expect(parseGitHubRemoteHosted("git@github.corp.example.com:owner/repo.git")).toEqual({
+      host: "github.corp.example.com",
+      owner: "owner",
+      repo: "repo",
+    })
+  })
+
   test("parses github shorthand and preserves cache path", () => {
     const reference = parseRemoteRepositoryReference("owner/repo")
 

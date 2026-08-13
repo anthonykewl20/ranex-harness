@@ -13,6 +13,13 @@ import { Module } from "@ranex/core/util/module"
 import { spawn } from "./launch"
 import { Npm } from "@ranex/core/npm"
 import type { RuntimeFlags } from "@/effect/runtime-flags"
+import { AppRuntime } from "@/effect/app-runtime"
+import { resolveTokenOptional } from "@/github/auth"
+
+let tokenCache: Promise<string | null> | undefined
+const githubToken = () => (tokenCache ??= AppRuntime.runPromise(resolveTokenOptional()))
+const githubApi = (url: string) =>
+  githubToken().then((token) => fetch(url, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined))
 
 const pathExists = async (p: string) =>
   fs
@@ -597,7 +604,7 @@ export const Zls: Info = {
 
       if (flags.disableLspDownload) return
 
-      const releaseResponse = await fetch("https://api.github.com/repos/zigtools/zls/releases/latest")
+      const releaseResponse = await githubApi("https://api.github.com/repos/zigtools/zls/releases/latest")
       if (!releaseResponse.ok) {
         return
       }
@@ -973,7 +980,7 @@ export const Clangd: Info = {
 
     if (flags.disableLspDownload) return
 
-    const releaseResponse = await fetch("https://api.github.com/repos/clangd/clangd/releases/latest")
+    const releaseResponse = await githubApi("https://api.github.com/repos/clangd/clangd/releases/latest")
     if (!releaseResponse.ok) {
       return
     }
@@ -1294,7 +1301,7 @@ export const KotlinLS: Info = {
     if (!installed) {
       if (flags.disableLspDownload) return
 
-      const releaseResponse = await fetch("https://api.github.com/repos/Kotlin/kotlin-lsp/releases/latest")
+      const releaseResponse = await githubApi("https://api.github.com/repos/Kotlin/kotlin-lsp/releases/latest")
       if (!releaseResponse.ok) {
         return
       }
@@ -1402,7 +1409,7 @@ export const LuaLS: Info = {
     if (!bin) {
       if (flags.disableLspDownload) return
 
-      const releaseResponse = await fetch("https://api.github.com/repos/LuaLS/lua-language-server/releases/latest")
+      const releaseResponse = await githubApi("https://api.github.com/repos/LuaLS/lua-language-server/releases/latest")
       if (!releaseResponse.ok) {
         return
       }
@@ -1702,7 +1709,7 @@ export const TexLab: Info = {
     if (!bin) {
       if (flags.disableLspDownload) return
 
-      const response = await fetch("https://api.github.com/repos/latex-lsp/texlab/releases/latest")
+      const response = await githubApi("https://api.github.com/repos/latex-lsp/texlab/releases/latest")
       if (!response.ok) {
         return
       }
@@ -1874,7 +1881,7 @@ export const Tinymist: Info = {
     if (!bin) {
       if (flags.disableLspDownload) return
 
-      const response = await fetch("https://api.github.com/repos/Myriad-Dreamin/tinymist/releases/latest")
+      const response = await githubApi("https://api.github.com/repos/Myriad-Dreamin/tinymist/releases/latest")
       if (!response.ok) {
         return
       }

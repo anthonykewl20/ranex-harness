@@ -14,6 +14,7 @@ import semver from "semver"
 import { InstallationChannel, InstallationVersion } from "@ranex/core/installation/version"
 import { NpmConfig } from "@ranex/core/npm-config"
 import { InstallationEvent } from "@ranex/schema/installation-event"
+import { resolveTokenOptional } from "@/github/auth"
 
 export type Method = "curl" | "npm" | "yarn" | "pnpm" | "bun" | "brew" | "scoop" | "choco" | "unknown"
 
@@ -254,10 +255,16 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
           return data.version
         }
 
+        const token = yield* resolveTokenOptional()
         const response = yield* httpOk.execute(
-          HttpClientRequest.get("https://api.github.com/repos/anomalyco/opencode/releases/latest").pipe(
-            HttpClientRequest.acceptJson,
-          ),
+          token
+            ? HttpClientRequest.get("https://api.github.com/repos/anomalyco/opencode/releases/latest").pipe(
+                HttpClientRequest.acceptJson,
+                HttpClientRequest.setHeaders({ Authorization: `Bearer ${token}` }),
+              )
+            : HttpClientRequest.get("https://api.github.com/repos/anomalyco/opencode/releases/latest").pipe(
+                HttpClientRequest.acceptJson,
+              ),
         )
         const data = yield* HttpClientResponse.schemaBodyJson(GitHubRelease)(response)
         return data.tag_name.replace(/^v/, "")
