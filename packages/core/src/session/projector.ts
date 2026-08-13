@@ -12,6 +12,9 @@ import { SessionMessage } from "./message"
 import { SessionMessageUpdater } from "./message-updater"
 import { SessionInput } from "./input"
 import { WorkspaceV2 } from "../workspace"
+import { MoveBlockedError } from "./move-error"
+import { PermissionRequestTable } from "../permission/sql"
+import { QuestionRequestTable } from "../question/sql"
 import { SessionContextEpoch } from "./context-epoch"
 import { MessageTable, PartTable, SessionInputTable, SessionMessageTable, SessionTable } from "./sql"
 import type { DeepMutable } from "../schema"
@@ -242,6 +245,23 @@ const layer = Layer.effectDiscard(
     )
     yield* events.project(SessionEvent.Moved, (event) =>
       Effect.gen(function* () {
+        const permission = yield* db
+          .select({ id: PermissionRequestTable.id })
+          .from(PermissionRequestTable)
+          .where(eq(PermissionRequestTable.session_id, event.data.sessionID))
+          .limit(1)
+          .get()
+          .pipe(Effect.orDie)
+        const question = permission
+          ? undefined
+          : yield* db
+              .select({ id: QuestionRequestTable.id })
+              .from(QuestionRequestTable)
+              .where(eq(QuestionRequestTable.session_id, event.data.sessionID))
+              .limit(1)
+              .get()
+              .pipe(Effect.orDie)
+        if (permission || question) return yield* Effect.die(new MoveBlockedError({ sessionID: event.data.sessionID }))
         yield* db
           .update(SessionTable)
           .set({

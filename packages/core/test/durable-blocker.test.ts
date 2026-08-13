@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
-import { Deferred, Effect, Exit, Fiber, Layer, Option, Scope, Stream } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Scope, Stream } from "effect"
 import { AgentV2 } from "@ranex/core/agent"
+import { MoveSession } from "@ranex/core/control-plane/move-session"
 import { Database } from "@ranex/core/database/database"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNode } from "@ranex/core/effect/layer-node"
@@ -16,6 +17,9 @@ import { QuestionV2 } from "@ranex/core/question"
 import { QuestionRequestTable } from "@ranex/core/question/sql"
 import { AbsolutePath } from "@ranex/core/schema"
 import { SessionV2 } from "@ranex/core/session"
+import { SessionEvent } from "@ranex/core/session/event"
+import { MoveBlockedError } from "@ranex/core/session/move-error"
+import { SessionProjector } from "@ranex/core/session/projector"
 import { SessionTable } from "@ranex/core/session/sql"
 import { SessionStore } from "@ranex/core/session/store"
 import { eq, sql } from "drizzle-orm"
@@ -37,26 +41,29 @@ const question = {
   options: [{ label: "One", description: "First option" }],
 } satisfies QuestionV2.Info
 
-function layer(filename: string, locationLayer = current) {
+function layer(filename: string, locationLayer = current, eventLayer?: ReturnType<typeof EventV2.layerWith>) {
   return AppNodeBuilder.build(
     LayerNode.group([
       Database.node,
       EventV2.node,
+      SessionProjector.node,
       SessionStore.node,
       PermissionSaved.node,
       AgentV2.node,
       PermissionV2.node,
       QuestionV2.node,
+      MoveSession.node,
     ]),
     [
       [Database.node, Database.layerFromPath(filename)],
       [Location.node, locationLayer],
+      ...(eventLayer ? [[EventV2.node, eventLayer] as const] : []),
     ],
   )
 }
 
-function graph<A, E>(filename: string, effect: Effect.Effect<A, E, Scope.Scope | PermissionV2.Service | QuestionV2.Service | EventV2.Service | Database.Service | AgentV2.Service>, locationLayer = current) {
-  return Effect.runPromise(effect.pipe(Effect.scoped, Effect.provide(layer(filename, locationLayer))))
+function graph<A, E>(filename: string, effect: Effect.Effect<A, E, Scope.Scope | PermissionV2.Service | QuestionV2.Service | EventV2.Service | Database.Service | AgentV2.Service | MoveSession.Service>, locationLayer = current, eventLayer?: ReturnType<typeof EventV2.layerWith>) {
+  return Effect.runPromise(effect.pipe(Effect.scoped, Effect.provide(layer(filename, locationLayer, eventLayer))))
 }
 
 const setup = Effect.gen(function* () {
@@ -304,6 +311,148 @@ describe("durable permission and question blockers", () => {
       expect((yield* service.list()).map((item) => item.id)).toEqual([hydratedID])
       yield* service.reply({ requestID: hydratedID, answers: [["One"]] })
     }), other)
+  })
+
+  test.each(["permission", "question"])("%s blockers prevent a move until settled", async (kind) => {
+    await using tmp = await tmpdir()
+    const filename = path.join(tmp.path, "blockers.sqlite")
+    await graph(filename, Effect.gen(function* () {
+      yield* setup
+      if (kind === "permission") {
+        const permissions = yield* PermissionV2.Service
+        yield* permissions.ask(permission("per_move_blocked"))
+        expect((yield* permissions.list()).map((item) => item.id)).toEqual([PermissionV2.ID.create("per_move_blocked")])
+        return
+      }
+      const questions = yield* QuestionV2.Service
+      const request = yield* askQuestion
+      expect((yield* questions.list()).map((item) => item.id)).toEqual([request.id])
+    }))
+    await graph(filename, Effect.gen(function* () {
+      const permissions = yield* PermissionV2.Service
+      const questions = yield* QuestionV2.Service
+      expect(yield* permissions.list()).toEqual([])
+      expect(yield* questions.list()).toEqual([])
+    }), other)
+
+    await graph(filename, Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      let moved = 0
+      const unsubscribe = yield* events.listen((event) => Effect.sync(() => {
+        if (event.type === SessionEvent.Moved.type) moved++
+      }))
+      yield* Effect.addFinalizer(() => unsubscribe)
+      const moves = yield* MoveSession.Service
+      const exit = yield* moves.moveSession({ sessionID, destination: { directory: AbsolutePath.make("/other") } }).pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(Cause.hasFails(exit.cause)).toBe(true)
+        expect(Cause.hasDies(exit.cause)).toBe(false)
+        const failure = Cause.findFail(exit.cause)
+        expect(failure._tag).toBe("Success")
+        if (failure._tag === "Success") expect(failure.success.error).toBeInstanceOf(MoveBlockedError)
+      }
+      expect(moved).toBe(0)
+      const { db } = yield* Database.Service
+      expect((yield* db.select({ directory: SessionTable.directory }).from(SessionTable).where(eq(SessionTable.id, sessionID)).get())?.directory).toBe("/project")
+      const permissions = yield* PermissionV2.Service
+      const questions = yield* QuestionV2.Service
+      if (kind === "permission") expect((yield* permissions.list()).map((item) => item.id)).toEqual([PermissionV2.ID.create("per_move_blocked")])
+      if (kind === "question") expect((yield* questions.list())).toHaveLength(1)
+    }))
+
+    await graph(filename, Effect.gen(function* () {
+      if (kind === "permission") {
+        const permissions = yield* PermissionV2.Service
+        yield* permissions.reply({ requestID: PermissionV2.ID.create("per_move_blocked"), reply: "reject" })
+        return
+      }
+      const questions = yield* QuestionV2.Service
+      yield* questions.reject((yield* questions.list())[0]!.id)
+    }))
+
+    await graph(filename, MoveSession.Service.use((moves) =>
+      moves.moveSession({ sessionID, destination: { directory: AbsolutePath.make("/other") } }),
+    ))
+    expect(await graph(filename, Database.Service.use(({ db }) =>
+      db.select({ directory: SessionTable.directory }).from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie),
+    ))).toEqual({ directory: "/other" })
+  })
+
+  test("translates a projector move blocker into a typed failure", async () => {
+    await using tmp = await tmpdir()
+    const filename = path.join(tmp.path, "blockers.sqlite")
+    const request = permission("per_move_race")
+    const eventLayer = Layer.effect(
+      EventV2.Service,
+      Effect.gen(function* () {
+        const events = yield* EventV2.Service
+        const { db } = yield* Database.Service
+        return EventV2.Service.of({
+          ...events,
+          publish: (definition, data, options) => {
+            if (definition.type !== SessionEvent.Moved.type) return events.publish(definition, data, options)
+            return db
+              .insert(PermissionRequestTable)
+              .values({ id: request.id, session_id: request.sessionID, data: request })
+              .run()
+              .pipe(Effect.orDie, Effect.andThen(events.publish(definition, data, options)))
+          },
+        })
+      }),
+    ).pipe(Layer.provide(EventV2.layerWith()))
+
+    await graph(filename, setup, current, eventLayer)
+    await graph(filename, Effect.gen(function* () {
+      const moves = yield* MoveSession.Service
+      const exit = yield* moves
+        .moveSession({ sessionID, destination: { directory: AbsolutePath.make("/other") } })
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(Cause.hasFails(exit.cause)).toBe(true)
+        expect(Cause.hasDies(exit.cause)).toBe(false)
+        const failure = Cause.findFail(exit.cause)
+        expect(failure._tag).toBe("Success")
+        if (failure._tag === "Success") expect(failure.success.error).toBeInstanceOf(MoveBlockedError)
+      }
+      const { db } = yield* Database.Service
+      expect(
+        (yield* db
+          .select({ directory: SessionTable.directory })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, sessionID))
+          .get())?.directory,
+      ).toBe("/project")
+    }), current, eventLayer)
+  })
+
+  test("permission admission refuses a stale location after a session moves", async () => {
+    await using tmp = await tmpdir()
+    const filename = path.join(tmp.path, "blockers.sqlite")
+    await graph(filename, setup)
+    await graph(filename, Database.Service.use(({ db }) =>
+      db.update(SessionTable).set({ directory: "/other" }).where(eq(SessionTable.id, sessionID)).run().pipe(Effect.orDie),
+    ))
+    await graph(filename, PermissionV2.Service.use((service) =>
+      service.ask(permission("per_stale_location")).pipe(Effect.flip),
+    )).then((error) => expect(error).toBeInstanceOf(SessionV2.NotFoundError))
+    expect(await graph(filename, Database.Service.use(({ db }) =>
+      db.select().from(PermissionRequestTable).where(eq(PermissionRequestTable.id, PermissionV2.ID.create("per_stale_location"))).get().pipe(Effect.orDie),
+    ))).toBeUndefined()
+    await graph(filename, Effect.gen(function* () {
+      const agents = yield* AgentV2.Service
+      yield* agents.transform((editor) =>
+        editor.update(AgentV2.ID.make("test"), (agent) => {
+          agent.permissions = []
+        }),
+      )
+      const permissions = yield* PermissionV2.Service
+      yield* permissions.ask(permission("per_current_location"))
+    }), other)
+    expect(await graph(filename, Database.Service.use(({ db }) =>
+      db.select().from(PermissionRequestTable).where(eq(PermissionRequestTable.id, PermissionV2.ID.create("per_current_location"))).get().pipe(Effect.orDie),
+    ))).toEqual(expect.objectContaining({ session_id: sessionID }))
   })
 
   test("rehydration does not republish permission or question Asked", async () => {

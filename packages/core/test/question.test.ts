@@ -1,24 +1,25 @@
 import { describe, expect } from "bun:test"
 import { Context, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect"
+import { Database } from "@ranex/core/database/database"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { EventV2 } from "@ranex/core/event"
 import { Location } from "@ranex/core/location"
+import { Project } from "@ranex/core/project"
+import { ProjectTable } from "@ranex/core/project/sql"
 import { QuestionV2 } from "@ranex/core/question"
 import { AbsolutePath } from "@ranex/core/schema"
 import { SessionV2 } from "@ranex/core/session"
+import { SessionTable } from "@ranex/core/session/sql"
+import { SessionStore } from "@ranex/core/session/store"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 
-const questions = AppNodeBuilder.build(LayerNode.group([EventV2.node, QuestionV2.node]), [
-  [
-    Location.node,
-    Layer.succeed(
-      Location.Service,
-      Location.Service.of(location({ directory: AbsolutePath.make("/project") })),
-    ),
-  ],
-])
+const current = Layer.succeed(
+  Location.Service,
+  Location.Service.of(location({ directory: AbsolutePath.make("/project") })),
+)
+const questions = AppNodeBuilder.build(LayerNode.group([Database.node, EventV2.node, SessionStore.node, QuestionV2.node]), [[Location.node, current]])
 const it = testEffect(questions)
 
 const sessionID = SessionV2.ID.make("ses_question_test")
@@ -27,6 +28,30 @@ const question: QuestionV2.Info = {
   header: "Option",
   options: [{ label: "One", description: "First option" }],
 }
+
+const setup = Effect.gen(function* () {
+  const { db } = yield* Database.Service
+  yield* db
+    .insert(ProjectTable)
+    .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+    .onConflictDoNothing()
+    .run()
+    .pipe(Effect.orDie)
+  yield* db
+    .insert(SessionTable)
+    .values({
+      id: sessionID,
+      project_id: Project.ID.global,
+      slug: "question",
+      directory: "/project",
+      title: "question",
+      version: "test",
+      agent: "test",
+    })
+    .onConflictDoNothing()
+    .run()
+    .pipe(Effect.orDie)
+})
 
 const waitForAsk = Effect.fn("QuestionV2Test.waitForAsk")(function* (
   service: QuestionV2.Interface,
@@ -47,6 +72,7 @@ const waitForAsk = Effect.fn("QuestionV2Test.waitForAsk")(function* (
 describe("QuestionV2", () => {
   it.effect("publishes lifecycle events and settles a pending reply", () =>
     Effect.gen(function* () {
+      yield* setup
       const service = yield* QuestionV2.Service
       const events = yield* EventV2.Service
       const published: EventV2.Payload[] = []
@@ -73,6 +99,7 @@ describe("QuestionV2", () => {
 
   it.effect("publishes rejection, fails the ask, and rejects unknown IDs", () =>
     Effect.gen(function* () {
+      yield* setup
       const service = yield* QuestionV2.Service
       const events = yield* EventV2.Service
       const published: EventV2.Payload[] = []
@@ -102,10 +129,18 @@ describe("QuestionV2", () => {
 
   it.effect("isolates pending requests by location-layer instance and rejects them on finalization", () =>
     Effect.gen(function* () {
+      yield* setup
       const firstScope = yield* Scope.make()
       const secondScope = yield* Scope.make()
-      const first = Context.get(yield* Layer.buildWithScope(Layer.fresh(questions), firstScope), QuestionV2.Service)
-      const second = Context.get(yield* Layer.buildWithScope(Layer.fresh(questions), secondScope), QuestionV2.Service)
+      const shared = Layer.mergeAll(
+        Layer.succeed(Database.Service, yield* Database.Service),
+        Layer.succeed(EventV2.Service, yield* EventV2.Service),
+        Layer.succeed(SessionStore.Service, yield* SessionStore.Service),
+        current,
+      )
+      const locationQuestions = Layer.fresh(QuestionV2.locationLayer.pipe(Layer.provide(shared)))
+      const first = Context.get(yield* Layer.buildWithScope(locationQuestions, firstScope), QuestionV2.Service)
+      const second = Context.get(yield* Layer.buildWithScope(locationQuestions, secondScope), QuestionV2.Service)
       const fiber = yield* first.ask({ sessionID, questions: [question] }).pipe(Effect.forkScoped)
       yield* Effect.yieldNow
       const request = (yield* first.list())[0]!
