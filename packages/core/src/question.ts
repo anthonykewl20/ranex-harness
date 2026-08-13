@@ -10,7 +10,8 @@ import { SessionSchema } from "./session/schema"
 import { SessionStore } from "./session/store"
 import { Database } from "./database/database"
 import { QuestionRequestTable } from "./question/sql"
-import { eq } from "drizzle-orm"
+import { and, eq, isNull } from "drizzle-orm"
+import { SessionTable } from "./session/sql"
 
 export const ID = Question.ID
 export type ID = typeof ID.Type
@@ -60,7 +61,7 @@ export interface ReplyInput {
 }
 
 export interface Interface {
-  readonly ask: (input: AskInput) => Effect.Effect<ReadonlyArray<Answer>, RejectedError>
+  readonly ask: (input: AskInput) => Effect.Effect<ReadonlyArray<Answer>, RejectedError | SessionV2.NotFoundError>
   readonly reply: (input: ReplyInput) => Effect.Effect<void, NotFoundError>
   readonly reject: (requestID: ID) => Effect.Effect<void, NotFoundError>
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
@@ -131,15 +132,37 @@ const layer = Layer.effect(
           const id = ID.ascending()
           const deferred = yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>()
           const request: Request = { id, ...input }
-          pending.set(id, { request, deferred })
-          yield* db
-            .insert(QuestionRequestTable)
-            .values({ id, session_id: request.sessionID, data: request })
-            .run()
-            .pipe(
-              Effect.onError(() => Effect.sync(() => pending.delete(id))),
-              Effect.orDie,
+          const admitted = yield* db
+            .transaction(
+              (tx) =>
+                Effect.gen(function* () {
+                  const session = yield* tx
+                    .select({ id: SessionTable.id })
+                    .from(SessionTable)
+                    .where(
+                      and(
+                        eq(SessionTable.id, request.sessionID),
+                        eq(SessionTable.directory, location.directory),
+                        location.workspaceID
+                          ? eq(SessionTable.workspace_id, location.workspaceID)
+                          : isNull(SessionTable.workspace_id),
+                      ),
+                    )
+                    .get()
+                    .pipe(Effect.orDie)
+                  if (!session) return false
+                  yield* tx
+                    .insert(QuestionRequestTable)
+                    .values({ id, session_id: request.sessionID, data: request })
+                    .run()
+                    .pipe(Effect.orDie)
+                  return true
+                }),
+              { behavior: "immediate" },
             )
+            .pipe(Effect.orDie)
+          if (!admitted) return yield* new SessionV2.NotFoundError({ sessionID: request.sessionID })
+          pending.set(id, { request, deferred })
           yield* events.publish(Event.Asked, request).pipe(
             Effect.onError(() =>
               Effect.gen(function* () {

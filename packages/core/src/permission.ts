@@ -12,7 +12,8 @@ import { Wildcard } from "./util/wildcard"
 import { PermissionSaved } from "./permission/saved"
 import { Database } from "./database/database"
 import { PermissionRequestTable } from "./permission/sql"
-import { eq } from "drizzle-orm"
+import { and, eq, isNull } from "drizzle-orm"
+import { SessionTable } from "./session/sql"
 
 export { Effect, Rule, Ruleset } from "@ranex/schema/permission"
 const missingAgentPermissions: Permission.Ruleset = [{ action: "*", resource: "*", effect: "deny" }]
@@ -206,15 +207,37 @@ const layer = Layer.effect(
           const deferred = yield* Deferred.make<void, DeclinedError | CorrectedError>()
           const item = { request, agent, deferred }
           if (pending.has(request.id)) return yield* EffectRuntime.die(`Duplicate pending permission ID: ${request.id}`)
-          pending.set(request.id, item)
-          yield* db
-            .insert(PermissionRequestTable)
-            .values({ id: request.id, session_id: request.sessionID, data: request, agent })
-            .run()
-            .pipe(
-              EffectRuntime.onError(() => EffectRuntime.sync(() => pending.delete(request.id))),
-              EffectRuntime.orDie,
+          const admitted = yield* db
+            .transaction(
+              (tx) =>
+                EffectRuntime.gen(function* () {
+                  const session = yield* tx
+                    .select({ id: SessionTable.id })
+                    .from(SessionTable)
+                    .where(
+                      and(
+                        eq(SessionTable.id, request.sessionID),
+                        eq(SessionTable.directory, location.directory),
+                        location.workspaceID
+                          ? eq(SessionTable.workspace_id, location.workspaceID)
+                          : isNull(SessionTable.workspace_id),
+                      ),
+                    )
+                    .get()
+                    .pipe(EffectRuntime.orDie)
+                  if (!session) return false
+                  yield* tx
+                    .insert(PermissionRequestTable)
+                    .values({ id: request.id, session_id: request.sessionID, data: request, agent })
+                    .run()
+                    .pipe(EffectRuntime.orDie)
+                  return true
+                }),
+              { behavior: "immediate" },
             )
+            .pipe(EffectRuntime.orDie)
+          if (!admitted) return yield* new SessionV2.NotFoundError({ sessionID: request.sessionID })
+          pending.set(request.id, item)
           yield* events
             .publish(Event.Asked, request)
             .pipe(

@@ -18,16 +18,17 @@ const layer = Layer.effect(
     const flock = yield* EffectFlock.Service
     const coordinator = yield* SessionRunCoordinator.make<SessionSchema.ID, SessionRunner.RunError>({
       drain: Effect.fnUntraced(function* (sessionID: SessionSchema.ID, force) {
-        const session = yield* store.get(sessionID)
-        if (!session) return yield* Effect.die(`Session not found: ${sessionID}`)
         return yield* flock.withLock(sessionID)(
           Effect.gen(function* () {
             const won = yield* store.claimExecution(sessionID, ExecutionOwner.ownerID)
             if (!won) return
-            yield* SessionRunner.Service.use((runner) => runner.run({ sessionID, force })).pipe(
-              Effect.provide(locations.get(session.location)),
-              Effect.ensuring(store.releaseExecution(sessionID, ExecutionOwner.ownerID)),
-            )
+            yield* Effect.gen(function* () {
+              const session = yield* store.get(sessionID)
+              if (!session) return yield* Effect.die(`Session not found: ${sessionID}`)
+              yield* SessionRunner.Service.use((runner) => runner.run({ sessionID, force })).pipe(
+                Effect.provide(locations.get(session.location)),
+              )
+            }).pipe(Effect.ensuring(store.releaseExecution(sessionID, ExecutionOwner.ownerID)))
           }),
         ).pipe(
           Effect.orDie,

@@ -1,6 +1,8 @@
 export * as MoveSession from "./move-session"
 
 import { Context, DateTime, Effect, Layer, Schema } from "effect"
+import { eq } from "drizzle-orm"
+import { Database } from "../database/database"
 import { makeGlobalNode } from "../effect/app-node"
 import { EventV2 } from "../event"
 import { Git } from "../git"
@@ -10,6 +12,9 @@ import { SessionV2 } from "../session"
 import { SessionEvent } from "../session/event"
 import { SessionSchema } from "../session/schema"
 import { SessionStore } from "../session/store"
+import { MoveBlockedError } from "../session/move-error"
+import { PermissionRequestTable } from "../permission/sql"
+import { QuestionRequestTable } from "../question/sql"
 import { AbsolutePath, RelativePath } from "../schema"
 import path from "path"
 
@@ -59,6 +64,7 @@ export type Error =
   | CaptureChangesError
   | ApplyChangesError
   | ResetSourceChangesError
+  | MoveBlockedError
 
 export interface Interface {
   readonly moveSession: (input: Input) => Effect.Effect<void, Error>
@@ -73,12 +79,36 @@ const layer = Layer.effect(
     const events = yield* EventV2.Service
     const project = yield* ProjectV2.Service
     const sessions = yield* SessionStore.Service
+    const { db } = yield* Database.Service
+
+    const hasBlockers = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
+      const permission = yield* db
+        .select({ id: PermissionRequestTable.id })
+        .from(PermissionRequestTable)
+        .where(eq(PermissionRequestTable.session_id, sessionID))
+        .limit(1)
+        .get()
+        .pipe(Effect.orDie)
+      if (permission) return true
+      return (yield* db
+        .select({ id: QuestionRequestTable.id })
+        .from(QuestionRequestTable)
+        .where(eq(QuestionRequestTable.session_id, sessionID))
+        .limit(1)
+        .get()
+        .pipe(Effect.orDie)) !== undefined
+    })
+
+    const requireNoBlockers = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
+      if (yield* hasBlockers(sessionID)) return yield* new MoveBlockedError({ sessionID })
+    })
 
     const moveSession = Effect.fn("MoveSession.moveSession")(function* (input: Input) {
       const current = yield* sessions.get(input.sessionID)
       if (!current) return yield* new SessionV2.NotFoundError({ sessionID: input.sessionID })
       const directory = AbsolutePath.make(input.destination.directory)
       if (current.location.directory === directory) return
+      yield* requireNoBlockers(input.sessionID)
 
       const source = yield* project.resolve(current.location.directory)
       const destination = yield* project.resolve(directory)
@@ -98,17 +128,24 @@ const layer = Layer.effect(
       if (patch) {
         const repository = yield* git.repo.discover(directory)
         if (!repository) return yield* new ApplyChangesError({ message: "Destination is not a Git repository" })
+        yield* requireNoBlockers(input.sessionID)
         yield* git.change
           .apply({ repository, path: directory, changes: patch })
           .pipe(Effect.mapError((error) => new ApplyChangesError({ message: error.message })))
       }
 
+      yield* requireNoBlockers(input.sessionID)
       yield* events.publish(SessionEvent.Moved, {
         sessionID: input.sessionID,
         location: Location.Ref.make({ directory }),
         subdirectory: RelativePath.make(path.relative(destination.directory, directory).replaceAll("\\", "/")),
         timestamp: yield* DateTime.now,
-      })
+      }, { commit: () => requireNoBlockers(input.sessionID).pipe(Effect.orDie) }).pipe(
+        Effect.catchDefect((defect) =>
+          defect instanceof MoveBlockedError ? Effect.fail(defect) : Effect.die(defect),
+        ),
+      )
+      // TODO(#81): compensate destination patch on MoveBlockedError
 
       if (patch) {
         const repository = yield* git.repo.discover(current.location.directory)
@@ -144,5 +181,5 @@ const layer = Layer.effect(
 export const node = makeGlobalNode({
   service: Service,
   layer,
-  deps: [Git.node, EventV2.node, ProjectV2.node, SessionStore.node],
+  deps: [Database.node, Git.node, EventV2.node, ProjectV2.node, SessionStore.node],
 })
