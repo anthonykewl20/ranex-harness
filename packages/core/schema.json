@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "bcd4c4c7-b8c3-44e8-869d-125508a93327",
+  "id": "332fa64c-35d0-456b-8d0f-2781effaa69c",
   "prevIds": [
-    "1af9be75-1e99-4cd3-96cb-e05d7697f4e2"
+    "bcd4c4c7-b8c3-44e8-869d-125508a93327"
   ],
   "ddl": [
     {
@@ -1677,6 +1677,21 @@
     },
     {
       "columns": [
+        "session_id"
+      ],
+      "tableTo": "session",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_permission_request_session_id_session_id_fk",
+      "entityType": "fks",
+      "table": "permission_request"
+    },
+    {
+      "columns": [
         "project_id"
       ],
       "tableTo": "project",
@@ -1704,6 +1719,21 @@
       "name": "fk_project_directory_project_id_project_id_fk",
       "entityType": "fks",
       "table": "project_directory"
+    },
+    {
+      "columns": [
+        "session_id"
+      ],
+      "tableTo": "session",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_question_request_session_id_session_id_fk",
+      "entityType": "fks",
+      "table": "question_request"
     },
     {
       "columns": [
