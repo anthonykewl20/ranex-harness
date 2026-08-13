@@ -2,7 +2,7 @@ import type { TuiPluginApi } from "@ranex/plugin/tui"
 import { For, Show, createMemo } from "solid-js"
 import { detectGlyphs } from "../../../theme/glyphs"
 import type { BoardPaneProps } from "../pane"
-import { causePresentation } from "./gates"
+import { causePresentation, classifyCause } from "../verdict-cause"
 
 const glyphs = detectGlyphs()
 
@@ -146,7 +146,7 @@ export function EvidenceTable(props: {
       <For each={current().rows}>
         {(row) => {
           if (row.state === "cause") {
-            const presentation = causePresentation(row.cause.cause, theme(), glyphs)
+            const presentation = causePresentation(classifyCause(row.cause.cause), theme(), glyphs)
             return (
               <text fg={presentation.color}>
                 CAUSE claim {usableClaimID(row.cause.claim_id) ?? "NO CLAIM"} {glyphs.dot} {presentation.glyph}{" "}
@@ -166,7 +166,11 @@ export function EvidenceTable(props: {
 
           if (row.state === "refused") {
             const claimID = usableClaimID(row.rejection.claim_id)
-            const presentation = causePresentation(claimID === null ? "unattributable" : "refused", theme(), glyphs)
+            const presentation = causePresentation(
+              classifyCause(claimID === null ? "unattributable" : "refused"),
+              theme(),
+              glyphs,
+            )
             return (
               <box>
                 <text fg={presentation.color}>

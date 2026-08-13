@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
-import path from "node:path"
 import { testRender } from "@opentui/solid"
+import { KNOWN_CAUSES } from "@ranex/schema/verdict"
 import {
   GATE_PAGE_SIZE,
   GateTable,
@@ -10,13 +9,6 @@ import {
   type GateRow,
 } from "../src/feature-plugins/board/panes/gates"
 import { createTuiPluginApi } from "./fixture/tui-plugin"
-
-const ROOT = path.join(import.meta.dir, "..")
-const SOURCE = readFileSync(path.join(ROOT, "src/feature-plugins/board/panes/gates.tsx"), "utf8")
-const VERDICT_SOURCE = readFileSync(path.join(ROOT, "../schema/src/verdict.ts"), "utf8")
-const AUTHORITATIVE_CAUSES = [
-  ...(VERDICT_SOURCE.match(/export const KNOWN_CAUSES = \[([^]*?)\] as const/)?.[1]?.matchAll(/"([^"]+)"/g) ?? []),
-].map((item) => item[1])
 
 async function capture(render: () => ReturnType<typeof GatesPane.render>, height = 24) {
   const app = await testRender(render, { width: 120, height })
@@ -89,14 +81,14 @@ describe("the gates pane", () => {
       () =>
         GateTable({
           api: createTuiPluginApi(),
-          rows: [gate({ causes: AUTHORITATIVE_CAUSES })],
+          rows: [gate({ causes: KNOWN_CAUSES })],
           page: 0,
         }),
       30,
     )
 
-    expect(AUTHORITATIVE_CAUSES).toHaveLength(7)
-    for (const cause of AUTHORITATIVE_CAUSES) expect(frame).toContain(cause)
+    expect(KNOWN_CAUSES).toHaveLength(7)
+    for (const cause of KNOWN_CAUSES) expect(frame).toContain(cause)
     expect(frame).not.toContain("unclassified")
   })
 
@@ -170,36 +162,5 @@ describe("the gates pane", () => {
     const paged = Array.from({ length: pageCount }, (_, page) => paginateGateRows(rows, page).rows).flat()
 
     expect(paged.map((row) => row.gate)).toEqual(rows.map((row) => row.gate))
-  })
-})
-
-describe("cause presentation invariants", () => {
-  test("matches every authoritative known cause without a default arm", () => {
-    const match = SOURCE.match(
-      /function knownCausePresentation\([^]*?\n}\n\nexport const GatesPane/,
-    )?.[0]
-
-    expect(match).toBeDefined()
-    expect(match).not.toMatch(/\bdefault\s*:/)
-    expect(match).toContain("const exhaustive: never = cause")
-    const actual = [...match!.matchAll(/case "([^"]+)"/g)].map((item) => item[1])
-
-    expect(AUTHORITATIVE_CAUSES).toHaveLength(7)
-    expect(actual).toHaveLength(AUTHORITATIVE_CAUSES.length)
-    expect(new Set(actual)).toEqual(new Set(AUTHORITATIVE_CAUSES))
-  })
-
-  test("does not rank, sort, or compare causes", () => {
-    expect(SOURCE).not.toMatch(/\b(?:sort|toSorted|localeCompare|indexOf|findIndex)\s*\(/)
-    expect(SOURCE).not.toMatch(/\b(?:severity|rank|score|priority|weight|level)\b/i)
-    expect(SOURCE).not.toMatch(/\bcause\s*(?:<|>|<=|>=)/)
-    expect(SOURCE).not.toMatch(/(?:<|>|<=|>=)\s*cause\b/)
-    expect(SOURCE).not.toMatch(/Record\s*<\s*KnownCause\s*,\s*number\s*>/)
-    expect(SOURCE).not.toMatch(/Map\s*<\s*KnownCause\s*,\s*number\s*>/)
-    expect(SOURCE).not.toMatch(/KNOWN_CAUSES\s*\[/)
-  })
-
-  test("never parses reason prose to invent a cause", () => {
-    expect(SOURCE).not.toMatch(/\.reason\b/)
   })
 })

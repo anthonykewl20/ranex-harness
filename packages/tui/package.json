@@ -53,6 +53,7 @@
     "@opentui/solid": "catalog:",
     "@ranex/core": "workspace:*",
     "@ranex/plugin": "workspace:*",
+    "@ranex/schema": "workspace:*",
     "@ranex/sdk": "workspace:*",
     "clipboardy": "4.0.0",
     "diff": "catalog:",
