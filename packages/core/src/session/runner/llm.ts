@@ -4,6 +4,7 @@ import {
   LLMError,
   LLMEvent,
   Message,
+  ProviderInternalReason,
   SystemPart,
   TransportReason,
   isContextOverflowFailure,
@@ -283,6 +284,14 @@ const layer = Layer.effect(
                 overflowFailure = event
                 return
               }
+              if (event.retryable && !publisher.hasAssistantStarted())
+                return yield* Effect.fail(
+                  new LLMError({
+                    module: "SessionRunner",
+                    method: "stream",
+                    reason: new ProviderInternalReason({ message: event.message, status: 503 }),
+                  }),
+                )
             }
             yield* publish(event)
             if (event.type !== "tool-call" || event.providerExecuted) return
