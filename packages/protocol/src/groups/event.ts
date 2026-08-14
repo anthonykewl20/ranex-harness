@@ -7,6 +7,7 @@ import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/un
 export const EventSubscriptionQuery = Schema.Struct({
   directory: Schema.optional(AbsolutePath.check(Schema.isStartsWith("/"))),
   workspaceID: Schema.optional(Schema.String),
+  clientID: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,64}$/))),
 }).annotate({ identifier: "EventSubscriptionQuery" })
 
 const make = () => {

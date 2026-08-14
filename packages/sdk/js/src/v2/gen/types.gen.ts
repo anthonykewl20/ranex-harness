@@ -93,6 +93,7 @@ export type Event =
   | EventWorktreeReady
   | EventWorktreeFailed
   | EventServerConnected
+  | EventServerSuperseded
   | EventGlobalDisposed
   | EventServerInstanceDisposed
 
@@ -1602,6 +1603,13 @@ export type GlobalEvent = {
     | {
         id: string
         type: "server.connected"
+        properties: {
+          [key: string]: unknown
+        }
+      }
+    | {
+        id: string
+        type: "server.superseded"
         properties: {
           [key: string]: unknown
         }
@@ -5906,6 +5914,14 @@ export type EventWorktreeFailed = {
 export type EventServerConnected = {
   id: string
   type: "server.connected"
+  properties: {
+    [key: string]: unknown
+  }
+}
+
+export type EventServerSuperseded = {
+  id: string
+  type: "server.superseded"
   properties: {
     [key: string]: unknown
   }
@@ -11920,6 +11936,7 @@ export type V2EventSubscribeData = {
   query?: {
     directory?: string
     workspaceID?: string
+    clientID?: string
   }
   url: "/api/event"
 }

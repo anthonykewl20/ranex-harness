@@ -1,11 +1,12 @@
 import { EventV2 } from "@ranex/core/event"
 import { ProjectedEvent } from "@ranex/core/projected-event"
 import { OpenCodeEvent } from "@ranex/protocol/groups/event"
-import { Effect, Schema, Stream } from "effect"
+import { Deferred, Effect, Schema, Stream } from "effect"
 import { HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { Api } from "../api"
+import { EventStreamGeneration } from "../event-stream-generation"
 
 const subscriberCapacity = 256
 
@@ -50,7 +51,21 @@ export const EventHandler = HttpApiBuilder.group(Api, "server.event", (handlers)
                   return projected.event
                 },
               )
-              return Stream.make(connected).pipe(Stream.concat(live))
+              const clientID = ctx.query.clientID
+              if (!clientID) return Stream.make(connected).pipe(Stream.concat(live))
+              const superseded = ProjectedEvent.project({
+                id: EventV2.ID.create(),
+                type: "server.superseded",
+                data: {},
+              }).event
+              const signal = yield* Deferred.make<void>()
+              const generation = { close: Deferred.succeed(signal, undefined).pipe(Effect.asVoid) }
+              yield* Effect.addFinalizer(() => EventStreamGeneration.deregister(events, clientID, generation))
+              yield* EventStreamGeneration.register(events, clientID, generation)
+              return Stream.make(connected).pipe(
+                Stream.concat(live.pipe(Stream.interruptWhen(Deferred.await(signal)))),
+                Stream.concat(Stream.make(superseded)),
+              )
             }),
           ),
         ).pipe(

@@ -6620,6 +6620,7 @@ export class Event2 extends HeyApiClient {
     parameters?: {
       directory?: string
       workspaceID?: string
+      clientID?: string
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -6630,6 +6631,7 @@ export class Event2 extends HeyApiClient {
           args: [
             { in: "query", key: "directory" },
             { in: "query", key: "workspaceID" },
+            { in: "query", key: "clientID" },
           ],
         },
       ],

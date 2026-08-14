@@ -7,6 +7,8 @@ import type { Payload } from "@ranex/schema/event"
 
 export const MAX_FIELD_BYTES = 8 * 1024
 export const MAX_EVENT_BYTES = 32 * 1024
+export const MAX_OUTPUT_REFS = 128
+export const MAX_OUTPUT_REFS_BYTES = 16 * 1024
 
 const textEncoder = new TextEncoder()
 const marker = "[content omitted; fetch the durable payload for the complete value]"
@@ -29,7 +31,7 @@ export function project(event: Payload): Result {
     const boundedOutputRefs = outputRefs.reduce(
       (result, outputRef) => {
         const size = bytes(outputRef) + 3
-        if (result.refs.length === 128 || result.bytes + size > 16 * 1024) return result
+        if (result.refs.length === MAX_OUTPUT_REFS || result.bytes + size > MAX_OUTPUT_REFS_BYTES) return result
         return { refs: [...result.refs, outputRef], bytes: result.bytes + size }
       },
       { refs: [] as ManagedOutput.ID[], bytes: 0 },
