@@ -17,6 +17,12 @@ export class Repository extends Schema.Class<Repository>("Git.Repository")({
   commonDirectory: AbsolutePath,
 }) {}
 
+export class DiscoveryError extends Schema.TaggedErrorClass<DiscoveryError>()("Git.DiscoveryError", {
+  directory: AbsolutePath,
+  message: Schema.String,
+  cause: Schema.optional(Schema.Defect()),
+}) {}
+
 export const ChangeSet = Schema.String.pipe(Schema.brand("Git.ChangeSet"))
 export type ChangeSet = typeof ChangeSet.Type
 
@@ -64,6 +70,7 @@ export class PatchError extends Schema.TaggedErrorClass<PatchError>()("Git.Patch
 export interface Interface {
   readonly repo: {
     readonly discover: (input: AbsolutePath) => Effect.Effect<Repository | undefined>
+    readonly inspect: (input: AbsolutePath) => Effect.Effect<Repository | undefined, DiscoveryError | FSUtil.Error>
     readonly clone: (input: {
       remote: string
       directory: AbsolutePath
@@ -197,6 +204,45 @@ const layer = Layer.effect(
 
       return new Repository({
         worktree: AbsolutePath.make(topLevel.exitCode === 0 ? resolvePath(cwd, topLevel.text) : cwd),
+        gitDirectory: AbsolutePath.make(resolvePath(cwd, gitDir.text)),
+        commonDirectory: AbsolutePath.make(resolvePath(cwd, commonDir.text)),
+      })
+    })
+
+    const inspect = Effect.fn("Git.repo.inspect")(function* (input: AbsolutePath) {
+      const dotgit = yield* fs.up({ targets: [".git"], start: input }).pipe(
+        Effect.map((matches) => matches[0]),
+      )
+      if (!dotgit) return undefined
+
+      const cwd = path.dirname(dotgit)
+      const git = (args: string[]) =>
+        execute(cwd, proc)(args).pipe(
+          Effect.mapError(
+            (cause) =>
+              new DiscoveryError({
+                directory: input,
+                message: cause.message,
+                cause,
+              }),
+          ),
+          Effect.flatMap((result) =>
+            result.exitCode === 0
+              ? Effect.succeed(result)
+              : Effect.fail(
+                  new DiscoveryError({
+                    directory: input,
+                    message: result.stderr.trim() || result.text.trim() || "Failed to inspect Git repository",
+                  }),
+                ),
+          ),
+        )
+      const topLevel = yield* git(["rev-parse", "--show-toplevel"])
+      const gitDir = yield* git(["rev-parse", "--git-dir"])
+      const commonDir = yield* git(["rev-parse", "--git-common-dir"])
+
+      return new Repository({
+        worktree: AbsolutePath.make(resolvePath(cwd, topLevel.text)),
         gitDirectory: AbsolutePath.make(resolvePath(cwd, gitDir.text)),
         commonDirectory: AbsolutePath.make(resolvePath(cwd, commonDir.text)),
       })
@@ -923,7 +969,7 @@ const layer = Layer.effect(
     })
 
     return Service.of({
-      repo: { discover, clone, create },
+      repo: { discover, inspect, clone, create },
       remote: { get: remote },
       history: { head, branch, defaultRemoteBranch: remoteHead, rootCommits: roots },
       sync: { fetchRemotes: fetch, fetchBranch, checkoutRemoteBranch: checkout, resetHard: reset },

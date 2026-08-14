@@ -1,4 +1,5 @@
 import { Location } from "@ranex/schema/location"
+import { Project } from "@ranex/schema/project"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 
@@ -26,10 +27,29 @@ export const locationQueryOpenApi = OpenApi.annotations({
   },
 })
 
+export const LocationResolution = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("loading") }),
+  Schema.Struct({
+    status: Schema.Literal("ready"),
+    project: Location.Info.fields.project,
+    vcs: Project.Vcs.pipe(Schema.optional),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("failed"),
+    error: Schema.Literals(["timed_out", "git_failed", "filesystem_failed"]),
+  }),
+]).annotate({ identifier: "LocationResolution" })
+
+export const LocationGetResponse = Schema.Struct({
+  directory: Location.Ref.fields.directory,
+  workspaceID: Location.Ref.fields.workspaceID,
+  resolution: LocationResolution,
+}).annotate({ identifier: "LocationGetResponse" })
+
 export const LocationGroup = HttpApiGroup.make("server.location").add(
   HttpApiEndpoint.get("location.get", "/api/location", {
     query: LocationQuery,
-    success: Location.Info,
+    success: LocationGetResponse,
   })
     .annotateMerge(locationQueryOpenApi)
     .annotateMerge(

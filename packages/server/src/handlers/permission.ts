@@ -1,4 +1,5 @@
-import { Location } from "@ranex/core/location"
+import { ProjectResolution } from "@ranex/core/project-resolution"
+import { Project } from "@ranex/core/project"
 import { PermissionV2 } from "@ranex/core/permission"
 import { PermissionSaved } from "@ranex/core/permission/saved"
 import { Effect } from "effect"
@@ -89,10 +90,17 @@ export const PermissionHandler = HttpApiBuilder.group(Api, "server.permission", 
       .handle(
         "permission.saved.list",
         Effect.fn(function* (ctx) {
-          const location = yield* Location.Service
+          const resolution = yield* ProjectResolution.Service
+          // Saved rules are auxiliary policy hints; keep the global rules visible when resolution fails.
+          const projectID =
+            ctx.query.projectID ??
+            (yield* resolution.awaitReady().pipe(
+              Effect.map((ready) => ready.project.id),
+              Effect.catch(() => Effect.succeed(Project.ID.global)),
+            ))
           return {
             data: yield* (yield* PermissionSaved.Service).list({
-              projectID: ctx.query.projectID ?? location.project.id,
+              projectID,
             }),
           }
         }),

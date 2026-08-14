@@ -8,24 +8,29 @@ import { InstructionContext } from "../instruction-context"
 import { SystemContextRegistry } from "./registry"
 import { FSUtil } from "../fs-util"
 import { Global } from "../global"
+import { ProjectResolution } from "../project-resolution"
 
 const builtIns = Layer.effectDiscard(
   Effect.gen(function* () {
     const location = yield* Location.Service
     const registry = yield* SystemContextRegistry.Service
-    const environment = [
-      "<env>",
-      `  Working directory: ${location.directory}`,
-      `  Workspace root folder: ${location.project.directory}`,
-      `  Is directory a git repo: ${location.vcs?.type === "git" ? "yes" : "no"}`,
-      `  Platform: ${process.platform}`,
-      "</env>",
-    ].join("\n")
+    const resolution = yield* ProjectResolution.Service
+    const environment = Effect.gen(function* () {
+      const ready = yield* resolution.awaitReady()
+      return [
+        "<env>",
+        `  Working directory: ${location.directory}`,
+        `  Workspace root folder: ${ready.project.directory}`,
+        `  Is directory a git repo: ${ready.project.vcs?.type === "git" ? "yes" : "no"}`,
+        `  Platform: ${process.platform}`,
+        "</env>",
+      ].join("\n")
+    }).pipe(Effect.catch(() => Effect.succeed(SystemContext.unavailable)))
     const context = SystemContext.combine([
       SystemContext.make({
         key: SystemContext.Key.make("core/environment"),
         codec: Schema.toCodecJson(Schema.String),
-        load: Effect.succeed(environment),
+        load: environment,
         baseline: (environment) =>
           ["Here is some useful information about the environment you are running in:", environment].join("\n"),
         update: (_previous, environment) => ["The environment you are running in is now:", environment].join("\n"),
@@ -46,5 +51,12 @@ const builtIns = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "system-context-builtins",
   layer: builtIns,
-  deps: [Location.node, SystemContextRegistry.node, InstructionContext.node, FSUtil.node, Global.node],
+  deps: [
+    Location.node,
+    SystemContextRegistry.node,
+    InstructionContext.node,
+    FSUtil.node,
+    Global.node,
+    ProjectResolution.node,
+  ],
 })

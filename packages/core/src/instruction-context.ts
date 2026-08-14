@@ -10,6 +10,7 @@ import { AbsolutePath } from "./schema"
 import { SystemContext } from "./system-context/index"
 import { SystemContextRegistry } from "./system-context/registry"
 import { makeLocationNode } from "./effect/app-node"
+import { ProjectResolution } from "./project-resolution"
 
 class File extends Schema.Class<File>("InstructionContext.File")({
   path: AbsolutePath,
@@ -25,6 +26,7 @@ const layer = Layer.effectDiscard(
     const global = yield* Global.Service
     const location = yield* Location.Service
     const registry = yield* SystemContextRegistry.Service
+    const resolution = yield* ProjectResolution.Service
 
     const source = (value: ReadonlyArray<File> | SystemContext.Unavailable) =>
       SystemContext.make({
@@ -39,7 +41,8 @@ const layer = Layer.effectDiscard(
 
     const observe = Effect.fn("InstructionContext.observe")(function* () {
       const start = yield* fs.resolve(location.directory)
-      const stop = yield* fs.resolve(location.project.directory)
+      const ready = yield* resolution.awaitReady()
+      const stop = yield* fs.resolve(ready.project.directory)
       const fromProject = relative(stop, start)
       const insideProject =
         fromProject === "" || (fromProject !== ".." && !fromProject.startsWith(`..${sep}`) && !isAbsolute(fromProject))
@@ -93,7 +96,13 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "instruction-context",
   layer,
-  deps: [FSUtil.node, Global.node, Location.node, SystemContextRegistry.node],
+  deps: [
+    FSUtil.node,
+    Global.node,
+    Location.node,
+    SystemContextRegistry.node,
+    ProjectResolution.node,
+  ],
 })
 
 function render(files: ReadonlyArray<File>) {

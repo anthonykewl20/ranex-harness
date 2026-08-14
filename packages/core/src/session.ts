@@ -32,7 +32,7 @@ import { LocationServiceMap } from "./location-service-map"
 import { MessageDecodeError } from "./session/error"
 import { SessionEvent } from "./session/event"
 import { SessionInput } from "./session/input"
-import { Snapshot } from "./snapshot"
+import type { Snapshot } from "./snapshot"
 import { SessionRevert } from "./session/revert"
 import { Revert } from "@ranex/schema/revert"
 import { FSUtil } from "./fs-util"
@@ -187,7 +187,6 @@ const layer = Layer.effect(
     const database = yield* Database.Service
     const db = database.db
     const events = yield* EventV2.Service
-    const projects = yield* ProjectV2.Service
     const execution = yield* SessionExecution.Service
     const store = yield* SessionStore.Service
     const locations = yield* LocationServiceMap.Service
@@ -209,7 +208,11 @@ const layer = Layer.effect(
         const sessionID = input.id ?? SessionSchema.ID.create()
         const recorded = yield* store.get(sessionID)
         if (recorded) return recorded
-        const project = yield* projects.resolve(input.location.directory)
+        const project = yield* Effect.gen(function* () {
+          const { ProjectResolution } = yield* Effect.promise(() => import("./project-resolution"))
+          const resolution = yield* ProjectResolution.Service
+          return (yield* resolution.awaitReady()).project
+        }).pipe(Effect.provide(locations.get(input.location)), Effect.orDie)
         yield* db
           .insert(ProjectTable)
           .values({ id: project.id, worktree: project.directory, vcs: project.vcs?.type, sandboxes: [] })
@@ -477,7 +480,6 @@ export const node = makeGlobalNode({
   deps: [
     Database.node,
     EventV2.node,
-    ProjectV2.node,
     SessionExecution.node,
     SessionStore.node,
     LocationServiceMap.node,

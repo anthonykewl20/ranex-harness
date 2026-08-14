@@ -5,11 +5,15 @@ import { makeLocationNode } from "../../effect/app-node"
 import { Config } from "../../config"
 import { ConfigProviderWatchdog } from "../../config/provider-watchdog"
 
-export interface Interface {
+export interface Settings {
   /** Per-pull idle deadline, applied AFTER the first chunk, that resets on every chunk. `undefined` disables idle. */
   readonly idle: Duration.Input | undefined
   /** Absolute budget for one provider turn (one llm.stream call). `undefined` disables it. */
   readonly absolute: Duration.Input | undefined
+}
+
+export interface Interface {
+  readonly settings: () => Effect.Effect<Settings>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/ProviderWatchdog") {}
@@ -34,22 +38,25 @@ export const defaultLayer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
-    const entries = yield* config.entries()
-    const values = entries
-      .filter((entry): entry is Config.Document => entry.type === "document")
-      .flatMap((entry) => (entry.info.provider_watchdog ? [entry.info.provider_watchdog] : []))
-      .reduce<{ readonly idle: number; readonly absolute: number }>(
-        (result, current) => ({
-          idle: current.idle_ms ?? result.idle,
-          absolute: current.absolute_ms ?? result.absolute,
-        }),
-        defaults,
-      )
-    yield* Schema.decodeUnknownEffect(ConfigProviderWatchdog.Info)({
-      idle_ms: values.idle,
-      absolute_ms: values.absolute,
-    }).pipe(Effect.orDie)
-    return Service.of(values)
+    return Service.of({
+      settings: Effect.fn("ProviderWatchdog.settings")(function* () {
+        const values = (yield* config.entries())
+          .filter((entry): entry is Config.Document => entry.type === "document")
+          .flatMap((entry) => (entry.info.provider_watchdog ? [entry.info.provider_watchdog] : []))
+          .reduce<{ readonly idle: number; readonly absolute: number }>(
+            (result, current) => ({
+              idle: current.idle_ms ?? result.idle,
+              absolute: current.absolute_ms ?? result.absolute,
+            }),
+            defaults,
+          )
+        yield* Schema.decodeUnknownEffect(ConfigProviderWatchdog.Info)({
+          idle_ms: values.idle,
+          absolute_ms: values.absolute,
+        }).pipe(Effect.orDie)
+        return values
+      }),
+    })
   }),
 )
 

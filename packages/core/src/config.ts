@@ -3,7 +3,7 @@ export * as Config from "./config"
 import { makeLocationNode } from "./effect/app-node"
 import path from "path"
 import { type ParseError, parse } from "jsonc-parser"
-import { Context, Effect, Layer, Option, Schema } from "effect"
+import { Context, Deferred, Effect, Layer, Option, Schema } from "effect"
 import { Permission } from "@ranex/schema/permission"
 import { FSUtil } from "./fs-util"
 import { Global } from "./global"
@@ -21,6 +21,7 @@ import { ConfigMCP } from "./config/mcp"
 import { ConfigPlugin } from "./config/plugin"
 import { ConfigProvider } from "./config/provider"
 import { ConfigProviderWatchdog } from "./config/provider-watchdog"
+import { ConfigProjectResolution } from "./config/project-resolution"
 import { ConfigReference } from "./config/reference"
 import { ConfigToolOutput } from "./config/tool-output"
 import { ConfigWatcher } from "./config/watcher"
@@ -35,7 +36,6 @@ const CONFIG_DIRECTORY = ".ranex"
 const LEGACY_CONFIG_DIRECTORY = ".opencode"
 const isConfigDirectory = (name: string) =>
   name === CONFIG_DIRECTORY || name === LEGACY_CONFIG_DIRECTORY
-
 
 export class Info extends Schema.Class<Info>("Config.Info")({
   $schema: Schema.optional(Schema.String).annotate({
@@ -101,6 +101,9 @@ export class Info extends Schema.Class<Info>("Config.Info")({
   provider_watchdog: ConfigProviderWatchdog.Info.pipe(Schema.optional).annotate({
     description: "Provider stream inactivity and whole-turn watchdog timeouts",
   }),
+  project_resolution: ConfigProjectResolution.Info.pipe(Schema.optional).annotate({
+    description: "Project and VCS resolution readiness deadline",
+  }),
   skills: Schema.String.pipe(Schema.Array, Schema.optional).annotate({
     description: "Additional paths or URLs to discover skills from",
   }),
@@ -142,6 +145,12 @@ export function latest<K extends keyof Info>(entries: readonly Entry[], key: K):
 export interface Interface {
   /** Returns location config documents and supplemental directories from lowest to highest priority. */
   readonly entries: () => Effect.Effect<Entry[]>
+  /** Returns global-only entries for services that participate in project resolution itself. */
+  readonly bootstrapEntries?: () => Effect.Effect<Entry[]>
+  /** Installs the correctly bounded project config after asynchronous project resolution. */
+  readonly loadProject?: (directory: AbsolutePath) => Effect.Effect<void, FSUtil.Error>
+  /** Settles configuration to its global-only fallback when resolution fails. */
+  readonly loadFallback?: () => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Config") {}
@@ -187,48 +196,63 @@ const layer = Layer.effect(
 
     const globalDirectory = AbsolutePath.make(global.config)
     const locationIsGlobal = path.resolve(location.directory) === path.resolve(global.config)
-    // Read configuration once when this location opens. Later calls reuse these
-    // values until the location is reopened.
-    const discovered = locationIsGlobal
-      ? []
-      : yield* fs
-          .up({
-            targets: [CONFIG_DIRECTORY, LEGACY_CONFIG_DIRECTORY, ...names.toReversed()],
-            start: location.directory,
-            stop: location.project.directory,
-          })
-          .pipe(Effect.orDie)
-    const directories = [
-      globalDirectory,
-      ...discovered
+    const globalEntries = yield* loadDirectory(globalDirectory).pipe(Effect.orDie)
+    const ready = yield* Deferred.make<Entry[]>()
+    const state = { entries: globalEntries, projectDirectory: undefined as AbsolutePath | undefined }
+    const loadPolicy = (entries: Entry[]) =>
+      policy.load(
+        entries
+          .filter((config): config is Document => config.type === "document")
+          .toReversed()
+          .flatMap((config) => config.info.experimental?.policies ?? []),
+      )
+    if (locationIsGlobal) {
+      yield* loadPolicy(globalEntries)
+      yield* Deferred.succeed(ready, globalEntries)
+    }
+
+    const loadProject = Effect.fn("Config.loadProject")(function* (projectDirectory: AbsolutePath) {
+      if (locationIsGlobal || state.projectDirectory === projectDirectory) return
+      const discovered = yield* fs.up({
+        targets: [CONFIG_DIRECTORY, LEGACY_CONFIG_DIRECTORY, ...names.toReversed()],
+        start: location.directory,
+        stop: projectDirectory,
+      })
+      const directories = discovered
         .filter((item) => isConfigDirectory(path.basename(item)))
         .toReversed()
-        .map((directory) => AbsolutePath.make(directory)),
-    ]
-    // A config closer to the opened directory should win over one higher up.
-    // Search starts nearby, so reverse the results before applying them.
-    const directPaths = discovered.filter((item) => !isConfigDirectory(path.basename(item))).toReversed()
-    const direct = yield* Effect.forEach(directPaths, loadFile).pipe(
-      Effect.orDie,
-      Effect.map((configs) => configs.filter((config): config is Document => config !== undefined)),
-    )
-    const supplementary = yield* Effect.forEach(directories, loadDirectory).pipe(Effect.orDie)
-    // Apply general settings first and more specific settings last:
-    // global config, project files, then config-directory files.
-    const configs = [...(supplementary[0] ?? []), ...direct, ...supplementary.slice(1).flat()]
-    // Rules use the opposite order so a user-global rule can override a
-    // repository rule. Statement order inside each file stays unchanged.
-    yield* policy.load(
-      configs
-        .filter((config): config is Document => config.type === "document")
-        .toReversed()
-        .flatMap((config) => config.info.experimental?.policies ?? []),
-    )
+        .map((directory) => AbsolutePath.make(directory))
+      // A config closer to the opened directory should win over one higher up.
+      // Search starts nearby, so reverse the results before applying them.
+      const direct = yield* Effect.forEach(
+        discovered.filter((item) => !isConfigDirectory(path.basename(item))).toReversed(),
+        loadFile,
+      ).pipe(Effect.map((configs) => configs.filter((config): config is Document => config !== undefined)))
+      const supplementary = yield* Effect.forEach(directories, loadDirectory)
+      // Apply general settings first and more specific settings last:
+      // global config, project files, then config-directory files.
+      const entries = [...globalEntries, ...direct, ...supplementary.flat()]
+      yield* loadPolicy(entries)
+      state.entries = entries
+      state.projectDirectory = projectDirectory
+      yield* Deferred.succeed(ready, entries)
+    })
+
+    const loadFallback = Effect.fn("Config.loadFallback")(function* () {
+      if (state.projectDirectory) return
+      yield* loadPolicy(globalEntries)
+      state.entries = globalEntries
+      yield* Deferred.succeed(ready, globalEntries)
+    })
 
     return Service.of({
       entries: Effect.fn("Config.entries")(function* () {
-        return configs
+        yield* Deferred.await(ready)
+        return state.entries
       }),
+      bootstrapEntries: () => Effect.succeed(globalEntries),
+      loadProject,
+      loadFallback,
     })
   }),
 )

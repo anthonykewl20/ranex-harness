@@ -4,6 +4,7 @@ import { LocationServiceMap, locationServiceMapLayer } from "@ranex/core/locatio
 import { Ripgrep } from "@ranex/core/ripgrep"
 import { FSUtil } from "@ranex/core/fs-util"
 import { Location } from "@ranex/core/location"
+import { ProjectResolution } from "@ranex/core/project-resolution"
 import { AbsolutePath, RelativePath } from "@ranex/core/schema"
 import { Effect, Layer, Option } from "effect"
 import ignore from "ignore"
@@ -70,13 +71,19 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
           const fs = yield* FileSystem.Service
           const raw = yield* FSUtil.Service
           const location = yield* Location.Service
+          const resolution = yield* ProjectResolution.Service
+          // Ignore rules are auxiliary; the location directory is a safe fallback root for this listing.
+          const projectDirectory = yield* resolution.awaitReady().pipe(
+            Effect.map((ready) => ready.project.directory),
+            Effect.catch(() => Effect.succeed(location.directory)),
+          )
           const ignored = ignore()
           const gitignore = yield* raw
-            .readFileString(path.join(location.project.directory, ".gitignore"))
+            .readFileString(path.join(projectDirectory, ".gitignore"))
             .pipe(Effect.catch(() => Effect.succeed("")))
           if (gitignore) ignored.add(gitignore)
           const ignorefile = yield* raw
-            .readFileString(path.join(location.project.directory, ".ignore"))
+            .readFileString(path.join(projectDirectory, ".ignore"))
             .pipe(Effect.catch(() => Effect.succeed("")))
           if (ignorefile) ignored.add(ignorefile)
           return (yield* fs.list({ path: RelativePath.make(ctx.query.path) })).map((item) => ({
@@ -85,7 +92,7 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
             absolute: path.resolve(location.directory, item.path),
             type: item.type,
             ignored: ignored.ignores(
-              path.relative(location.project.directory, path.resolve(location.directory, item.path)) +
+              path.relative(projectDirectory, path.resolve(location.directory, item.path)) +
                 (item.type === "directory" ? "/" : ""),
             ),
           }))

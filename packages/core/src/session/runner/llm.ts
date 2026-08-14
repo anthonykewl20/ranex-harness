@@ -122,9 +122,8 @@ const layer = Layer.effect(
     const referenceGuidance = yield* ReferenceGuidance.Service
     const config = yield* Config.Service
     const snapshots = yield* Snapshot.Service
-    const watchdog = yield* ProviderWatchdog.Service
+    const providerWatchdog = yield* ProviderWatchdog.Service
     const db = (yield* Database.Service).db
-    const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
     const getSession = Effect.fn("SessionRunner.getSession")(function* (sessionID: SessionSchema.ID) {
       const session = yield* store.get(sessionID)
       if (!session) return yield* Effect.die(`Session not found: ${sessionID}`)
@@ -194,11 +193,13 @@ const layer = Layer.effect(
       step: number,
       attempt: number,
       recoveryAttempts: number,
-      recoverOverflow?: typeof compaction.compactAfterOverflow,
+      allowOverflowRecovery = false,
     ) {
       const session = yield* getSession(sessionID)
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
         return yield* Effect.interrupt
+      const watchdog = yield* providerWatchdog.settings()
+      const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
       const agent = yield* agents.select(session.agent)
       const initialized = yield* SessionContextEpoch.initialize(db, loadSystemContext(agent), session.id)
       const toolFibers = yield* FiberSet.make<void, ToolOutputStore.Error>()
@@ -357,10 +358,10 @@ const layer = Layer.effect(
           const failure =
             stream._tag === "Failure" ? Option.getOrUndefined(Cause.findErrorOption(stream.cause)) : undefined
           if (
-            recoverOverflow &&
+            allowOverflowRecovery &&
             !publisher.hasAssistantStarted() &&
             isContextOverflowFailure(overflowFailure ?? failure) &&
-            (yield* restore(recoverOverflow({ sessionID: session.id, entries, model, request })))
+            (yield* restore(compaction.compactAfterOverflow({ sessionID: session.id, entries, model, request })))
           )
             return yield* Effect.die(continueAfterOverflowCompaction(currentStep))
           if (overflowFailure) yield* publish(overflowFailure)
@@ -570,7 +571,7 @@ const layer = Layer.effect(
         step,
         attempt,
         recoveryAttempts,
-        compaction.compactAfterOverflow,
+        true,
       ).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {

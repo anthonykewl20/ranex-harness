@@ -4,7 +4,9 @@ import { describe, expect } from "bun:test"
 import { Cause, Effect, Exit, Layer, Schema } from "effect"
 import { FastCheck } from "effect/testing"
 import { Config } from "@ranex/core/config"
+import { ConfigAgentPlugin } from "@ranex/core/config/plugin/agent"
 import { ConfigProvider } from "@ranex/core/config/provider"
+import { AgentV2 } from "@ranex/core/agent"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { ConfigMigrateV1 } from "@ranex/core/v1/config/migrate"
@@ -14,11 +16,11 @@ import { FSUtil } from "@ranex/core/fs-util"
 import { Global } from "@ranex/core/global"
 import { Location } from "@ranex/core/location"
 import { Policy } from "@ranex/core/policy"
-import { Project } from "@ranex/core/project"
 import { AbsolutePath } from "@ranex/core/schema"
 import { location } from "../fixture/location"
 import { tmpdir } from "../fixture/tmpdir"
 import { testEffect } from "../lib/effect"
+import { agentHost, host } from "../plugin/host"
 
 const it = testEffect(Layer.empty)
 
@@ -26,21 +28,22 @@ function testLayer(
   directory: string,
   globalDirectory = path.join(directory, "global"),
   projectDirectory = directory,
-  vcs?: Project.Vcs,
 ) {
+  const project = AbsolutePath.make(projectDirectory)
   const locationLayer = Layer.succeed(
     Location.Service,
-    Location.Service.of(
-      location(
-        { directory: AbsolutePath.make(directory) },
-        { projectDirectory: AbsolutePath.make(projectDirectory), vcs },
-      ),
-    ),
+    Location.Service.of(location({ directory: AbsolutePath.make(directory) })),
   )
-  return AppNodeBuilder.build(LayerNode.group([Config.node, Policy.node]), [
+  const base = AppNodeBuilder.build(LayerNode.group([Config.node, Policy.node]), [
     [Location.node, locationLayer],
     [Global.node, Global.layerWith({ config: globalDirectory })],
   ])
+  return Layer.effectDiscard(
+    Effect.gen(function* () {
+      const config = yield* Config.Service
+      if (config.loadProject) yield* config.loadProject(project).pipe(Effect.orDie)
+    }),
+  ).pipe(Layer.provideMerge(base))
 }
 
 const provider = {
@@ -222,6 +225,61 @@ describe("Config", () => {
             new Config.Directory({ type: "directory", path: AbsolutePath.make(path.join(tmp.path, "global")) }),
           ])
         }).pipe(Effect.provide(testLayer(tmp.path))),
+      ),
+    ),
+  )
+
+  it.live("refreshes fallback entries after project resolution recovers", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const global = path.join(tmp.path, "global")
+          const project = path.join(tmp.path, "project")
+          const directory = path.join(project, "nested")
+          yield* Effect.promise(async () => {
+            await Promise.all([fs.mkdir(global, { recursive: true }), fs.mkdir(directory, { recursive: true })])
+            await fs.writeFile(
+              path.join(project, "ranex.json"),
+              JSON.stringify({ permissions: [{ action: "edit", resource: "*", effect: "deny" }] }),
+            )
+          })
+          const locationLayer = Layer.succeed(
+            Location.Service,
+            Location.Service.of(location({ directory: AbsolutePath.make(directory) })),
+          )
+          const services = AppNodeBuilder.build(
+            LayerNode.group([Config.node, Policy.node, AgentV2.node, FSUtil.node, Global.node]),
+            [
+              [Location.node, locationLayer],
+              [Global.node, Global.layerWith({ config: global })],
+            ],
+          )
+          return yield* Effect.gen(function* () {
+            const config = yield* Config.Service
+            const agents = yield* AgentV2.Service
+            if (config.loadFallback) yield* config.loadFallback()
+            expect((yield* config.entries()).filter((entry) => entry.type === "document")).toHaveLength(0)
+
+            if (config.loadProject) yield* config.loadProject(AbsolutePath.make(project)).pipe(Effect.orDie)
+            const entries = yield* config.entries()
+            expect(
+              entries
+                .filter((entry): entry is Config.Document => entry.type === "document")
+                .flatMap((entry) => entry.info.permissions ?? []),
+            ).toEqual([{ action: "edit", resource: "*", effect: "deny" }])
+
+            yield* agents.transform((draft) => draft.update(AgentV2.defaultID, () => {}))
+            yield* ConfigAgentPlugin.Plugin.effect(host({ agent: agentHost(agents) }))
+            expect((yield* agents.get(AgentV2.defaultID))?.permissions).toContainEqual({
+              action: "edit",
+              resource: "*",
+              effect: "deny",
+            })
+          }).pipe(Effect.provide(services))
+        }),
       ),
     ),
   )
@@ -834,10 +892,7 @@ describe("Config", () => {
             ])
           }).pipe(
             Effect.provide(
-              testLayer(directory, global, root, {
-                type: "git",
-                store: AbsolutePath.make(path.join(root, ".git")),
-              }),
+              testLayer(directory, global, root),
             ),
           )
         })

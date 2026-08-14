@@ -8,10 +8,11 @@ import { FSUtil } from "@ranex/core/fs-util"
 import { Global } from "@ranex/core/global"
 import { InstructionContext } from "@ranex/core/instruction-context"
 import { Location } from "@ranex/core/location"
+import { ProjectResolution } from "@ranex/core/project-resolution"
 import { AbsolutePath } from "@ranex/core/schema"
 import { SystemContext } from "@ranex/core/system-context"
 import { SystemContextRegistry } from "@ranex/core/system-context/registry"
-import { location } from "./fixture/location"
+import { location, projectResolutionLayer } from "./fixture/location"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
@@ -19,12 +20,19 @@ const it = testEffect(Layer.empty)
 
 const instructionLayer = (input: {
   config: string
-  locationServiceLayer: Layer.Layer<Location.Service>
+  location: Location.Interface
+  projectDirectory?: AbsolutePath
   filesystemLayer?: Layer.Layer<FSUtil.Service>
 }) =>
   AppNodeBuilder.build(LayerNode.group([SystemContextRegistry.node, InstructionContext.node]), [
     [Global.node, Global.layerWith({ config: input.config })],
-    [Location.node, input.locationServiceLayer],
+    [Location.node, Layer.succeed(Location.Service, Location.Service.of(input.location))],
+    [
+      ProjectResolution.node,
+      projectResolutionLayer(input.location, {
+        projectDirectory: input.projectDirectory ?? input.location.directory,
+      }),
+    ],
     ...(input.filesystemLayer ? [[FSUtil.node, input.filesystemLayer] as const] : []),
   ])
 
@@ -57,15 +65,8 @@ describe("InstructionContext", () => {
             Effect.provide(
               instructionLayer({
                 config: global,
-                locationServiceLayer: Layer.succeed(
-                  Location.Service,
-                  Location.Service.of(
-                    location(
-                      { directory: AbsolutePath.make(directory) },
-                      { projectDirectory: AbsolutePath.make(project) },
-                    ),
-                  ),
-                ),
+                location: location({ directory: AbsolutePath.make(directory) }),
+                projectDirectory: AbsolutePath.make(project),
               }),
             ),
           )
@@ -123,10 +124,7 @@ describe("InstructionContext", () => {
             Effect.provide(
               instructionLayer({
                 config: path.join(tmp.path, "global"),
-                locationServiceLayer: Layer.succeed(
-                  Location.Service,
-                  Location.Service.of(location({ directory: AbsolutePath.make(tmp.path) })),
-                ),
+                location: location({ directory: AbsolutePath.make(tmp.path) }),
               }),
             ),
           )
@@ -153,10 +151,7 @@ describe("InstructionContext", () => {
           instructionLayer({
             config: "/global",
             filesystemLayer: failingFS,
-            locationServiceLayer: Layer.succeed(
-              Location.Service,
-              Location.Service.of(location({ directory: AbsolutePath.make("/repo") })),
-            ),
+            location: location({ directory: AbsolutePath.make("/repo") }),
           }),
         ),
       )
@@ -193,10 +188,7 @@ describe("InstructionContext", () => {
           instructionLayer({
             config: "/global",
             filesystemLayer: racingFS,
-            locationServiceLayer: Layer.succeed(
-              Location.Service,
-              Location.Service.of(location({ directory: AbsolutePath.make("/repo") })),
-            ),
+            location: location({ directory: AbsolutePath.make("/repo") }),
           }),
         ),
       )
@@ -237,12 +229,8 @@ describe("InstructionContext", () => {
           instructionLayer({
             config: "/global",
             filesystemLayer: observingFS,
-            locationServiceLayer: Layer.succeed(
-              Location.Service,
-              Location.Service.of(
-                location({ directory: AbsolutePath.make("/repo/") }, { projectDirectory: AbsolutePath.make("/repo") }),
-              ),
-            ),
+            location: location({ directory: AbsolutePath.make("/repo/") }),
+            projectDirectory: AbsolutePath.make("/repo"),
           }),
         ),
       )
@@ -272,10 +260,7 @@ describe("InstructionContext", () => {
                 Effect.map((fs) => FSUtil.Service.of({ ...fs, up: () => Effect.sync(() => ((scanned = true), [])) })),
               ),
             ).pipe(Layer.provide(LayerNode.compile(FSUtil.node))),
-            locationServiceLayer: Layer.succeed(
-              Location.Service,
-              Location.Service.of(location({ directory: AbsolutePath.make("/repo") })),
-            ),
+            location: location({ directory: AbsolutePath.make("/repo") }),
           }),
         ),
         Effect.ensuring(
@@ -304,15 +289,8 @@ describe("InstructionContext", () => {
                 Effect.map((fs) => FSUtil.Service.of({ ...fs, up: () => Effect.sync(() => ((scanned = true), [])) })),
               ),
             ).pipe(Layer.provide(LayerNode.compile(FSUtil.node))),
-            locationServiceLayer: Layer.succeed(
-              Location.Service,
-              Location.Service.of(
-                location(
-                  { directory: AbsolutePath.make("/outside") },
-                  { projectDirectory: AbsolutePath.make("/repo") },
-                ),
-              ),
-            ),
+            location: location({ directory: AbsolutePath.make("/outside") }),
+            projectDirectory: AbsolutePath.make("/repo"),
           }),
         ),
       )

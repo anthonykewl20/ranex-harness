@@ -16,7 +16,8 @@ import { PluginV2 } from "@ranex/core/plugin"
 import { Reference } from "@ranex/core/reference"
 import { SkillV2 } from "@ranex/core/skill"
 import { Effect, Layer } from "effect"
-import { tempLocationLayer } from "../fixture/location"
+import { readyPolicyNode, tempLocationLayer } from "../fixture/location"
+import { Policy } from "@ranex/core/policy"
 
 const npmLayer = Layer.succeed(
   Npm.Service,
@@ -48,5 +49,6 @@ export const PluginTestLayer = AppNodeBuilder.build(
   [
     [Location.node, tempLocationLayer],
     [Npm.node, npmLayer],
+    [Policy.node, readyPolicyNode],
   ],
 )

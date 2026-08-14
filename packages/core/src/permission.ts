@@ -5,6 +5,7 @@ import { Context, Deferred, Effect as EffectRuntime, Layer, Schema } from "effec
 import { Permission } from "@ranex/schema/permission"
 import { EventV2 } from "./event"
 import { Location } from "./location"
+import { ProjectResolution } from "./project-resolution"
 import { AgentV2 } from "./agent"
 import { SessionV2 } from "./session"
 import { SessionStore } from "./session/store"
@@ -81,15 +82,24 @@ export class SettlementError extends Schema.TaggedErrorClass<SettlementError>()(
 
 export type Error = BlockedError | CorrectedError
 
+// Bash approval rules never match when either side carries shell control characters, so
+// compound or piped commands cannot inherit a prefix approval and fall through to ask.
+const bashControlChars = /[;|&`\n]/
+
 export function evaluate(action: string, resource: string, ...rulesets: Permission.Ruleset[]): Permission.Rule {
   return (
     rulesets
       .flat()
-      .findLast((rule) => Wildcard.match(action, rule.action) && Wildcard.match(resource, rule.resource)) ?? {
-      action,
-      resource: "*",
-      effect: "ask",
-    }
+      .findLast(
+        (rule) =>
+          Wildcard.match(action, rule.action) &&
+          Wildcard.match(resource, rule.resource) &&
+          !(action === "bash" && (bashControlChars.test(rule.resource) || bashControlChars.test(resource))),
+      ) ?? {
+        action,
+        resource: "*",
+        effect: "ask",
+      }
   )
 }
 
@@ -119,6 +129,7 @@ const layer = Layer.effect(
   EffectRuntime.gen(function* () {
     const events = yield* EventV2.Service
     const location = yield* Location.Service
+    const resolution = yield* ProjectResolution.Service
     const agents = yield* AgentV2.Service
     const sessions = yield* SessionStore.Service
     const saved = yield* PermissionSaved.Service
@@ -157,7 +168,9 @@ const layer = Layer.effect(
     )
 
     const savedRules = EffectRuntime.fnUntraced(function* () {
-      return (yield* saved.list({ projectID: location.project.id })).map(
+      const ready = yield* resolution.awaitReady().pipe(EffectRuntime.catch(() => EffectRuntime.succeed(undefined)))
+      if (!ready) return []
+      return (yield* saved.list({ projectID: ready.project.id })).map(
         (item): Permission.Rule => ({ action: item.action, resource: item.resource, effect: "allow" }),
       )
     })
@@ -301,7 +314,18 @@ const layer = Layer.effect(
           if (!existing) return yield* new NotFoundError({ requestID: input.requestID })
 
           const save = input.reply === "always" ? existing.request.save : undefined
-          const won = save?.length
+          const projectID = save?.length
+            ? (
+                yield* resolution
+                .awaitReady()
+                .pipe(
+                  EffectRuntime.catch(() =>
+                    EffectRuntime.fail(new SettlementError({ requestID: input.requestID })),
+                  ),
+                )
+              ).project.id
+            : undefined
+          const won = save?.length && projectID
             ? yield* db
                 .transaction((tx) =>
                   EffectRuntime.gen(function* () {
@@ -313,7 +337,7 @@ const layer = Layer.effect(
                     if (!claimed) return undefined
                     yield* saved.add(
                       {
-                        projectID: location.project.id,
+                        projectID,
                         action: existing.request.action,
                         resources: save,
                       },
@@ -444,5 +468,13 @@ export const locationLayer = layer.pipe(Layer.provideMerge(AgentV2.locationLayer
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [Database.node, EventV2.node, Location.node, AgentV2.node, SessionStore.node, PermissionSaved.node],
+  deps: [
+    Database.node,
+    EventV2.node,
+    Location.node,
+    AgentV2.node,
+    SessionStore.node,
+    PermissionSaved.node,
+    ProjectResolution.node,
+  ],
 })

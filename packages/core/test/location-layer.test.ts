@@ -34,8 +34,23 @@ import { Reference } from "../src/reference"
 import { ToolRegistry } from "../src/tool/registry"
 import { ApplicationTools } from "../src/tool/application-tools"
 
+const projectLayer = Layer.succeed(
+  Project.Service,
+  Project.Service.of({
+    directories: () => Effect.succeed([]),
+    resolve: (directory) =>
+      Effect.succeed({ id: Project.ID.global, directory: AbsolutePath.make(path.parse(directory).root) }),
+    resolveStrict: (directory) =>
+      Effect.succeed({ id: Project.ID.global, directory: AbsolutePath.make(path.parse(directory).root) }),
+    commit: () => Effect.void,
+  }),
+)
+
 const it = testEffect(
-  AppNodeBuilder.build(LayerNode.group([ApplicationTools.node, Database.node, EventV2.node, LocationServiceMap.node])),
+  AppNodeBuilder.build(
+    LayerNode.group([ApplicationTools.node, Database.node, EventV2.node, LocationServiceMap.node]),
+    [[LocationServiceMap.node, buildLocationServiceMap([[Project.node, projectLayer]])]],
+  ),
 )
 
 const expiry = {
@@ -75,7 +90,13 @@ const expiryIt = testEffect(
       [Integration.node, integration],
       [
         LocationServiceMap.node,
-        buildLocationServiceMap([[Integration.node, integration]], { idleTimeToLive: "50 millis" }),
+        buildLocationServiceMap(
+          [
+            [Integration.node, integration],
+            [Project.node, projectLayer],
+          ],
+          { idleTimeToLive: "50 millis" },
+        ),
       ],
     ],
   ),

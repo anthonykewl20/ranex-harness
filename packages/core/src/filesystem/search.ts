@@ -12,6 +12,7 @@ import { LocationLifecycle } from "../location-lifecycle"
 import { Ripgrep } from "../ripgrep"
 import { RelativePath } from "../schema"
 import { Flag } from "../flag/flag"
+import { ProjectResolution } from "../project-resolution"
 
 export interface Interface {
   readonly find: (input: FileSystem.FindInput) => Effect.Effect<FileSystem.Entry[]>
@@ -28,17 +29,19 @@ export const ripgrepLayer = Layer.effect(
     const location = yield* Location.Service
     const ripgrep = yield* Ripgrep.Service
     const scope = yield* Scope.Scope
+    const resolution = yield* ProjectResolution.Service
     const state = {
       files: [] as string[],
       directories: [] as string[],
     }
     const directories = new Set<string>()
     yield* LocationLifecycle.track("fiber", "filesystem-search")
-    yield* ripgrep
-      .find({
+    yield* Effect.gen(function* () {
+      const ready = yield* resolution.awaitReady().pipe(Effect.catch(() => Effect.succeed(undefined)))
+      yield* ripgrep.find({
         cwd: location.directory,
         pattern: "*",
-        limit: location.vcs ? Number.MAX_SAFE_INTEGER : 100_000,
+        limit: ready?.project.vcs ? Number.MAX_SAFE_INTEGER : 100_000,
         onEntry: (entry) =>
           Effect.sync(() => {
             state.files.push(entry.path)
@@ -47,7 +50,7 @@ export const ripgrepLayer = Layer.effect(
             state.directories = Array.from(directories)
           }),
       })
-      .pipe(Effect.orDie, Effect.asVoid, Effect.forkIn(scope))
+    }).pipe(Effect.orDie, Effect.forkIn(scope))
     return Service.of({
       glob: (input) =>
         Effect.gen(function* () {
@@ -238,4 +241,8 @@ const layer = Layer.unwrap(Effect.sync(() => (Flag.RANEX_DISABLE_FFF || !Fff.ava
 
 export const locationLayer = layer
 
-export const node = makeLocationNode({ service: Service, layer, deps: [FSUtil.node, Location.node, Ripgrep.node] })
+export const node = makeLocationNode({
+  service: Service,
+  layer,
+  deps: [FSUtil.node, Location.node, Ripgrep.node, ProjectResolution.node],
+})

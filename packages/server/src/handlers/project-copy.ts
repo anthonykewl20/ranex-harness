@@ -1,4 +1,4 @@
-import { Location } from "@ranex/core/location"
+import { ProjectResolution } from "@ranex/core/project-resolution"
 import { ProjectCopy } from "@ranex/core/project/copy"
 import { Git } from "@ranex/core/git"
 import { Effect } from "effect"
@@ -12,12 +12,23 @@ export const ProjectCopyHandler = HttpApiBuilder.group(Api, "server.projectCopy"
       .handle("projectCopy.create", (ctx) =>
         Effect.gen(function* () {
           const copies = yield* ProjectCopy.Service
-          const location = yield* Location.Service
+          const resolution = yield* ProjectResolution.Service
+          // A copy needs the actual source root, so surface the resolution's bounded failure through its existing error.
+          const sourceDirectory = yield* resolution.awaitReady().pipe(
+            Effect.map((ready) => ready.project.directory),
+            Effect.mapError(
+              (error) =>
+                new ProjectCopyError({
+                  name: "ProjectCopyError",
+                  data: { message: `Project resolution failed: ${error._tag}`, forceRequired: undefined },
+                }),
+            ),
+          )
           return yield* badRequest(
             copies.create({
               ...ctx.payload,
               projectID: ctx.params.projectID,
-              sourceDirectory: location.project.directory,
+              sourceDirectory,
             }),
           )
         }),

@@ -83,6 +83,12 @@ function projectV2FailureLayer() {
           directory: input,
           vcs: { type: "git" as const, store: input },
         }),
+      resolveStrict: (input) =>
+        Effect.succeed({
+          id: ProjectV2.ID.global,
+          directory: input,
+          vcs: { type: "git" as const, store: input },
+        }),
       commit: () => Effect.void,
     }),
   )

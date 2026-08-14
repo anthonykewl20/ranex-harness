@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import path from "path"
-import { Effect, Layer, Stream } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import { AgentV2 } from "@ranex/core/agent"
 import { asc, eq } from "drizzle-orm"
 import { Database } from "@ranex/core/database/database"
@@ -8,9 +8,12 @@ import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { EventV2 } from "@ranex/core/event"
 import { EventTable } from "@ranex/core/event/sql"
+import { FSUtil } from "@ranex/core/fs-util"
 import { Location } from "@ranex/core/location"
+import { LocationServiceMap } from "@ranex/core/location-service-map"
 import { ModelV2 } from "@ranex/core/model"
 import { ProjectV2 } from "@ranex/core/project"
+import { ProjectResolution } from "@ranex/core/project-resolution"
 import { ProjectTable } from "@ranex/core/project/sql"
 import { ProviderV2 } from "@ranex/core/provider"
 import { AbsolutePath } from "@ranex/core/schema"
@@ -26,28 +29,56 @@ import { SessionStore } from "@ranex/core/session/store"
 import { WorkspaceV2 } from "@ranex/core/workspace"
 import { testEffect } from "./lib/effect"
 import { tmpdir } from "./fixture/tmpdir"
+import { projectResolutionServiceMapLayer, projectResolutionServiceMapWith } from "./fixture/location"
 
-const projects = Layer.succeed(
-  ProjectV2.Service,
-  ProjectV2.Service.of({
-    resolve: (directory) => Effect.succeed({ id: ProjectV2.ID.global, directory }),
-    directories: () => Effect.succeed([]),
-    commit: () => Effect.void,
-  }),
-)
-const it = testEffect(
-  AppNodeBuilder.build(
+const location = Location.Ref.make({ directory: AbsolutePath.make("/project") })
+
+function sessionLayer(locations: Layer.Layer<LocationServiceMap.Service>) {
+  return AppNodeBuilder.build(
     LayerNode.group([Database.node, EventV2.node, SessionProjector.node, SessionStore.node, SessionV2.node]),
     [
-      [ProjectV2.node, projects],
+      [LocationServiceMap.node, locations],
       [SessionExecution.node, SessionExecution.noopLayer],
     ],
-  ),
-)
-const location = Location.Ref.make({ directory: AbsolutePath.make("/project") })
+  )
+}
+
+const it = testEffect(sessionLayer(projectResolutionServiceMapLayer()))
 const id = SessionV2.ID.create()
 
 describe("SessionV2.create", () => {
+  testEffect(Layer.empty).effect("does not persist a project or Session while resolution loads or after it fails", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<ProjectResolution.Ready, ProjectResolution.Error>()
+      const failure = new ProjectResolution.FileSystemFailedError({
+        cause: new FSUtil.FileSystemError({ method: "up" }),
+      })
+      yield* Effect.gen(function* () {
+        const db = (yield* Database.Service).db
+        const session = yield* SessionV2.Service
+        const create = yield* session.create({ location }).pipe(Effect.exit, Effect.forkScoped)
+        yield* Effect.yieldNow
+
+        expect(yield* db.select().from(ProjectTable).all()).toEqual([])
+        expect(yield* db.select().from(SessionTable).all()).toEqual([])
+        yield* Deferred.fail(gate, failure)
+        expect(Exit.isFailure(yield* Fiber.join(create))).toBe(true)
+        expect(yield* db.select().from(ProjectTable).all()).toEqual([])
+        expect(yield* db.select().from(SessionTable).all()).toEqual([])
+      }).pipe(
+        Effect.provide(
+          sessionLayer(
+            projectResolutionServiceMapWith(() => ({
+              status: () => Effect.succeed({ status: "loading" }),
+              awaitReady: () => Deferred.await(gate),
+            })),
+          ),
+        ),
+        Effect.scoped,
+      )
+    }),
+  )
+
   it.effect("creates a fresh projected session when the ID is omitted", () =>
     Effect.gen(function* () {
       const session = yield* SessionV2.Service

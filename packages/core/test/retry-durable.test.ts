@@ -363,7 +363,10 @@ const config = Layer.succeed(
       ]),
   }),
 )
-const watchdog = Layer.succeed(ProviderWatchdog.Service, ProviderWatchdog.Service.of({ idle: undefined, absolute: undefined }))
+const watchdog = Layer.succeed(
+  ProviderWatchdog.Service,
+  ProviderWatchdog.Service.of({ settings: () => Effect.succeed({ idle: undefined, absolute: undefined }) }),
+)
 const runnerLayer = AppNodeBuilder.build(sessionRunnerNode, [
   [Snapshot.node, Snapshot.noopLayer],
   [LayerNodePlatform.llmClient, globalClient],

@@ -84,12 +84,7 @@ const watchdogConfig = {
 const watchdogLayer = Layer.succeed(
   ProviderWatchdog.Service,
   ProviderWatchdog.Service.of({
-    get idle() {
-      return watchdogConfig.idle
-    },
-    get absolute() {
-      return watchdogConfig.absolute
-    },
+    settings: () => Effect.succeed({ idle: watchdogConfig.idle, absolute: watchdogConfig.absolute }),
   }),
 )
 const client = Layer.succeed(
