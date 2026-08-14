@@ -9,6 +9,7 @@ import { Global } from "@ranex/core/global"
 import { MANAGED_DIRECTORY } from "@ranex/core/tool-output-store"
 import { ManagedOutput } from "@ranex/schema/managed-output"
 import { ServerEvent } from "@ranex/schema/server-event"
+import { EventStreamGeneration } from "@ranex/server/event-stream-generation"
 import { SessionEvent } from "@ranex/core/session/event"
 import { SessionMessage } from "@ranex/core/session/message"
 import { Context, DateTime, Effect, Schema } from "effect"
@@ -107,6 +108,12 @@ describe("v2 location HttpApi", () => {
   test("rejects relative event subscription directories", async () => {
     await using tmp = await tmpdir({ git: true })
     const response = await request("/api/event?directory=relative", tmp.path)
+    expect(response.status).toBe(400)
+  })
+
+  test("rejects invalid event subscription client IDs", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const response = await request("/api/event?clientID=not%20valid", tmp.path)
     expect(response.status).toBe(400)
   })
 
@@ -216,6 +223,138 @@ describe("v2 location HttpApi", () => {
             : undefined,
         ),
         "scoped SSE listener did not release after client disconnect",
+      )
+    }),
+  )
+
+  eventIt.live("supersedes an older tracked SSE generation and releases both listeners", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const listenerCount = events.listenerCount()
+      const diagnostics = EventStreamGeneration.diagnostics(events)
+      const first = eventStream(
+        (yield* Effect.promise(() => request(`/api/event?clientID=primary`, process.cwd()))).body!,
+      )
+      yield* Effect.addFinalizer(() => Effect.promise(() => first.return(undefined)).pipe(Effect.asVoid))
+      expect((yield* Effect.promise(() => readEvent(first))).type).toBe("server.connected")
+      const second = eventStream(
+        (yield* Effect.promise(() => request(`/api/event?clientID=primary`, process.cwd()))).body!,
+      )
+      yield* Effect.addFinalizer(() => Effect.promise(() => second.return(undefined)).pipe(Effect.asVoid))
+      expect((yield* Effect.promise(() => readEvent(second))).type).toBe("server.connected")
+      expect((yield* Effect.promise(() => readEvent(first))).type).toBe("server.superseded")
+      expect((yield* Effect.promise(() => first.next())).done).toBe(true)
+      yield* pollWithTimeout(
+        Effect.sync(() => {
+          const current = EventStreamGeneration.diagnostics(events)
+          return events.listenerCount() === listenerCount + 1 &&
+            events.diagnostics().activeSubscribers === 1 &&
+            current.activeGenerations === 1 &&
+            current.supersededStreams === diagnostics.supersededStreams + 1
+            ? true
+            : undefined
+        }),
+        "superseded SSE generation did not release",
+      )
+      yield* Effect.promise(() => second.return(undefined))
+      yield* pollWithTimeout(
+        Effect.sync(() => {
+          const current = EventStreamGeneration.diagnostics(events)
+          return events.listenerCount() === listenerCount &&
+            events.diagnostics().activeSubscribers === 0 &&
+            current.activeGenerations === diagnostics.activeGenerations
+            ? true
+            : undefined
+        }),
+        "tracked SSE generation did not release",
+      )
+    }),
+  )
+
+  eventIt.live("supersedes a tracked location-scoped SSE generation", () =>
+    Effect.gen(function* () {
+      const route = `/api/event?clientID=scoped&directory=${encodeURIComponent(process.cwd())}`
+      const first = eventStream((yield* Effect.promise(() => request(route, process.cwd()))).body!)
+      yield* Effect.addFinalizer(() => Effect.promise(() => first.return(undefined)).pipe(Effect.asVoid))
+      expect((yield* Effect.promise(() => readEvent(first))).type).toBe("server.connected")
+      const second = eventStream((yield* Effect.promise(() => request(route, process.cwd()))).body!)
+      yield* Effect.addFinalizer(() => Effect.promise(() => second.return(undefined)).pipe(Effect.asVoid))
+      expect((yield* Effect.promise(() => readEvent(second))).type).toBe("server.connected")
+      expect((yield* Effect.promise(() => readEvent(first))).type).toBe("server.superseded")
+      yield* Effect.promise(() => second.return(undefined))
+    }),
+  )
+
+  eventIt.live("does not deregister a tracked SSE successor when its superseded predecessor closes", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const first = eventStream(
+        (yield* Effect.promise(() => request(`/api/event?clientID=successor`, process.cwd()))).body!,
+      )
+      yield* Effect.addFinalizer(() => Effect.promise(() => first.return(undefined)).pipe(Effect.asVoid))
+      expect((yield* Effect.promise(() => readEvent(first))).type).toBe("server.connected")
+      const second = eventStream(
+        (yield* Effect.promise(() => request(`/api/event?clientID=successor`, process.cwd()))).body!,
+      )
+      yield* Effect.addFinalizer(() => Effect.promise(() => second.return(undefined)).pipe(Effect.asVoid))
+      expect((yield* Effect.promise(() => readEvent(second))).type).toBe("server.connected")
+      expect((yield* Effect.promise(() => readEvent(first))).type).toBe("server.superseded")
+      yield* Effect.promise(() => first.return(undefined))
+      const published = yield* events.publish(ServerEvent.Disposed, {})
+      expect(yield* Effect.promise(() => readEvent(second))).toMatchObject({ id: published.id, type: "global.disposed" })
+      expect(EventStreamGeneration.diagnostics(events).activeGenerations).toBe(1)
+      yield* Effect.promise(() => second.return(undefined))
+    }),
+  )
+
+  eventIt.live("atomically keeps one tracked SSE generation in a concurrent registration race", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const baseline = EventStreamGeneration.diagnostics(events)
+      const superseded = { count: 0 }
+      const first = { close: Effect.sync(() => void superseded.count++) }
+      const second = { close: Effect.sync(() => void superseded.count++) }
+      yield* Effect.all(
+        [
+          EventStreamGeneration.register(events, "race", first),
+          EventStreamGeneration.register(events, "race", second),
+        ],
+        { concurrency: "unbounded" },
+      )
+      expect(superseded.count).toBe(1)
+      expect(EventStreamGeneration.diagnostics(events)).toEqual({
+        supersededStreams: baseline.supersededStreams + 1,
+        activeGenerations: baseline.activeGenerations + 1,
+      })
+      yield* EventStreamGeneration.deregister(events, "race", first)
+      expect(EventStreamGeneration.diagnostics(events).activeGenerations).toBe(baseline.activeGenerations + 1)
+      yield* EventStreamGeneration.deregister(events, "race", second)
+      expect(EventStreamGeneration.diagnostics(events)).toEqual({
+        supersededStreams: baseline.supersededStreams + 1,
+        activeGenerations: baseline.activeGenerations,
+      })
+    }),
+  )
+
+  eventIt.live("leaves untracked SSE streams independent", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const listenerCount = events.listenerCount()
+      const generations = EventStreamGeneration.diagnostics(events)
+      const first = eventStream((yield* Effect.promise(() => request("/api/event", process.cwd()))).body!)
+      const second = eventStream((yield* Effect.promise(() => request("/api/event", process.cwd()))).body!)
+      yield* Effect.addFinalizer(() => Effect.promise(() => first.return(undefined)).pipe(Effect.asVoid))
+      yield* Effect.addFinalizer(() => Effect.promise(() => second.return(undefined)).pipe(Effect.asVoid))
+      expect((yield* Effect.promise(() => readEvent(first))).type).toBe("server.connected")
+      expect((yield* Effect.promise(() => readEvent(second))).type).toBe("server.connected")
+      expect(EventStreamGeneration.diagnostics(events)).toEqual(generations)
+      expect(events.listenerCount()).toBe(listenerCount + 2)
+      yield* Effect.promise(() => Promise.all([first.return(undefined), second.return(undefined)]))
+      yield* pollWithTimeout(
+        Effect.sync(() =>
+          events.listenerCount() === listenerCount && events.diagnostics().activeSubscribers === 0 ? true : undefined,
+        ),
+        "untracked SSE listeners did not release",
       )
     }),
   )
