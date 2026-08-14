@@ -12,10 +12,10 @@ import { makeGitWorktreeStrategy } from "./copy-strategies"
 import { Slug } from "../util/slug"
 import { EventV2 } from "../event"
 import { Database } from "../database/database"
-import { Location } from "../location"
 import { LocationLifecycle } from "../location-lifecycle"
 import { Event } from "@ranex/schema/project-directories"
 import { ProjectCopy } from "@ranex/schema/project-copy"
+import { ProjectResolution } from "../project-resolution"
 
 export const StrategyID = ProjectCopy.StrategyID
 export type StrategyID = typeof StrategyID.Type
@@ -109,14 +109,15 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@opencode/ProjectCopy") {}
 
 export const refreshAfterBoot = Effect.gen(function* () {
-  const location = yield* Location.Service
   const copies = yield* Service
+  const resolution = yield* ProjectResolution.Service
   yield* LocationLifecycle.track("fiber", "project-copy-refresh")
   yield* Effect.gen(function* () {
-    yield* Effect.logInfo("project copy refresh started", { projectID: location.project.id })
-    const result = yield* copies.refresh({ projectID: location.project.id })
+    const ready = yield* resolution.awaitReady()
+    yield* Effect.logInfo("project copy refresh started", { projectID: ready.project.id })
+    const result = yield* copies.refresh({ projectID: ready.project.id })
     yield* Effect.logInfo("project copy refresh done", {
-      projectID: location.project.id,
+      projectID: ready.project.id,
       updated: result.updated,
       removed: result.removed,
     })
@@ -290,5 +291,5 @@ export const node = makeLocationNode({
 export const refreshNode = makeLocationNode({
   name: "project-copy-refresh",
   layer: Layer.effectDiscard(refreshAfterBoot),
-  deps: [node, Location.node],
+  deps: [node, ProjectResolution.node],
 })

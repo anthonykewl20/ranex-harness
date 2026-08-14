@@ -6,9 +6,10 @@ import { Location } from "@ranex/core/location"
 import { ModelV2 } from "@ranex/core/model"
 import { VariantPlugin } from "@ranex/core/plugin/variant"
 import { ProviderV2 } from "@ranex/core/provider"
+import { Policy } from "@ranex/core/policy"
 import { AbsolutePath } from "@ranex/core/schema"
 import { Effect, Layer } from "effect"
-import { location } from "../fixture/location"
+import { location, readyPolicyNode } from "../fixture/location"
 import { testEffect } from "../lib/effect"
 import { catalogHost, host } from "./host"
 
@@ -16,7 +17,12 @@ const locationLayer = Layer.succeed(
   Location.Service,
   Location.Service.of(location({ directory: AbsolutePath.make(import.meta.dir) })),
 )
-const it = testEffect(AppNodeBuilder.build(Catalog.node, [[Location.node, locationLayer]]))
+const it = testEffect(
+  AppNodeBuilder.build(Catalog.node, [
+    [Location.node, locationLayer],
+    [Policy.node, readyPolicyNode],
+  ]),
+)
 
 describe("VariantPlugin", () => {
   it.effect("adds GLM 5.2 variants after catalog sources", () =>

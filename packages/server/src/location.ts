@@ -1,7 +1,9 @@
 import { Location } from "@ranex/core/location"
 import { LocationServiceMap } from "@ranex/core/location-services"
+import { Project } from "@ranex/core/project"
 import { AbsolutePath } from "@ranex/core/schema"
 import { WorkspaceV2 } from "@ranex/core/workspace"
+import { ProjectResolution } from "@ranex/core/project-resolution"
 import { Effect, Layer } from "effect"
 import { HttpServerRequest } from "effect/unstable/http"
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
@@ -15,11 +17,17 @@ export class LocationMiddleware extends HttpApiMiddleware.Service<LocationMiddle
 export function response<A, E, R>(data: Effect.Effect<A, E, R>) {
   return Effect.gen(function* () {
     const location = yield* Location.Service
+    const resolution = yield* ProjectResolution.Service
+    // This legacy envelope is auxiliary metadata; a failed boundary resolution must not hide its payload.
+    const project = yield* resolution.awaitReady().pipe(
+      Effect.map((ready) => ready.project),
+      Effect.catch(() => Effect.succeed({ id: Project.ID.global, directory: location.directory })),
+    )
     return {
       location: new Location.Info({
         directory: location.directory,
         workspaceID: location.workspaceID,
-        project: location.project,
+        project: { id: project.id, directory: project.directory },
       }),
       data: yield* data,
     }

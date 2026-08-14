@@ -5,7 +5,7 @@ import { DateTime, Effect, Schema } from "effect"
 import { Database } from "../database/database"
 import { EventV2 } from "../event"
 import { RelativePath } from "../schema"
-import { Snapshot } from "../snapshot"
+import type { Snapshot } from "../snapshot"
 import { SessionEvent } from "./event"
 import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
@@ -25,6 +25,7 @@ interface BoundaryInput {
 }
 
 const plan = Effect.fn("SessionRevert.plan")(function* (input: BoundaryInput) {
+  const { Snapshot } = yield* Effect.promise(() => import("../snapshot"))
   const db = (yield* Database.Service).db
   const boundary = yield* db
     .select({ seq: SessionMessageTable.seq })
@@ -62,6 +63,7 @@ export const stage = Effect.fn("SessionRevert.stage")(function* (input: {
   readonly messageID: SessionMessage.ID
   readonly files?: boolean
 }) {
+  const { Snapshot } = yield* Effect.promise(() => import("../snapshot"))
   const snapshot = yield* Snapshot.Service
   const events = yield* EventV2.Service
   const original = input.session.revert?.snapshot
@@ -97,6 +99,7 @@ export const stage = Effect.fn("SessionRevert.stage")(function* (input: {
 
 export const clear = Effect.fn("SessionRevert.clear")(function* (session: SessionSchema.Info) {
   if (!session.revert) return
+  const { Snapshot } = yield* Effect.promise(() => import("../snapshot"))
   const snapshot = yield* Snapshot.Service
   const original = session.revert.snapshot ? Snapshot.ID.make(session.revert.snapshot) : undefined
   if (original)

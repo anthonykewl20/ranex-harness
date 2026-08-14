@@ -4,13 +4,14 @@ import * as TestClock from "effect/testing/TestClock"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { Location } from "@ranex/core/location"
+import { ProjectResolution } from "@ranex/core/project-resolution"
 import { FSUtil } from "@ranex/core/fs-util"
 import { Global } from "@ranex/core/global"
 import { AbsolutePath } from "@ranex/core/schema"
 import { SystemContext } from "@ranex/core/system-context"
 import { SystemContextBuiltIns } from "@ranex/core/system-context/builtins"
 import { SystemContextRegistry } from "@ranex/core/system-context/registry"
-import { location } from "../fixture/location"
+import { location, projectResolutionLayer } from "../fixture/location"
 import { testEffect } from "../lib/effect"
 
 const directory = AbsolutePath.make(FSUtil.resolve("/repo/packages/core"))
@@ -18,19 +19,20 @@ const projectDirectory = AbsolutePath.make(FSUtil.resolve("/repo"))
 const instructionFile = FSUtil.resolve("/repo/AGENTS.md")
 const timestamp = Date.parse("2026-06-03T12:00:00.000Z")
 const localDate = (time: number) => new Date(time).toDateString()
+const ref = Location.Ref.make({ directory })
 const locationLayer = Layer.succeed(
   Location.Service,
-  Location.Service.of(
-    location(
-      { directory },
-      { projectDirectory, vcs: { type: "git", store: AbsolutePath.make(FSUtil.resolve("/repo/.git")) } },
-    ),
-  ),
+  Location.Service.of(location(ref)),
 )
+const resolutionLayer = projectResolutionLayer(ref, {
+  projectDirectory,
+  vcs: { type: "git", store: AbsolutePath.make(FSUtil.resolve("/repo/.git")) },
+})
 const builtInsNode = LayerNode.group([SystemContextBuiltIns.node, SystemContextRegistry.node])
 const it = testEffect(
   AppNodeBuilder.build(builtInsNode, [
     [Location.node, locationLayer],
+    [ProjectResolution.node, resolutionLayer],
     [Global.node, Global.layerWith({ config: "/global" })],
   ]),
 )
@@ -49,6 +51,7 @@ const instructionFS = Layer.effect(
 const itWithInstructions = testEffect(
   AppNodeBuilder.build(builtInsNode, [
     [Location.node, locationLayer],
+    [ProjectResolution.node, resolutionLayer],
     [FSUtil.node, instructionFS],
     [Global.node, Global.layerWith({ config: "/global" })],
   ]),

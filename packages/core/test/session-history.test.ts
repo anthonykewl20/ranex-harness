@@ -5,6 +5,7 @@ import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { EventV2 } from "@ranex/core/event"
 import { Location } from "@ranex/core/location"
+import { LocationServiceMap } from "@ranex/core/location-service-map"
 import { ProjectV2 } from "@ranex/core/project"
 import { ProjectTable } from "@ranex/core/project/sql"
 import { AbsolutePath } from "@ranex/core/schema"
@@ -14,11 +15,15 @@ import { SessionProjector } from "@ranex/core/session/projector"
 import { SessionStore } from "@ranex/core/session/store"
 import { SessionTable } from "@ranex/core/session/sql"
 import { testEffect } from "./lib/effect"
+import { projectResolutionServiceMapLayer } from "./fixture/location"
+
+const location = Location.Ref.make({ directory: AbsolutePath.make("/project") })
 
 const projects = Layer.succeed(
   ProjectV2.Service,
   ProjectV2.Service.of({
     resolve: (directory) => Effect.succeed({ id: ProjectV2.ID.global, directory }),
+    resolveStrict: (directory) => Effect.succeed({ id: ProjectV2.ID.global, directory }),
     directories: () => Effect.succeed([]),
     commit: () => Effect.void,
   }),
@@ -28,12 +33,11 @@ const it = testEffect(
     LayerNode.group([Database.node, EventV2.node, SessionProjector.node, SessionStore.node, SessionV2.node]),
     [
       [ProjectV2.node, projects],
+      [LocationServiceMap.node, projectResolutionServiceMapLayer()],
       [SessionExecution.node, SessionExecution.noopLayer],
     ],
   ),
 )
-const location = Location.Ref.make({ directory: AbsolutePath.make("/project") })
-
 const GapEvent = EventV2.define({
   type: "test.session.history.gap",
   durable: { aggregate: "sessionID", version: 1 },

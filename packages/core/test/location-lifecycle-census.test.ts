@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Cause, Console, Context, Effect, Exit, Fiber, Layer, Option, RcMap } from "effect"
+import { Cause, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Option, RcMap } from "effect"
 import { ApplicationTools } from "@ranex/core/tool/application-tools"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { Database } from "@ranex/core/database/database"
@@ -9,6 +9,8 @@ import { AbsolutePath } from "@ranex/core/schema"
 import { Location } from "@ranex/core/location"
 import { LocationLifecycle } from "@ranex/core/location-lifecycle"
 import { buildLocationServiceMap, LocationServiceMap } from "@ranex/core/location-services"
+import { Project } from "@ranex/core/project"
+import { ProjectResolution } from "@ranex/core/project-resolution"
 import { tmpdir } from "./fixture/tmpdir"
 
 const location = Location.Ref.make({ directory: AbsolutePath.make("/tmp/location-lifecycle-census") })
@@ -19,10 +21,13 @@ class CapturedLifecycle extends Context.Service<
   { readonly lifecycle: Option.Option<LocationLifecycle.Interface> }
 >()("@opencode/test/CapturedLifecycle") {}
 
-function realGraph(onGenerationClosed: (inspection: LocationLifecycle.ClosedInspection) => void) {
+function realGraph(
+  onGenerationClosed: (inspection: LocationLifecycle.ClosedInspection) => void,
+  replacements: LayerNode.Replacements = [],
+) {
   return AppNodeBuilder.build(
     LayerNode.group([ApplicationTools.node, Database.node, EventV2.node, LocationServiceMap.node]),
-    [[LocationServiceMap.node, buildLocationServiceMap([], { idleTimeToLive: "50 millis", onGenerationClosed })]],
+    [[LocationServiceMap.node, buildLocationServiceMap(replacements, { idleTimeToLive: "50 millis", onGenerationClosed })]],
   )
 }
 
@@ -141,6 +146,79 @@ describe("LocationLifecycle", () => {
       LocationLifecycle.registerCaptured(captured, "fiber", "reference-refresh"),
     )
     expect(registration).toMatchObject({ _tag: "closed" })
+  })
+
+  test("interrupts and unregisters a scoped vcs warm-up when its generation expires", async () => {
+    await using directory = await tmpdir()
+    const warmupLocation = Location.Ref.make({ directory: AbsolutePath.make(directory.path) })
+    const closed: LocationLifecycle.ClosedInspection[] = []
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>()
+        const interrupted = yield* Deferred.make<void>()
+        const projectLayer = Layer.succeed(
+          Project.Service,
+          Project.Service.of({
+            directories: () => Effect.succeed([]),
+            resolve: (directory) => Effect.succeed({ id: Project.ID.global, directory }),
+            resolveStrict: () =>
+              Deferred.succeed(started, undefined).pipe(
+                Effect.andThen(Effect.never),
+                Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+              ),
+            commit: () => Effect.void,
+          }),
+        )
+        yield* Effect.gen(function* () {
+          const locations = yield* LocationServiceMap.Service
+          const resolution = yield* ProjectResolution.Service.pipe(
+            Effect.provide(locations.get(warmupLocation)),
+            Effect.scoped,
+          )
+          yield* Deferred.await(started)
+          expect(yield* resolution.status()).toEqual({ status: "loading" })
+          yield* Effect.sleep("60 millis")
+          yield* Deferred.await(interrupted)
+          expect(yield* RcMap.has(locations.rcMap, warmupLocation)).toBe(false)
+          yield* waitForClosed(closed, 1)
+          expect(closed[0]).toMatchObject({
+            state: "closed",
+            counts: { fiber: 0, event_consumer: 0, listener: 0, subscription: 0 },
+          })
+          expect(closed[0]?.owners).not.toContain("vcs-warmup")
+        }).pipe(
+          Effect.provide(realGraph((inspection) => closed.push(inspection), [[Project.node, projectLayer]])),
+          Effect.provideService(Console.Console, silentConsole),
+        )
+      }),
+    )
+  })
+
+  test("resolves a non-repository location globally and closes its expired generation with a zero census", async () => {
+    await using directory = await tmpdir()
+    expect(await Bun.file(`${directory.path}/.git`).exists()).toBe(false)
+    const closed: LocationLifecycle.ClosedInspection[] = []
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const locations = yield* LocationServiceMap.Service
+        const ref = Location.Ref.make({ directory: AbsolutePath.make(directory.path) })
+        const ready = yield* Effect.gen(function* () {
+          const resolution = yield* ProjectResolution.Service
+          return yield* resolution.awaitReady()
+        }).pipe(Effect.provide(locations.get(ref)), Effect.scoped)
+        expect(ready.project).toMatchObject({ id: Project.ID.global })
+        yield* Effect.sleep("60 millis")
+        expect(yield* RcMap.has(locations.rcMap, ref)).toBe(false)
+        yield* waitForClosed(closed, 1)
+        expect(closed[0]).toMatchObject({
+          state: "closed",
+          counts: { fiber: 0, event_consumer: 0, listener: 0, subscription: 0 },
+        })
+      }).pipe(
+        Effect.provide(realGraph((inspection) => closed.push(inspection))),
+        Effect.provideService(Console.Console, silentConsole),
+      ),
+    )
   })
 
   test(

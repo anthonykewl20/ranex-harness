@@ -39,6 +39,36 @@ async function rootCommit(dir: string) {
 }
 
 describe("ProjectV2.resolve", () => {
+  it.live("strictly resolves a directory without .git as the global project", () =>
+    Effect.gen(function* () {
+      const project = yield* ProjectV2.Service
+      const root = path.parse(process.cwd()).root
+
+      const result = yield* project.resolveStrict(abs(root))
+
+      expect(result.id).toBe(ProjectV2.ID.global)
+      expect(result.directory).toBe(abs(root))
+      expect(result.vcs).toBeUndefined()
+      expect(result.repository).toBeUndefined()
+    }),
+  )
+
+  it.live("strictly reports Git execution failure after .git is discovered", () =>
+    Effect.gen(function* () {
+      const tmp = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      yield* Effect.promise(() => fs.mkdir(path.join(tmp.path, ".git")))
+      const project = yield* ProjectV2.Service
+
+      expect(yield* project.resolveStrict(abs(tmp.path)).pipe(Effect.flip)).toMatchObject({
+        _tag: "Git.DiscoveryError",
+        directory: abs(tmp.path),
+      })
+    }),
+  )
+
   it.live("returns global for non-git directory", () =>
     Effect.gen(function* () {
       const tmp = yield* Effect.acquireRelease(

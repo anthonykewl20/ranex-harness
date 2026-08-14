@@ -32,11 +32,13 @@ export interface Resolved {
   readonly id: ID
   readonly directory: AbsolutePath
   readonly vcs?: Vcs
+  readonly repository?: Git.Repository
 }
 
 export interface Interface {
   readonly directories: (input: DirectoriesInput) => Effect.Effect<Directories>
   readonly resolve: (input: AbsolutePath) => Effect.Effect<Resolved>
+  readonly resolveStrict: (input: AbsolutePath) => Effect.Effect<Resolved, Git.DiscoveryError | FSUtil.Error>
   /**
    * Temporary bridge method for writing the resolved project ID to the repo-local cache.
    *
@@ -113,8 +115,7 @@ const layer = Layer.effect(
       return root ? ID.make(root) : undefined
     })
 
-    const resolve = Effect.fn("Project.resolve")(function* (input: AbsolutePath) {
-      const repo = yield* git.repo.discover(input)
+    const resolveRepository = Effect.fnUntraced(function* (input: AbsolutePath, repo: Git.Repository | undefined) {
       if (!repo) return { id: ID.global, directory: AbsolutePath.make(path.parse(input).root), vcs: undefined }
 
       const previous = yield* cached(repo.commonDirectory)
@@ -124,7 +125,16 @@ const layer = Layer.effect(
         id: id ?? ID.global,
         directory: repo.worktree,
         vcs: { type: "git" as const, store: repo.commonDirectory },
+        repository: repo,
       }
+    })
+
+    const resolve = Effect.fn("Project.resolve")(function* (input: AbsolutePath) {
+      return yield* resolveRepository(input, yield* git.repo.discover(input))
+    })
+
+    const resolveStrict = Effect.fn("Project.resolveStrict")(function* (input: AbsolutePath) {
+      return yield* resolveRepository(input, yield* git.repo.inspect(input))
     })
 
     const commit = Effect.fn("Project.commit")(function* (input: { store: AbsolutePath; id: ID }) {
@@ -134,7 +144,7 @@ const layer = Layer.effect(
       }).pipe(Effect.ignore)
     })
 
-    return Service.of({ directories, resolve, commit })
+    return Service.of({ directories, resolve, resolveStrict, commit })
   }),
 )
 

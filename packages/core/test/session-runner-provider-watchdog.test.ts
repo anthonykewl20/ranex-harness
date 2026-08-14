@@ -258,7 +258,7 @@ describe("ProviderWatchdog configuration (SLICE-012 criterion 5)", () => {
   defaultsIt.effect("uses shipped defaults when provider_watchdog is omitted", () =>
     Effect.gen(function* () {
       const watchdog = yield* ProviderWatchdog.Service
-      expect(watchdog).toEqual({ idle: 30_000, absolute: 1_800_000 })
+      expect(yield* watchdog.settings()).toEqual({ idle: 30_000, absolute: 1_800_000 })
     }),
   )
 
@@ -294,9 +294,10 @@ describe("ProviderWatchdog configuration (SLICE-012 criterion 5)", () => {
                 ),
             }),
           )
-          const exit = yield* Layer.build(
-            AppNodeBuilder.build(ProviderWatchdog.node, [[Config.node, config]]),
-          ).pipe(Effect.scoped, Effect.exit)
+          const exit = yield* Effect.gen(function* () {
+            const watchdog = yield* ProviderWatchdog.Service
+            yield* watchdog.settings()
+          }).pipe(Effect.provide(AppNodeBuilder.build(ProviderWatchdog.node, [[Config.node, config]])), Effect.exit)
           expect(Exit.isFailure(exit)).toBe(true)
           if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain(example.message)
         }),
@@ -438,19 +439,20 @@ describe("ProviderWatchdog schema bounds (refused at load, not at use)", () => {
 })
 
 function configLoadLayer(directory: string) {
-  return AppNodeBuilder.build(LayerNode.group([Config.node, Policy.node]), [
+  const base = AppNodeBuilder.build(LayerNode.group([Config.node, Policy.node]), [
     [
       Location.node,
       Layer.succeed(
         Location.Service,
-        Location.Service.of(
-          location(
-            { directory: AbsolutePath.make(directory) },
-            { projectDirectory: AbsolutePath.make(directory) },
-          ),
-        ),
+        Location.Service.of(location({ directory: AbsolutePath.make(directory) })),
       ),
     ],
     [Global.node, Global.layerWith({ config: path.join(directory, "global") })],
   ])
+  return Layer.effectDiscard(
+    Effect.gen(function* () {
+      const config = yield* Config.Service
+      if (config.loadProject) yield* config.loadProject(AbsolutePath.make(directory)).pipe(Effect.orDie)
+    }),
+  ).pipe(Layer.provideMerge(base))
 }

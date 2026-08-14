@@ -24,6 +24,7 @@ import { ModelsDev } from "../models-dev"
 import { Npm } from "../npm"
 import { PluginV2 } from "../plugin"
 import { Reference } from "../reference"
+import { ProjectResolution } from "../project-resolution"
 import { SkillV2 } from "../skill"
 import { State } from "../state"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
@@ -46,6 +47,7 @@ export type Requirements =
   | HttpClient.HttpClient
   | Integration.Service
   | Location.Service
+  | ProjectResolution.Service
   | ModelsDev.Service
   | Npm.Service
   | Reference.Service
@@ -69,6 +71,7 @@ const layer = Layer.effectDiscard(
     const agents = yield* AgentV2.Service
     const config = yield* Config.Service
     const location = yield* Location.Service
+    const projectResolution = yield* ProjectResolution.Service
     const modelsDev = yield* ModelsDev.Service
     const npm = yield* Npm.Service
     const events = yield* EventV2.Service
@@ -91,6 +94,7 @@ const layer = Layer.effectDiscard(
               Effect.provideService(AgentV2.Service, agents),
               Effect.provideService(Config.Service, config),
               Effect.provideService(Location.Service, location),
+              Effect.provideService(ProjectResolution.Service, projectResolution),
               Effect.provideService(ModelsDev.Service, modelsDev),
               Effect.provideService(Npm.Service, npm),
               Effect.provideService(EventV2.Service, events),
@@ -143,6 +147,7 @@ export const node = makeLocationNode({
     AgentV2.node,
     Config.node,
     Location.node,
+    ProjectResolution.node,
     ModelsDev.node,
     Npm.node,
     EventV2.node,

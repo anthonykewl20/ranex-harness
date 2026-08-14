@@ -4,7 +4,7 @@ import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { Location } from "@ranex/core/location"
 import { Policy } from "@ranex/core/policy"
 import { AbsolutePath } from "@ranex/core/schema"
-import { location } from "./fixture/location"
+import { location, readyPolicyNode } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(
@@ -13,6 +13,7 @@ const it = testEffect(
       Location.node,
       Layer.succeed(Location.Service, Location.Service.of(location({ directory: AbsolutePath.make("test") }))),
     ],
+    [Policy.node, readyPolicyNode],
   ]),
 )
 

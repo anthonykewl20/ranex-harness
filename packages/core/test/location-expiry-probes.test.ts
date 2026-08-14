@@ -8,9 +8,10 @@ import { EventV2 } from "@ranex/core/event"
 import { FSUtil } from "@ranex/core/fs-util"
 import { Watcher } from "@ranex/core/filesystem/watcher"
 import { Location } from "@ranex/core/location"
+import { ProjectResolution } from "@ranex/core/project-resolution"
 import { Pty } from "@ranex/core/pty"
 import { AbsolutePath } from "@ranex/core/schema"
-import { location } from "./fixture/location"
+import { location, projectResolutionLayer } from "./fixture/location"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
@@ -25,19 +26,19 @@ const flags = ConfigProvider.layer(
 )
 
 function watcherLayer(directory: string) {
+  const ref = Location.Ref.make({ directory: AbsolutePath.make(directory) })
   return AppNodeBuilder.build(Watcher.node, [
     [Config.node, Layer.succeed(Config.Service, Config.Service.of({ entries: () => Effect.succeed([]) }))],
     [
       Location.node,
       Layer.succeed(
         Location.Service,
-        Location.Service.of(
-          location(
-            { directory: AbsolutePath.make(directory) },
-            { vcs: { type: "git", store: AbsolutePath.make(directory) } },
-          ),
-        ),
+        Location.Service.of(location(ref)),
       ),
+    ],
+    [
+      ProjectResolution.node,
+      projectResolutionLayer(ref, { vcs: { type: "git", store: AbsolutePath.make(directory) } }),
     ],
   ]).pipe(Layer.provide(flags))
 }

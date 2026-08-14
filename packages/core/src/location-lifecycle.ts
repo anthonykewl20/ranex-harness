@@ -5,6 +5,7 @@ import { Location } from "./location"
 
 export type Kind = "fiber" | "event_consumer" | "listener" | "subscription"
 export type Owner =
+  | "vcs-warmup"
   | "watcher"
   | "plugin-boot"
   | "models-dev-refresh"

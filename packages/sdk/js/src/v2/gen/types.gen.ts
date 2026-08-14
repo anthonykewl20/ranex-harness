@@ -41,6 +41,7 @@ export type Event =
   | EventSessionNextToolProgress
   | EventSessionNextToolSuccess
   | EventSessionNextToolFailed
+  | EventSessionNextToolArgumentsRecovered
   | EventSessionNextRetried
   | EventSessionNextCompactionStarted
   | EventSessionNextCompactionDelta
@@ -1120,6 +1121,17 @@ export type GlobalEvent = {
             executed: boolean
             metadata?: LlmProviderMetadata
           }
+        }
+      }
+    | {
+        id: string
+        type: "session.next.tool.arguments.recovered"
+        properties: {
+          timestamp: number
+          sessionID: string
+          tool: string
+          reason: "invalid-tool-arguments-recovered"
+          finishReason?: "length"
         }
       }
     | {
@@ -2682,6 +2694,29 @@ export type UnauthorizedError = {
   message: string
 }
 
+export type LocationResolution =
+  | {
+      status: "loading"
+    }
+  | {
+      status: "ready"
+      project: {
+        id: string
+        directory: string
+      }
+      vcs?: ProjectVcs
+    }
+  | {
+      status: "failed"
+      error: "timed_out" | "git_failed" | "filesystem_failed"
+    }
+
+export type LocationGetResponse = {
+  directory: string
+  workspaceID?: string
+  resolution: LocationResolution
+}
+
 export type SessionsResponse = {
   data: Array<SessionV2Info>
   cursor: {
@@ -2889,6 +2924,7 @@ export type V2Event =
   | SessionNextToolProgress
   | SessionNextToolSuccess
   | SessionNextToolFailed
+  | SessionNextToolArgumentsRecovered
   | SessionNextRetried
   | SessionNextCompactionStarted
   | SessionNextCompactionDelta
@@ -5280,6 +5316,27 @@ export type SessionNextToolInputDelta = {
   }
 }
 
+export type SessionNextToolArgumentsRecovered = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.tool.arguments.recovered"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    tool: string
+    reason: "invalid-tool-arguments-recovered"
+    finishReason?: "length"
+  }
+}
+
 export type SessionNextCompactionDelta = {
   id: string
   metadata?: {
@@ -6574,6 +6631,18 @@ export type EventSessionNextToolFailed = {
       executed: boolean
       metadata?: LlmProviderMetadata
     }
+  }
+}
+
+export type EventSessionNextToolArgumentsRecovered = {
+  id: string
+  type: "session.next.tool.arguments.recovered"
+  properties: {
+    timestamp: number
+    sessionID: string
+    tool: string
+    reason: "invalid-tool-arguments-recovered"
+    finishReason?: "length"
   }
 }
 
@@ -11285,9 +11354,9 @@ export type V2LocationGetError = V2LocationGetErrors[keyof V2LocationGetErrors]
 
 export type V2LocationGetResponses = {
   /**
-   * Location.Info
+   * LocationGetResponse
    */
-  200: LocationInfo
+  200: LocationGetResponse
 }
 
 export type V2LocationGetResponse = V2LocationGetResponses[keyof V2LocationGetResponses]
@@ -12765,6 +12834,10 @@ export type V2SessionPermissionReplyErrors = {
    * SessionNotFoundError | PermissionNotFoundError
    */
   404: PermissionNotFoundError | SessionNotFoundError
+  /**
+   * UnknownError
+   */
+  500: UnknownError1
 }
 
 export type V2SessionPermissionReplyError = V2SessionPermissionReplyErrors[keyof V2SessionPermissionReplyErrors]

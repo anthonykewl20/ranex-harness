@@ -1,42 +1,23 @@
 import { describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect } from "effect"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { Location } from "@ranex/core/location"
-import { Project } from "@ranex/core/project"
 import { AbsolutePath } from "@ranex/core/schema"
 import { WorkspaceV2 } from "@ranex/core/workspace"
 import { testEffect } from "./lib/effect"
 
 const workspaceID = WorkspaceV2.ID.make("wrk_test")
-const ref = { directory: AbsolutePath.make("/repo/packages/app"), workspaceID }
-const projectLayer = Layer.succeed(
-  Project.Service,
-  Project.Service.of({
-    directories: () => Effect.succeed([]),
-    resolve: () =>
-      Effect.succeed({
-        id: Project.ID.make("project"),
-        directory: AbsolutePath.make("/repo"),
-        vcs: { type: "git", store: AbsolutePath.make("/repo/.git") },
-      }),
-    commit: () => Effect.void,
-  }),
-)
-const it = testEffect(AppNodeBuilder.build(Location.boundNode(ref), [[Project.node, projectLayer]]))
+const ref = Location.Ref.make({ directory: AbsolutePath.make("/repo/packages/app"), workspaceID })
+const it = testEffect(AppNodeBuilder.build(Location.boundNode(ref)))
 
 describe("Location", () => {
-  it.effect("resolves the current project and vcs information", () =>
+  it.effect("synchronously exposes only binding identity", () =>
     Effect.gen(function* () {
       const location = yield* Location.Service
 
-      expect(location.directory).toBe(AbsolutePath.make("/repo/packages/app"))
+      expect(location.directory).toBe(ref.directory)
       expect(location.workspaceID).toBe(workspaceID)
-      expect(location.project.id).toBe(Project.ID.make("project"))
-      expect(location.project.directory).toBe(AbsolutePath.make("/repo"))
-      expect(location.vcs).toEqual({
-        type: "git",
-        store: AbsolutePath.make("/repo/.git"),
-      })
+      expect(Object.keys(location).toSorted()).toEqual(["directory", "workspaceID"])
     }),
   )
 })

@@ -21,6 +21,7 @@ import { PluginV2 } from "./plugin"
 import { PluginInternal } from "./plugin/internal"
 import { Policy } from "./policy"
 import { ProjectCopy } from "./project/copy"
+import { ProjectResolution } from "./project-resolution"
 import { Pty } from "./pty"
 import { QuestionV2 } from "./question"
 import { Reference } from "./reference"
@@ -42,6 +43,7 @@ export { LocationServiceMap } from "./location-service-map"
 
 export const locationServices = LayerNode.group([
   Location.node,
+  ProjectResolution.node,
   Policy.node,
   Config.node,
   AgentV2.node,
@@ -97,9 +99,8 @@ export function buildLocationServiceMap(
       (ref: Location.Ref) => {
         const allReplacements = replacements.concat([[Location.node, Location.boundNode(ref)]])
         // Apply replacements during hoist, not afterward: replacements can
-        // introduce new tagged dependencies (Location.boundNode depends on
-        // Project), and the hoist walk is the only pass that can still slice
-        // those back out.
+        // introduce new tagged dependencies, and the hoist walk is the only
+        // pass that can still slice those back out.
         const location = LayerNode.hoist(locationServices, Node.tags.values.global, allReplacements)
 
         const locationKey = hashLocation(ref.directory)

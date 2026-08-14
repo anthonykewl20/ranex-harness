@@ -2,10 +2,13 @@ import { $ } from "bun"
 import { describe, expect } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
-import { Effect, Layer } from "effect"
+import { Deferred, Effect, Fiber, Layer } from "effect"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
+import { LayerNode } from "@ranex/core/effect/layer-node"
+import { Git } from "@ranex/core/git"
 import { Global } from "@ranex/core/global"
 import { Location } from "@ranex/core/location"
+import { ProjectResolution } from "@ranex/core/project-resolution"
 import { AbsolutePath, RelativePath } from "@ranex/core/schema"
 import { Snapshot } from "@ranex/core/snapshot"
 import { Hash } from "@ranex/core/util/hash"
@@ -13,6 +16,47 @@ import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
 describe("Snapshot", () => {
+  testEffect(Layer.empty).live("does not create snapshot storage while resolution loads or after it fails", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          const project = path.join(tmp.path, "project")
+          yield* Effect.promise(() => fs.mkdir(project))
+          const gate = yield* Deferred.make<ProjectResolution.Ready, ProjectResolution.Error>()
+          yield* Effect.gen(function* () {
+            const snapshot = yield* Snapshot.Service
+            const capture = yield* snapshot.capture().pipe(Effect.forkScoped)
+            yield* Effect.yieldNow
+            expect(yield* exists(path.join(tmp.path, "snapshot"))).toBe(false)
+            yield* Deferred.fail(
+              gate,
+              new ProjectResolution.FileSystemFailedError({ cause: new Error("filesystem failed") }),
+            )
+            expect(yield* Fiber.join(capture)).toBeUndefined()
+            expect(yield* exists(path.join(tmp.path, "snapshot"))).toBe(false)
+          }).pipe(
+            Effect.provide(
+              snapshotLayer(
+                tmp.path,
+                project,
+                undefined,
+                Layer.succeed(
+                  ProjectResolution.Service,
+                  ProjectResolution.Service.of({
+                    status: () => Effect.succeed({ status: "loading" }),
+                    awaitReady: () => Deferred.await(gate),
+                  }),
+                ),
+              ),
+            ),
+            Effect.scoped,
+          )
+        }),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
   testEffect(Layer.empty).live("captures and restores Location-scoped changes", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
@@ -48,7 +92,6 @@ describe("Snapshot", () => {
             const after = yield* snapshot.capture()
             expect(after).toBeDefined()
             if (!after) return
-
             expect(yield* snapshot.files({ from: before, to: after })).toEqual([
               RelativePath.make("scope/added.txt"),
               RelativePath.make("scope/tracked.txt"),
@@ -112,10 +155,14 @@ describe("Snapshot", () => {
           expect(yield* capture(linked)).toBeDefined()
 
           const projectID = yield* Effect.gen(function* () {
-            return (yield* Location.Service).project.id
+            const resolution = yield* ProjectResolution.Service
+            return (yield* resolution.awaitReady().pipe(Effect.orDie)).project.id
           }).pipe(
             Effect.provide(
-              AppNodeBuilder.build(Location.boundNode(Location.Ref.make({ directory: AbsolutePath.make(project) }))),
+              AppNodeBuilder.build(ProjectResolution.node, [
+                [Location.node, Location.boundNode(Location.Ref.make({ directory: AbsolutePath.make(project) }))],
+                [Global.node, Global.layerWith({ data: tmp.path, config: path.join(tmp.path, "config") })],
+              ]),
             ),
           )
           expect(
@@ -166,13 +213,24 @@ describe("Snapshot", () => {
   )
 })
 
-function snapshotLayer(data: string, directory: string) {
+function snapshotLayer(
+  data: string,
+  directory: string,
+  git?: Layer.Layer<Git.Service>,
+  resolution?: Layer.Layer<ProjectResolution.Service>,
+) {
   return AppNodeBuilder.build(Snapshot.node, [
     [Location.node, Location.boundNode(Location.Ref.make({ directory: AbsolutePath.make(directory) }))],
     [Global.node, Global.layerWith({ data, config: path.join(data, "config") })],
+    ...(git ? [[Git.node, git] as const] : []),
+    ...(resolution ? [[ProjectResolution.node, resolution] as const] : []),
   ])
 }
 
 function read(file: string) {
   return Effect.promise(() => fs.readFile(file, "utf8")).pipe(Effect.map((content) => content.replaceAll("\r\n", "\n")))
+}
+
+function exists(directory: string) {
+  return Effect.promise(() => fs.stat(directory).then(() => true, () => false))
 }

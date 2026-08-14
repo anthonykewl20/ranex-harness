@@ -11,7 +11,7 @@ import { ModelV2 } from "@ranex/core/model"
 import { Policy } from "@ranex/core/policy"
 import { ProviderV2 } from "@ranex/core/provider"
 import { AbsolutePath } from "@ranex/core/schema"
-import { location } from "./fixture/location"
+import { location, readyPolicyNode } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 
 function required<T>(value: T | undefined): T {
@@ -25,7 +25,10 @@ const locationLayer = Layer.succeed(
 )
 const catalogLayer = AppNodeBuilder.build(
   LayerNode.group([Catalog.node, EventV2.node, Credential.node, Integration.node, Policy.node]),
-  [[Location.node, locationLayer]],
+  [
+    [Location.node, locationLayer],
+    [Policy.node, readyPolicyNode],
+  ],
 )
 const it = testEffect(catalogLayer)
 
@@ -48,7 +51,10 @@ describe("CatalogV2", () => {
   it.effect("derives availability from active credentials without changing provider state", () => {
     const integrationID = Integration.ID.make("test")
     const localCatalogLayer = Layer.fresh(
-      AppNodeBuilder.build(LayerNode.group([Catalog.node, Credential.node]), [[Location.node, locationLayer]]),
+      AppNodeBuilder.build(LayerNode.group([Catalog.node, Credential.node]), [
+        [Location.node, locationLayer],
+        [Policy.node, readyPolicyNode],
+      ]),
     )
 
     return Effect.gen(function* () {
@@ -79,6 +85,7 @@ describe("CatalogV2", () => {
     const localCatalogLayer = Layer.fresh(
       AppNodeBuilder.build(LayerNode.group([Catalog.node, Credential.node, Integration.node]), [
         [Location.node, locationLayer],
+        [Policy.node, readyPolicyNode],
       ]),
     )
 

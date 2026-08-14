@@ -12,8 +12,9 @@ import { ModelV2 } from "@ranex/core/model"
 import { ModelsDev } from "@ranex/core/models-dev"
 import { ModelsDevPlugin } from "@ranex/core/plugin/models-dev"
 import { ProviderV2 } from "@ranex/core/provider"
+import { Policy } from "@ranex/core/policy"
 import { AbsolutePath } from "@ranex/core/schema"
-import { location } from "../fixture/location"
+import { location, readyPolicyNode } from "../fixture/location"
 import { testEffect } from "../lib/effect"
 import { catalogHost, host, integrationHost } from "./host"
 
@@ -23,6 +24,7 @@ const locationLayer = Layer.succeed(
 )
 const layer = AppNodeBuilder.build(LayerNode.group([Catalog.node, Integration.node, EventV2.node]), [
   [Location.node, locationLayer],
+  [Policy.node, readyPolicyNode],
 ])
 const it = testEffect(layer)
 
