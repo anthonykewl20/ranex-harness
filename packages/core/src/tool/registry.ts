@@ -7,6 +7,7 @@ import { PermissionV2 } from "../permission"
 import { SessionMessage } from "../session/message"
 import { SessionSchema } from "../session/schema"
 import { ToolOutputStore } from "../tool-output-store"
+import { ManagedOutput } from "@ranex/schema/managed-output"
 import { Wildcard } from "../util/wildcard"
 import { ApplicationTools } from "./application-tools"
 import { definition, permission, settle, validateName, type AnyTool, type RegistrationError } from "./tool"
@@ -35,6 +36,7 @@ export interface Settlement {
   readonly result: ToolResultValue
   readonly output?: ToolOutput
   readonly outputPaths?: ReadonlyArray<string>
+  readonly outputRefs?: ReadonlyArray<ManagedOutput.ID>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/ToolRegistry") {}
@@ -74,11 +76,21 @@ const registryLayer = Layer.effect(
       const output = pending.output
       const bounded = yield* resources.bound({ sessionID: input.sessionID, toolCallID: input.call.id, output })
       const result = ToolOutput.toResultValue(bounded.output)
-      if (result.type === "error")
-        return bounded.outputPaths.length > 0 ? { result, outputPaths: bounded.outputPaths } : { result }
-      return bounded.outputPaths.length > 0
-        ? { result, output: bounded.output, outputPaths: bounded.outputPaths }
-        : { result, output: bounded.output }
+      if (result.type === "error") {
+        if (bounded.outputPaths.length === 0) return { result }
+        return {
+          result,
+          outputPaths: bounded.outputPaths,
+          ...(bounded.outputRefs?.length ? { outputRefs: bounded.outputRefs } : {}),
+        }
+      }
+      if (bounded.outputPaths.length === 0) return { result, output: bounded.output }
+      return {
+        result,
+        output: bounded.output,
+        outputPaths: bounded.outputPaths,
+        ...(bounded.outputRefs?.length ? { outputRefs: bounded.outputRefs } : {}),
+      }
     })
 
     return Service.of({

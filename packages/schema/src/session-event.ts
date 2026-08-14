@@ -12,6 +12,8 @@ import { SessionID } from "./session-id"
 import { Location } from "./location"
 import { SessionMessage } from "./session-message"
 import { Revert } from "./revert"
+import { ManagedOutput } from "./managed-output"
+import { ProjectedEvent } from "./projected-event"
 
 export { FileAttachment }
 
@@ -347,6 +349,7 @@ export namespace Tool {
       structured: Schema.Record(Schema.String, Schema.Unknown),
       content: Schema.Array(ToolContent),
       outputPaths: Schema.Array(Schema.String).pipe(optional),
+      outputRefs: Schema.Array(ManagedOutput.ID).pipe(optional),
       result: Schema.Unknown.pipe(optional),
       provider: Schema.Struct({
         executed: Schema.Boolean,
@@ -533,3 +536,6 @@ export type DurableEvent = typeof Durable.Type
 export const All = Schema.Union(Definitions, { mode: "oneOf" }).pipe(Schema.toTaggedUnion("type"))
 export type Event = typeof All.Type
 export type Type = Event["type"]
+
+export const Projected = ProjectedEvent.Envelope.annotate({ identifier: "ProjectedSessionEvent" })
+export type ProjectedEvent = typeof Projected.Type

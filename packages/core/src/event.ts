@@ -24,6 +24,12 @@ export interface SubscriberDiagnostics {
   readonly rejected: number
   readonly overflow: number
   readonly activeSubscribers: number
+  readonly truncatedEventsByType?: Readonly<Record<string, number>>
+  readonly droppedBytesByType?: Readonly<Record<string, number>>
+  readonly projectionFailures?: number
+  readonly outputFetchHits?: number
+  readonly outputFetchNotFound?: number
+  readonly outputFetchExpired?: number
 }
 
 type MutableSubscriberDiagnostics = {
@@ -121,6 +127,26 @@ export const readAggregate = Effect.fn("EventV2.readAggregate")(function* <A>(
   }
 })
 
+export const readEvent = Effect.fn("EventV2.readEvent")(function* (
+  db: Database.Interface["db"],
+  input: { readonly aggregateID: string; readonly eventID: ID },
+) {
+  const row = yield* db
+    .select()
+    .from(EventTable)
+    .where(and(eq(EventTable.aggregate_id, input.aggregateID), eq(EventTable.id, input.eventID)))
+    .get()
+    .pipe(Effect.orDie)
+  if (!row) return undefined
+  return decodeSerializedEvent({
+    id: row.id,
+    aggregateID: row.aggregate_id,
+    seq: row.seq,
+    type: row.type,
+    data: row.data,
+  })
+})
+
 export class SubscriberOverflowError extends Schema.TaggedErrorClass<SubscriberOverflowError>()(
   "EventV2.SubscriberOverflow",
   { capacity: Schema.Int },
@@ -150,6 +176,14 @@ export interface Interface {
   readonly listen: (listener: Subscriber) => Effect.Effect<Unsubscribe>
   readonly listenerCount: () => number
   readonly diagnostics: () => SubscriberDiagnostics
+  readonly projected?: (input: {
+    readonly type: string
+    readonly truncated: boolean
+    readonly droppedBytes: number
+    readonly failed?: boolean
+    readonly errorName?: string
+  }) => void
+  readonly outputFetch?: (outcome: "hit" | "not-found" | "expired") => void
   readonly project: <D extends Definition>(definition: D, projector: Subscriber<D>) => Effect.Effect<void>
   readonly replay: (
     event: SerializedEvent,
@@ -176,14 +210,19 @@ export const allBounded = (events: Interface, capacity: number) =>
 export type ScopedSubscriberPredicate = (event: Payload) => boolean
 
 /**
- * Creates a bounded live stream that applies `accepts` before queueing each event.
+ * Creates a bounded live stream that applies `accepts` and `transform` before queueing each event.
  * The predicate must be pure and synchronous because it runs on the publisher fiber
  * inside `notify`; a throw defects that publisher because live-path listeners are not isolated.
  * Returning false drops the event without consuming queue capacity or incrementing overflow.
  */
-export const allBoundedScoped = (events: Interface, capacity: number, accepts: ScopedSubscriberPredicate) =>
+export const allBoundedScoped = <A = Payload>(
+  events: Interface,
+  capacity: number,
+  accepts: ScopedSubscriberPredicate,
+  transform?: (event: Payload) => A,
+) =>
   Effect.gen(function* () {
-    const queue = yield* Queue.dropping<Payload, SubscriberOverflowError>(capacity)
+    const queue = yield* Queue.dropping<A, SubscriberOverflowError>(capacity)
     const diagnostics = subscriberDiagnostics.get(events)
     const unsubscribe = yield* events.listen((event) =>
       Effect.sync(() => {
@@ -196,7 +235,7 @@ export const allBoundedScoped = (events: Interface, capacity: number, accepts: S
       }).pipe(
         Effect.flatMap((matches) => {
           if (!matches) return Effect.void
-          return Queue.offer(queue, event).pipe(
+          return Queue.offer(queue, transform ? transform(event) : (event as A)).pipe(
             Effect.flatMap((accepted) => {
               if (accepted) {
                 if (diagnostics) diagnostics.accepted++
@@ -246,6 +285,12 @@ export const layerWith = (options?: LayerOptions) =>
         rejected: 0,
         overflow: 0,
         activeSubscribers: 0,
+        truncatedEventsByType: {},
+        droppedBytesByType: {},
+        projectionFailures: 0,
+        outputFetchHits: 0,
+        outputFetchNotFound: 0,
+        outputFetchExpired: 0,
       }
       const { db } = yield* Database.Service
 
@@ -695,6 +740,27 @@ export const layerWith = (options?: LayerOptions) =>
         listen,
         listenerCount: () => listeners.length,
         diagnostics: () => ({ ...diagnostics }),
+        projected: ({ type, truncated, droppedBytes, failed, errorName }) => {
+          if (failed) {
+            diagnostics.projectionFailures = (diagnostics.projectionFailures ?? 0) + 1
+            Effect.runFork(Effect.logWarning("event projection failed", { type, errorName }))
+          }
+          if (!truncated) return
+          diagnostics.truncatedEventsByType = {
+            ...diagnostics.truncatedEventsByType,
+            [type]: (diagnostics.truncatedEventsByType?.[type] ?? 0) + 1,
+          }
+          if (droppedBytes <= 0) return
+          diagnostics.droppedBytesByType = {
+            ...diagnostics.droppedBytesByType,
+            [type]: (diagnostics.droppedBytesByType?.[type] ?? 0) + droppedBytes,
+          }
+        },
+        outputFetch: (outcome) => {
+          if (outcome === "hit") diagnostics.outputFetchHits = (diagnostics.outputFetchHits ?? 0) + 1
+          if (outcome === "not-found") diagnostics.outputFetchNotFound = (diagnostics.outputFetchNotFound ?? 0) + 1
+          if (outcome === "expired") diagnostics.outputFetchExpired = (diagnostics.outputFetchExpired ?? 0) + 1
+        },
         project,
         replay,
         replayAll,

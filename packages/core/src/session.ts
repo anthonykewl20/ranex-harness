@@ -3,7 +3,7 @@ export * from "./session/schema"
 
 import { DateTime, Effect, Layer, Schema, Context, Stream } from "effect"
 import { ListAnchor } from "@ranex/schema/session"
-import { and, asc, desc, eq, gt, like, lt, or, type SQL } from "drizzle-orm"
+import { and, asc, desc, eq, gt, inArray, like, lt, or, type SQL } from "drizzle-orm"
 import { ProjectV2 } from "./project"
 import { WorkspaceV2 } from "./workspace"
 import { ModelV2 } from "./model"
@@ -37,6 +37,11 @@ import { SessionRevert } from "./session/revert"
 import { Revert } from "@ranex/schema/revert"
 import { FSUtil } from "./fs-util"
 import { SessionDurable } from "@ranex/schema/durable-event-manifest"
+import { EventTable } from "./event/sql"
+import { ManagedOutput } from "@ranex/schema/managed-output"
+import { ProjectedEvent } from "./projected-event"
+import { Global } from "./global"
+import { MANAGED_DIRECTORY } from "./tool-output-store"
 
 export const RevertState = Revert.State
 export type RevertState = Revert.State
@@ -110,6 +115,11 @@ export type MessageNotFoundError = SessionRevert.MessageNotFoundError
 
 export type Error = NotFoundError | MessageDecodeError | OperationUnavailableError | PromptConflictError
 
+export class ManagedOutputExpiredError extends Schema.TaggedErrorClass<ManagedOutputExpiredError>()(
+  "Session.ManagedOutputExpiredError",
+  { outputID: ManagedOutput.ID },
+) {}
+
 export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<SessionSchema.Info[]>
   readonly create: (input: CreateInput) => Effect.Effect<SessionSchema.Info>
@@ -133,12 +143,20 @@ export interface Interface {
   readonly events: (input: {
     sessionID: SessionSchema.ID
     after?: number
-  }) => Stream.Stream<SessionEvent.DurableEvent, NotFoundError>
+  }) => Stream.Stream<SessionEvent.ProjectedEvent, NotFoundError>
   readonly history: (input: {
     sessionID: SessionSchema.ID
     after?: number
     limit: number
   }) => Effect.Effect<{ events: ReadonlyArray<SessionEvent.DurableEvent>; hasMore: boolean }, NotFoundError>
+  readonly eventPayload: (input: {
+    sessionID: SessionSchema.ID
+    eventID: EventV2.ID
+  }) => Effect.Effect<SessionEvent.DurableEvent | undefined, NotFoundError>
+  readonly toolOutput: (input: {
+    sessionID: SessionSchema.ID
+    outputID: ManagedOutput.ID
+  }) => Effect.Effect<Uint8Array | undefined, NotFoundError | ManagedOutputExpiredError>
   readonly switchAgent: (input: { sessionID: SessionSchema.ID; agent: string }) => Effect.Effect<void, NotFoundError>
   readonly switchModel: (input: {
     sessionID: SessionSchema.ID
@@ -351,7 +369,20 @@ const layer = Layer.effect(
           result
             .get(input.sessionID)
             .pipe(Effect.as(events.durable({ aggregateID: input.sessionID, after: input.after }))),
-        ).pipe(Stream.filter((event): event is SessionEvent.DurableEvent => isDurableSessionEvent(event))),
+        ).pipe(
+          Stream.filter((event): event is SessionEvent.DurableEvent => isDurableSessionEvent(event)),
+          Stream.map((event) => {
+            const projected = ProjectedEvent.project(event)
+            events.projected?.({
+              type: event.type,
+              truncated: projected.event.truncated,
+              droppedBytes: projected.droppedBytes,
+              failed: projected.failed,
+              errorName: projected.errorName,
+            })
+            return projected.event as SessionEvent.ProjectedEvent
+          }),
+        ),
       history: Effect.fn("V2Session.history")(function* (input) {
         yield* result.get(input.sessionID)
         return yield* EventV2.readAggregate(db, {
@@ -359,6 +390,64 @@ const layer = Layer.effect(
           aggregateID: input.sessionID,
           manifest: SessionDurable,
         })
+      }),
+      eventPayload: Effect.fn("V2Session.eventPayload")(function* (input) {
+        yield* result.get(input.sessionID)
+        const event = yield* EventV2.readEvent(db, { aggregateID: input.sessionID, eventID: input.eventID })
+        return event && isDurableSessionEvent(event) ? event : undefined
+      }),
+      toolOutput: Effect.fn("V2Session.toolOutput")(function* (input) {
+        yield* result.get(input.sessionID)
+        const rows = yield* db
+          .select({ data: EventTable.data })
+          .from(EventTable)
+          .where(
+            and(
+              eq(EventTable.aggregate_id, input.sessionID),
+              inArray(
+                EventTable.type,
+                [EventV2.versionedType(SessionEvent.Tool.Success.type, SessionEvent.Tool.Success.durable!.version)],
+              ),
+            ),
+          )
+          .all()
+          .pipe(Effect.orDie)
+        const match = rows
+          .map((row) => row.data)
+          .find((data) => {
+            const outputRefs = data.outputRefs
+            return Array.isArray(outputRefs) && outputRefs.includes(input.outputID)
+          })
+        if (!match) {
+          events.outputFetch?.("not-found")
+          return undefined
+        }
+        const outputRefs = match.outputRefs as ReadonlyArray<string>
+        const outputPaths = match.outputPaths
+        const index = outputRefs.indexOf(input.outputID)
+        const outputPath = Array.isArray(outputPaths) ? outputPaths[index] : undefined
+        if (typeof outputPath !== "string") {
+          events.outputFetch?.("not-found")
+          return undefined
+        }
+        const outputDirectory = path.resolve(path.join(Global.Path.data, MANAGED_DIRECTORY))
+        const resolvedOutputPath = path.resolve(outputPath)
+        if (!resolvedOutputPath.startsWith(outputDirectory + path.sep)) {
+          events.outputFetch?.("expired")
+          return yield* new ManagedOutputExpiredError({ outputID: input.outputID })
+        }
+        const timestamp = typeof match.timestamp === "string" ? Date.parse(match.timestamp) : Number(match.timestamp)
+        if (!Number.isFinite(timestamp) || timestamp < Date.now() - 7 * 24 * 60 * 60 * 1_000) {
+          events.outputFetch?.("expired")
+          return yield* new ManagedOutputExpiredError({ outputID: input.outputID })
+        }
+        const file = Bun.file(resolvedOutputPath)
+        if (!(yield* Effect.promise(() => file.exists()))) {
+          events.outputFetch?.("expired")
+          return yield* new ManagedOutputExpiredError({ outputID: input.outputID })
+        }
+        events.outputFetch?.("hit")
+        return new Uint8Array(yield* Effect.promise(() => file.arrayBuffer()))
       }),
       prompt: Effect.fn("V2Session.prompt")((input) =>
         Effect.uninterruptible(

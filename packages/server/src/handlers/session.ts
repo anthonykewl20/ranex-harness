@@ -5,7 +5,10 @@ import { Api } from "../api"
 import { SessionsCursor } from "@ranex/protocol/groups/session"
 import {
   ConflictError,
+  EventPayloadNotFoundError,
   InvalidCursorError,
+  ManagedOutputExpiredError,
+  ManagedOutputNotFoundError,
   MessageNotFoundError,
   ServiceUnavailableError,
   SessionNotFoundError,
@@ -361,6 +364,54 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
             session.events({ sessionID: ctx.params.sessionID, after: ctx.query.after }).pipe(Stream.orDie),
           ),
         ),
+      )
+      .handle(
+        "session.eventPayload",
+        Effect.fn(function* (ctx) {
+          const event = yield* session.eventPayload(ctx.params).pipe(
+            Effect.catchTag("Session.NotFoundError", (error) =>
+              Effect.fail(
+                new SessionNotFoundError({
+                  sessionID: error.sessionID,
+                  message: `Session not found: ${error.sessionID}`,
+                }),
+              ),
+            ),
+          )
+          if (event) return { data: event }
+          return yield* new EventPayloadNotFoundError({
+            eventID: ctx.params.eventID,
+            message: `Durable event not found: ${ctx.params.eventID}`,
+          })
+        }),
+      )
+      .handle(
+        "session.toolOutput",
+        Effect.fn(function* (ctx) {
+          const output = yield* session.toolOutput(ctx.params).pipe(
+            Effect.catchTag("Session.NotFoundError", (error) =>
+              Effect.fail(
+                new SessionNotFoundError({
+                  sessionID: error.sessionID,
+                  message: `Session not found: ${error.sessionID}`,
+                }),
+              ),
+            ),
+            Effect.catchTag("Session.ManagedOutputExpiredError", (error) =>
+              Effect.fail(
+                new ManagedOutputExpiredError({
+                  outputID: error.outputID,
+                  message: `Managed output expired: ${error.outputID}`,
+                }),
+              ),
+            ),
+          )
+          if (output) return output
+          return yield* new ManagedOutputNotFoundError({
+            outputID: ctx.params.outputID,
+            message: `Managed output not found: ${ctx.params.outputID}`,
+          })
+        }),
       )
       .handle(
         "session.interrupt",

@@ -164,7 +164,7 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
                   ? { $ref: "#/components/schemas/Event" }
                   : path === "/global/event"
                     ? { $ref: "#/components/schemas/GlobalEvent" }
-                    : { $ref: "#/components/schemas/V2Event" },
+                    : { $ref: "#/components/schemas/ProjectedEvent" },
             },
           },
         }

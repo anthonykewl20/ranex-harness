@@ -5,6 +5,7 @@ import { ModelV2 } from "../../model"
 import { SessionEvent } from "../event"
 import { SessionMessage } from "../message"
 import { SessionSchema } from "../schema"
+import { ManagedOutput } from "@ranex/schema/managed-output"
 
 type Input = {
   readonly sessionID: SessionSchema.ID
@@ -258,6 +259,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
   const publish = Effect.fn("SessionRunner.publishLLMEvent")(function* (
     event: LLMEvent,
     outputPaths: ReadonlyArray<string> = [],
+    outputRefs: ReadonlyArray<ManagedOutput.ID> = [],
   ) {
     switch (event.type) {
       case "step-start":
@@ -387,6 +389,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
           callID: event.id,
           ...result,
           outputPaths,
+          outputRefs,
           ...(provider.executed ? { result: event.result } : {}),
           provider,
         })

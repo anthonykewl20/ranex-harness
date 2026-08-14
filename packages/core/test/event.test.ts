@@ -451,6 +451,32 @@ describe("EventV2", () => {
     }),
   )
 
+  it.effect("transforms scoped queue entries without changing unscoped canonical streams", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const scoped = yield* EventV2.allBoundedScoped(events, 1, () => true, (event) => ({ id: event.id }))
+          const raw = yield* EventV2.allBounded(events, 1)
+          const scopedFiber = yield* scoped.pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+          const rawFiber = yield* raw.pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+          yield* Effect.yieldNow
+          const published = yield* events.publish(Message, { text: "transformed" })
+          expect(Array.from(yield* Fiber.join(scopedFiber))).toEqual([{ id: published.id }])
+          expect(Array.from(yield* Fiber.join(rawFiber))).toEqual([published])
+        }),
+      )
+    }),
+  )
+
+  it.effect("records projection failures", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      events.projected?.({ type: "test.cyclic", truncated: true, droppedBytes: 0, failed: true, errorName: "TypeError" })
+      expect(events.diagnostics().projectionFailures).toBe(1)
+    }),
+  )
+
   it.effect("retains typed overflow semantics for eligible events", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service

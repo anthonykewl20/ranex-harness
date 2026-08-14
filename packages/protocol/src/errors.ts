@@ -71,6 +71,24 @@ export class MessageNotFoundError extends Schema.TaggedErrorClass<MessageNotFoun
   { httpApiStatus: 404 },
 ) {}
 
+export class EventPayloadNotFoundError extends Schema.TaggedErrorClass<EventPayloadNotFoundError>()(
+  "EventPayloadNotFoundError",
+  { eventID: Schema.String, message: Schema.String },
+  { httpApiStatus: 404 },
+) {}
+
+export class ManagedOutputNotFoundError extends Schema.TaggedErrorClass<ManagedOutputNotFoundError>()(
+  "ManagedOutputNotFoundError",
+  { outputID: Schema.String, message: Schema.String },
+  { httpApiStatus: 404 },
+) {}
+
+export class ManagedOutputExpiredError extends Schema.TaggedErrorClass<ManagedOutputExpiredError>()(
+  "ManagedOutputExpiredError",
+  { outputID: Schema.String, message: Schema.String },
+  { httpApiStatus: 410 },
+) {}
+
 export class InvalidCursorError extends Schema.TaggedErrorClass<InvalidCursorError>()(
   "InvalidCursorError",
   { message: Schema.String },

@@ -247,8 +247,11 @@ const layer = Layer.effect(
         snapshot: startSnapshot,
       })
       const withPublication = Semaphore.makeUnsafe(1).withPermit
-      const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
-        withPublication(publisher.publish(event, outputPaths))
+      const publish = (
+        event: LLMEvent,
+        outputPaths: ReadonlyArray<string> = [],
+        outputRefs: ReadonlyArray<import("@ranex/schema/managed-output").ManagedOutput.ID> = [],
+      ) => withPublication(publisher.publish(event, outputPaths, outputRefs))
       let overflowFailure: ProviderErrorEvent | undefined
       let recoveredInvalidToolArguments = false
       const idleError = new LLMError({
@@ -325,6 +328,7 @@ const layer = Layer.effect(
                       output: settlement.output,
                     }),
                     settlement.outputPaths ?? [],
+                    settlement.outputRefs ?? [],
                   ),
                 ),
               ),

@@ -9,6 +9,7 @@ import { makeGlobalNode, makeLocationNode } from "./effect/app-node"
 import { SessionSchema } from "./session/schema"
 import { Identifier } from "./util/identifier"
 import type { ToolOutput } from "@ranex/llm"
+import { ManagedOutput } from "@ranex/schema/managed-output"
 
 export const MAX_LINES = 2_000
 export const MAX_BYTES = 50 * 1024
@@ -25,6 +26,7 @@ export interface BoundInput {
 export interface BoundResult {
   readonly output: ToolOutput
   readonly outputPaths: ReadonlyArray<string>
+  readonly outputRefs?: ReadonlyArray<ManagedOutput.ID>
 }
 
 export class StorageError extends Schema.TaggedErrorClass<StorageError>()("ToolOutputStore.StorageError", {
@@ -170,6 +172,7 @@ const layer = Layer.effect(
           ],
         },
         outputPaths: [outputPath],
+        outputRefs: [ManagedOutput.ID.create()],
       }
     })
 

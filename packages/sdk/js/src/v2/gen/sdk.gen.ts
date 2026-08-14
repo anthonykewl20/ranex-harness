@@ -341,6 +341,8 @@ import type {
   V2SessionContextResponses,
   V2SessionCreateErrors,
   V2SessionCreateResponses,
+  V2SessionEventPayloadErrors,
+  V2SessionEventPayloadResponses,
   V2SessionEventsErrors,
   V2SessionEventsResponses,
   V2SessionGetErrors,
@@ -381,6 +383,8 @@ import type {
   V2SessionSwitchAgentResponses,
   V2SessionSwitchModelErrors,
   V2SessionSwitchModelResponses,
+  V2SessionToolOutputErrors,
+  V2SessionToolOutputResponses,
   V2SessionWaitErrors,
   V2SessionWaitResponses,
   V2SkillListErrors,
@@ -5788,6 +5792,66 @@ export class Session3 extends HeyApiClient {
     const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
     return (options?.client ?? this.client).post<V2SessionInterruptResponses, V2SessionInterruptErrors, ThrowOnError>({
       url: "/api/session/{sessionID}/interrupt",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get canonical durable event payload
+   */
+  public eventPayload<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      eventID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "eventID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      V2SessionEventPayloadResponses,
+      V2SessionEventPayloadErrors,
+      ThrowOnError
+    >({
+      url: "/api/session/{sessionID}/event/{eventID}/payload",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get managed tool output
+   */
+  public toolOutput<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      outputID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "outputID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<V2SessionToolOutputResponses, V2SessionToolOutputErrors, ThrowOnError>({
+      url: "/api/session/{sessionID}/tool-output/{outputID}",
       ...options,
       ...params,
     })

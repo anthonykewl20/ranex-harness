@@ -1,38 +1,16 @@
-import { Event } from "@ranex/schema/event"
-import { EventManifest } from "@ranex/schema/event-manifest"
-import { Location } from "@ranex/schema/location"
 import type { Definition } from "@ranex/schema/event"
+import { AbsolutePath } from "@ranex/schema/schema"
+import { ProjectedEvent } from "@ranex/schema/projected-event"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
 
 export const EventSubscriptionQuery = Schema.Struct({
-  directory: Schema.optional(Schema.String),
+  directory: Schema.optional(AbsolutePath.check(Schema.isStartsWith("/"))),
   workspaceID: Schema.optional(Schema.String),
 }).annotate({ identifier: "EventSubscriptionQuery" })
 
-const fields = {
-  id: Event.ID,
-  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-  durable: Schema.optional(Schema.Struct({ aggregateID: Schema.String, seq: Schema.Int, version: Schema.Int })),
-  location: Schema.optional(Location.Ref),
-}
-
-const schema = <const Definitions extends ReadonlyArray<Definition>>(definitions: Definitions) =>
-  Schema.Union([
-    ...definitions,
-    ...(definitions.some((definition) => definition.type === "server.connected")
-      ? []
-      : [
-          Schema.Struct({
-            ...fields,
-            type: Schema.Literal("server.connected"),
-            data: Schema.Struct({}),
-          }).annotate({ identifier: "V2Event.server.connected" }),
-        ]),
-  ]).annotate({ identifier: "V2Event" })
-
-const make = <const Definitions extends ReadonlyArray<Definition>>(definitions: Definitions) => {
-  const EventSchema = schema(definitions)
+const make = () => {
+  const EventSchema = ProjectedEvent.Envelope
   return {
     schema: EventSchema,
     group: HttpApiGroup.make("server.event")
@@ -52,10 +30,9 @@ const make = <const Definitions extends ReadonlyArray<Definition>>(definitions: 
   }
 }
 
-export const makeEventGroup = <const Definitions extends ReadonlyArray<Definition>>(definitions: Definitions) =>
-  make(definitions).group
+export const makeEventGroup = <const Definitions extends ReadonlyArray<Definition>>(_: Definitions) => make().group
 
-const event = make(EventManifest.ServerDefinitions)
+const event = make()
 export const EventGroup = event.group
 export const OpenCodeEvent = event.schema
 export type OpenCodeEvent = typeof OpenCodeEvent.Type

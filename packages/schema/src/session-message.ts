@@ -7,6 +7,7 @@ import { Model } from "./model"
 import { FileAttachment, Prompt } from "./prompt"
 import { DateTimeUtcFromMillis, RelativePath, statics } from "./schema"
 import { SessionID } from "./session-id"
+import { ManagedOutput } from "./managed-output"
 import { ascending } from "./identifier"
 
 export const ID = Schema.String.check(Schema.isStartsWith("msg_")).pipe(
@@ -99,6 +100,7 @@ export const ToolStateCompleted = Schema.Struct({
   attachments: FileAttachment.pipe(Schema.Array, optional),
   content: ToolContent.pipe(Schema.Array),
   outputPaths: Schema.Array(Schema.String).pipe(optional),
+  outputRefs: Schema.Array(ManagedOutput.ID).pipe(optional),
   structured: Schema.Record(Schema.String, Schema.Unknown),
   result: Schema.Unknown.pipe(optional),
 }).annotate({ identifier: "Session.Message.ToolState.Completed" })
