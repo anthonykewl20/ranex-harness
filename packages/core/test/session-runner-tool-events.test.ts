@@ -31,6 +31,7 @@ const capture = () => {
     durable: () => Stream.empty,
     listen: () => Effect.succeed(Effect.void),
     listenerCount: () => 0,
+    diagnostics: () => ({ offered: 0, accepted: 0, rejected: 0, overflow: 0, activeSubscribers: 0 }),
     project: () => Effect.void,
     replay: () => Effect.void,
     replayAll: () => Effect.succeed(undefined),

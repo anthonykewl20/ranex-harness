@@ -5,6 +5,11 @@ import type { Definition } from "@ranex/schema/event"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
 
+export const EventSubscriptionQuery = Schema.Struct({
+  directory: Schema.optional(Schema.String),
+  workspaceID: Schema.optional(Schema.String),
+}).annotate({ identifier: "EventSubscriptionQuery" })
+
 const fields = {
   id: Event.ID,
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
@@ -33,6 +38,7 @@ const make = <const Definitions extends ReadonlyArray<Definition>>(definitions: 
     group: HttpApiGroup.make("server.event")
       .add(
         HttpApiEndpoint.get("event.subscribe", "/api/event", {
+          query: EventSubscriptionQuery,
           success: HttpApiSchema.StreamSse({ data: EventSchema }),
         }).annotateMerge(
           OpenApi.annotations({

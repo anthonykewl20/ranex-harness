@@ -18,6 +18,20 @@ export type { Data, Definition, Payload } from "@ranex/schema/event"
 export type Subscriber<D extends Definition = Definition> = (event: Payload<D>) => Effect.Effect<void>
 export type Unsubscribe = Effect.Effect<void>
 
+export interface SubscriberDiagnostics {
+  readonly offered: number
+  readonly accepted: number
+  readonly rejected: number
+  readonly overflow: number
+  readonly activeSubscribers: number
+}
+
+type MutableSubscriberDiagnostics = {
+  -readonly [K in keyof SubscriberDiagnostics]: SubscriberDiagnostics[K]
+}
+
+const subscriberDiagnostics = new WeakMap<Interface, MutableSubscriberDiagnostics>()
+
 export const latestSequence = Effect.fn("EventV2.latestSequence")(function* (
   db: Database.Interface["db"],
   aggregateID: string,
@@ -135,6 +149,7 @@ export interface Interface {
   /** @deprecated Use `all()` and consume the returned stream. */
   readonly listen: (listener: Subscriber) => Effect.Effect<Unsubscribe>
   readonly listenerCount: () => number
+  readonly diagnostics: () => SubscriberDiagnostics
   readonly project: <D extends Definition>(definition: D, projector: Subscriber<D>) => Effect.Effect<void>
   readonly replay: (
     event: SerializedEvent,
@@ -151,16 +166,61 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@opencode/Event") {}
 
 export const allBounded = (events: Interface, capacity: number) =>
+  allBoundedScoped(events, capacity, () => true)
+
+/**
+ * Must be pure and synchronous. Runs on the publisher fiber inside `notify`;
+ * throwing defects that publisher because live-path listeners are not isolated.
+ * Returning false drops the event without consuming queue capacity or incrementing overflow.
+ */
+export type ScopedSubscriberPredicate = (event: Payload) => boolean
+
+/**
+ * Creates a bounded live stream that applies `accepts` before queueing each event.
+ * The predicate must be pure and synchronous because it runs on the publisher fiber
+ * inside `notify`; a throw defects that publisher because live-path listeners are not isolated.
+ * Returning false drops the event without consuming queue capacity or incrementing overflow.
+ */
+export const allBoundedScoped = (events: Interface, capacity: number, accepts: ScopedSubscriberPredicate) =>
   Effect.gen(function* () {
     const queue = yield* Queue.dropping<Payload, SubscriberOverflowError>(capacity)
+    const diagnostics = subscriberDiagnostics.get(events)
     const unsubscribe = yield* events.listen((event) =>
-      Queue.offer(queue, event).pipe(
-        Effect.flatMap((accepted) =>
-          accepted ? Effect.void : Queue.fail(queue, new SubscriberOverflowError({ capacity })).pipe(Effect.asVoid),
-        ),
+      Effect.sync(() => {
+        if (diagnostics) diagnostics.offered++
+        if (!accepts(event)) {
+          if (diagnostics) diagnostics.rejected++
+          return false
+        }
+        return true
+      }).pipe(
+        Effect.flatMap((matches) => {
+          if (!matches) return Effect.void
+          return Queue.offer(queue, event).pipe(
+            Effect.flatMap((accepted) => {
+              if (accepted) {
+                if (diagnostics) diagnostics.accepted++
+                return Effect.void
+              }
+              if (diagnostics) diagnostics.overflow++
+              return Queue.fail(queue, new SubscriberOverflowError({ capacity })).pipe(Effect.asVoid)
+            }),
+          )
+        }),
       ),
     )
-    yield* Effect.addFinalizer(() => unsubscribe.pipe(Effect.andThen(Queue.shutdown(queue)), Effect.asVoid))
+    if (diagnostics) diagnostics.activeSubscribers++
+    yield* Effect.addFinalizer(() =>
+      unsubscribe.pipe(
+        Effect.andThen(Queue.shutdown(queue)),
+        Effect.andThen(
+          Effect.sync(() => {
+            if (diagnostics) diagnostics.activeSubscribers--
+          }),
+        ),
+        Effect.asVoid,
+      ),
+    )
     return Stream.fromQueue(queue)
   })
 
@@ -180,6 +240,13 @@ export const layerWith = (options?: LayerOptions) =>
       const projectors = new Map<string, Subscriber[]>()
       // TODO: Bind durable projectors to exact type+version before supporting incompatible historical payloads.
       const listeners = new Array<Subscriber>()
+      const diagnostics: MutableSubscriberDiagnostics = {
+        offered: 0,
+        accepted: 0,
+        rejected: 0,
+        overflow: 0,
+        activeSubscribers: 0,
+      }
       const { db } = yield* Database.Service
 
       const getOrCreate = (definition: Definition) =>
@@ -620,19 +687,22 @@ export const layerWith = (options?: LayerOptions) =>
           projectors.set(definition.type, list)
         })
 
-      return Service.of({
+      const service = Service.of({
         publish,
         subscribe,
         all: streamAll,
         durable,
         listen,
         listenerCount: () => listeners.length,
+        diagnostics: () => ({ ...diagnostics }),
         project,
         replay,
         replayAll,
         remove,
         claim,
       })
+      subscriberDiagnostics.set(service, diagnostics)
+      return service
     }),
   )
 

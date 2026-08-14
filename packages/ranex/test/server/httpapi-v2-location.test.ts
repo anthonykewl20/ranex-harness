@@ -1,12 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { EventV2 } from "@ranex/core/event"
+import { Database } from "@ranex/core/database/database"
+import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
+import { LayerNode } from "@ranex/core/effect/layer-node"
 import { Location } from "@ranex/core/location"
-import { Context, Schema } from "effect"
+import { ServerEvent } from "@ranex/schema/server-event"
+import { Context, Effect, Schema } from "effect"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdir } from "../fixture/fixture"
+import { pollWithTimeout, testEffectShared } from "../lib/effect"
 
 const context = Context.empty() as Context.Context<unknown>
+const eventIt = testEffectShared(AppNodeBuilder.build(LayerNode.group([Database.node, EventV2.node])))
 
 function request(route: string, directory: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers)
@@ -105,7 +111,7 @@ describe("v2 location HttpApi", () => {
     }
   })
 
-  test("streams native EventV2 payloads across locations", async () => {
+  test("leaves native EventV2 streams unscoped without query parameters", async () => {
     await using subscriber = await tmpdir({ git: true })
     await using publisher = await tmpdir({ git: true })
     const response = await request("/api/event", subscriber.path)
@@ -123,4 +129,83 @@ describe("v2 location HttpApi", () => {
     })
     await reader.return(undefined)
   })
+
+  test("rejects a cross-location flood before it reaches a scoped EventV2 stream", async () => {
+    await using subscriber = await tmpdir({ git: true })
+    await using publisher = await tmpdir({ git: true })
+    const response = await request(`/api/event?directory=${encodeURIComponent(subscriber.path)}`, subscriber.path)
+    const reader = eventStream(response.body!)
+    expect((await readEvent(reader)).type).toBe("server.connected")
+
+    for (let index = 0; index < 300; index++) {
+      expect((await request("/session", publisher.path, { method: "POST" })).status).toBe(200)
+    }
+
+    expect((await request("/session", subscriber.path, { method: "POST" })).status).toBe(200)
+    expect(await readEventType(reader, "session.created")).toMatchObject({
+      location: { directory: subscriber.path },
+    })
+    await reader.return(undefined)
+  }, 30_000)
+
+  test("sends server.connected and heartbeats to scoped EventV2 subscribers", async () => {
+    await using subscriber = await tmpdir({ git: true })
+    const response = await request(`/api/event?directory=${encodeURIComponent(subscriber.path)}`, subscriber.path)
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let output = ""
+    try {
+      while (!output.includes(": heartbeat\n\n")) {
+        const value = await reader.read()
+        if (value.done) throw new Error("event stream closed before heartbeat")
+        output += decoder.decode(value.value, { stream: true })
+      }
+    } finally {
+      await reader.cancel()
+      reader.releaseLock()
+    }
+    expect(output).toContain("server.connected")
+  }, 30_000)
+
+  eventIt.live("releases a scoped EventV2 listener when the SSE client disconnects", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const listenerCount = events.listenerCount()
+      const activeSubscribers = events.diagnostics().activeSubscribers
+      const response = yield* Effect.promise(() => request(`/api/event?directory=${encodeURIComponent(process.cwd())}`, process.cwd()))
+      const reader = response.body!.getReader()
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          await reader.cancel()
+          reader.releaseLock()
+        }),
+      )
+      const connected = yield* Effect.promise(() => reader.read())
+      expect(new TextDecoder().decode(connected.value)).toContain("server.connected")
+      yield* Effect.promise(() => reader.cancel())
+      yield* pollWithTimeout(
+        Effect.sync(() =>
+          events.listenerCount() === listenerCount && events.diagnostics().activeSubscribers === activeSubscribers
+            ? true
+            : undefined,
+        ),
+        "scoped SSE listener did not release after client disconnect",
+      )
+    }),
+  )
+
+  eventIt.live("delivers location-less EventV2 events to scoped SSE subscribers", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const response = yield* Effect.promise(() => request(`/api/event?directory=${encodeURIComponent(process.cwd())}`, process.cwd()))
+      const reader = eventStream(response.body!)
+      yield* Effect.addFinalizer(() => Effect.promise(() => reader.return(undefined)).pipe(Effect.asVoid))
+      expect((yield* Effect.promise(() => readEvent(reader))).type).toBe("server.connected")
+      const published = yield* events.publish(ServerEvent.Connected, {})
+      expect(yield* Effect.promise(() => readEvent(reader))).toMatchObject({
+        id: published.id,
+        type: ServerEvent.Connected.type,
+      })
+    }),
+  )
 })

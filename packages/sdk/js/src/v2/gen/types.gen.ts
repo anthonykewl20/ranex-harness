@@ -13041,7 +13041,10 @@ export type V2SkillListResponse = V2SkillListResponses[keyof V2SkillListResponse
 export type V2EventSubscribeData = {
   body?: never
   path?: never
-  query?: never
+  query?: {
+    directory?: string
+    workspaceID?: string
+  }
   url: "/api/event"
 }
 
