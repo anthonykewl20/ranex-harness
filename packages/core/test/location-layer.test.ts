@@ -1,14 +1,16 @@
 import fs from "fs/promises"
 import path from "path"
 import { describe, expect } from "bun:test"
-import { DateTime, Effect, Equal, Hash, Schema } from "effect"
+import { DateTime, Deferred, Effect, Equal, Hash, Layer, RcMap, Schema } from "effect"
 import { Tool } from "@ranex/core/tool/tool"
 import { define } from "@ranex/plugin/v2/effect"
 import { AgentV2 } from "@ranex/core/agent"
 import { Catalog } from "@ranex/core/catalog"
+import { Node } from "@ranex/core/effect/app-node"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNode } from "@ranex/core/effect/layer-node"
-import { LocationServiceMap } from "@ranex/core/location-services"
+import { Integration } from "@ranex/core/integration"
+import { buildLocationServiceMap, LocationServiceMap } from "@ranex/core/location-services"
 import { Location } from "@ranex/core/location"
 import { PluginV2 } from "@ranex/core/plugin"
 import { ModelV2 } from "@ranex/core/model"
@@ -36,7 +38,85 @@ const it = testEffect(
   AppNodeBuilder.build(LayerNode.group([ApplicationTools.node, Database.node, EventV2.node, LocationServiceMap.node])),
 )
 
+const expiry = {
+  acquisitions: [] as number[],
+  finalizations: [] as number[],
+  closings: [] as number[],
+  closed: [] as Deferred.Deferred<void>[],
+}
+
+const integration = Node.makeLocationNode({
+  service: Integration.Service,
+  layer: Layer.merge(
+    Integration.locationLayer,
+    Layer.effectDiscard(
+      Effect.gen(function* () {
+        const acquisition = expiry.acquisitions.length
+        expiry.acquisitions.push(acquisition)
+        const closed = yield* Deferred.make<void>()
+        expiry.closed.push(closed)
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => expiry.closings.push(acquisition)).pipe(
+            Effect.andThen(Deferred.succeed(closed, undefined)),
+            Effect.asVoid,
+          ),
+        )
+        yield* Effect.addFinalizer(() => Effect.sync(() => expiry.finalizations.push(acquisition)))
+      }),
+    ),
+  ),
+  deps: [Credential.node, EventV2.node],
+})
+
+const expiryIt = testEffect(
+  AppNodeBuilder.build(
+    LayerNode.group([ApplicationTools.node, Database.node, EventV2.node, LocationServiceMap.node]),
+    [
+      [Integration.node, integration],
+      [
+        LocationServiceMap.node,
+        buildLocationServiceMap([[Integration.node, integration]], { idleTimeToLive: "50 millis" }),
+      ],
+    ],
+  ),
+)
+
 describe("LocationServiceMap", () => {
+  expiryIt.live("expires and reacquires a location layer", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((dir) =>
+        Effect.gen(function* () {
+          expiry.acquisitions.length = 0
+          expiry.finalizations.length = 0
+          expiry.closings.length = 0
+          expiry.closed.length = 0
+          const locations = yield* LocationServiceMap.Service
+          const ref = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
+          const first = yield* Location.Service.pipe(Effect.provide(locations.get(ref)), Effect.scoped)
+
+          expect(expiry.acquisitions).toEqual([0])
+          expect(yield* RcMap.has(locations.rcMap, ref)).toBe(true)
+
+          yield* Effect.sleep("1 second")
+
+          yield* Deferred.await(expiry.closed[0]!).pipe(Effect.timeout("5 seconds"))
+          expect(yield* RcMap.has(locations.rcMap, ref)).toBe(false)
+          expect(expiry.finalizations).toEqual([0])
+          expect(expiry.closings).toEqual([0])
+
+          const second = yield* Location.Service.pipe(Effect.provide(locations.get(ref)), Effect.scoped)
+
+          expect(second).not.toBe(first)
+          expect(expiry.acquisitions).toEqual([0, 1])
+          expect(yield* RcMap.has(locations.rcMap, ref)).toBe(true)
+        }),
+      ),
+    ),
+  )
+
   it.live("reuses cached services for constructed and decoded location refs", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),

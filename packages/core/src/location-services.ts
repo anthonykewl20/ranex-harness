@@ -1,4 +1,4 @@
-import { Effect, Layer, LayerMap } from "effect"
+import { Duration, Effect, Layer, LayerMap } from "effect"
 import { AgentV2 } from "./agent"
 import { AISDK } from "./aisdk"
 import { Catalog } from "./catalog"
@@ -81,8 +81,13 @@ export const locationServices = LayerNode.group([
 export type LocationServices = LayerNode.Output<typeof locationServices>
 export type LocationError = LayerNode.Error<typeof locationServices>
 
+export interface BuildLocationServiceMapOptions {
+  readonly idleTimeToLive?: Duration.Input
+}
+
 export function buildLocationServiceMap(
   replacements: LayerNode.Replacements = [],
+  options: BuildLocationServiceMapOptions = {},
 ): Layer.Layer<LocationServiceMap.Service> {
   return Layer.effect(
     LocationServiceMap.Service,
@@ -106,7 +111,7 @@ export function buildLocationServiceMap(
           Layer.provide(LayerNode.compile(location.hoisted)),
         )
       },
-      { idleTimeToLive: "60 minutes" },
+      { idleTimeToLive: options.idleTimeToLive ?? "60 minutes" },
     ),
   )
 }
