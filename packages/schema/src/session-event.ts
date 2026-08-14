@@ -370,6 +370,19 @@ export namespace Tool {
     },
   })
   export type Failed = typeof Failed.Type
+
+  // This is a live diagnostic only. The durable Tool.Failed event records the
+  // model-facing error result that drives the continuation.
+  export const ArgumentsRecovered = Event.define({
+    type: "session.next.tool.arguments.recovered",
+    schema: {
+      ...Base,
+      tool: Schema.String,
+      reason: Schema.Literal("invalid-tool-arguments-recovered"),
+      finishReason: Schema.optional(Schema.Literal("length")),
+    },
+  })
+  export type ArgumentsRecovered = typeof ArgumentsRecovered.Type
 }
 
 export const RetryError = Schema.Struct({
@@ -502,6 +515,7 @@ export const Definitions = Event.inventory(
   Tool.Progress,
   Tool.Success,
   Tool.Failed,
+  Tool.ArgumentsRecovered,
   Retried,
   Compaction.Started,
   Compaction.Delta,

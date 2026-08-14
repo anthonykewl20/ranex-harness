@@ -64,7 +64,7 @@ const inputDelta = (tool: PendingTool, text: string) =>
   })
 
 const toolCall = (route: string, tool: PendingTool, inputOverride?: string) =>
-  parseToolInput(route, tool.name, inputOverride ?? tool.input).pipe(
+  parseToolInput(route, tool.name, inputOverride ?? tool.input, tool.id).pipe(
     Effect.map(
       (input): ToolCall =>
         LLMEvent.toolCall({
@@ -191,6 +191,44 @@ export const finishWithInput = <K extends StreamKey>(route: string, tools: State
       ],
     }
   })
+
+export const finishOrError = <K extends StreamKey>(route: string, tools: State<K>, key: K) =>
+  finish(route, tools, key).pipe(
+    Effect.match({
+      onSuccess: (result) => result,
+      onFailure: (error) => {
+        if (!(error instanceof LLMError)) throw error
+        const tool = tools[key]
+        if (!tool) return { tools }
+        return {
+          tools: withoutTool(tools, key),
+          events: [LLMEvent.toolInputEnd({ id: tool.id, name: tool.name, providerMetadata: tool.providerMetadata })],
+          error,
+        }
+      },
+    }),
+  )
+
+/**
+ * Finalize a call while retaining a typed parse failure for protocols whose
+ * terminal event carries additional context (such as an output-token cutoff).
+ */
+export const finishWithInputOrError = <K extends StreamKey>(route: string, tools: State<K>, key: K, input: string) =>
+  finishWithInput(route, tools, key, input).pipe(
+    Effect.match({
+      onSuccess: (result) => result,
+      onFailure: (error) => {
+        if (!(error instanceof LLMError)) throw error
+        const tool = tools[key]
+        if (!tool) return { tools }
+        return {
+          tools: withoutTool(tools, key),
+          events: [LLMEvent.toolInputEnd({ id: tool.id, name: tool.name, providerMetadata: tool.providerMetadata })],
+          error,
+        }
+      },
+    }),
+  )
 
 /**
  * Finalize every pending tool call at once. OpenAI Chat has this shape: it does

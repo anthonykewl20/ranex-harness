@@ -6,6 +6,7 @@ import { HttpTransport, WebSocketTransport } from "../route/transport"
 import { Protocol } from "../route/protocol"
 import {
   LLMEvent,
+  LLMError,
   Usage,
   type FinishReason,
   type JsonSchema,
@@ -239,6 +240,7 @@ interface ParserState {
   readonly lifecycle: Lifecycle.State
   readonly reasoningItems: Readonly<Record<string, ReasoningStreamItem>>
   readonly store: boolean | undefined
+  readonly invalidToolArguments?: LLMError
 }
 
 type ReasoningSummaryStatus = "active" | "can-conclude" | "concluded"
@@ -819,8 +821,8 @@ const onOutputItemDone = Effect.fn("OpenAIResponses.onOutputItemDone")(function*
       : ToolStream.start(state.tools, item.id, { id: item.call_id, name: item.name })
     const result =
       item.arguments === undefined
-        ? yield* ToolStream.finish(ADAPTER, tools, item.id)
-        : yield* ToolStream.finishWithInput(ADAPTER, tools, item.id, item.arguments)
+        ? yield* ToolStream.finishOrError(ADAPTER, tools, item.id)
+        : yield* ToolStream.finishWithInputOrError(ADAPTER, tools, item.id, item.arguments)
     const events: LLMEvent[] = []
     const resultEvents = result.events ?? []
     const lifecycle = resultEvents.length ? Lifecycle.stepStart(state.lifecycle, events) : state.lifecycle
@@ -831,6 +833,8 @@ const onOutputItemDone = Effect.fn("OpenAIResponses.onOutputItemDone")(function*
         lifecycle,
         hasFunctionCall: resultEvents.some(LLMEvent.is.toolCall) ? true : state.hasFunctionCall,
         tools: result.tools,
+        invalidToolArguments:
+          "error" in result && result.error instanceof LLMError ? result.error : state.invalidToolArguments,
       },
       events,
     ] satisfies StepResult
@@ -872,7 +876,14 @@ const onOutputItemDone = Effect.fn("OpenAIResponses.onOutputItemDone")(function*
   return [state, NO_EVENTS] satisfies StepResult
 })
 
-const onResponseFinish = (state: ParserState, event: OpenAIResponsesEvent): StepResult => {
+const onResponseFinish = (state: ParserState, event: OpenAIResponsesEvent) => {
+  if (state.invalidToolArguments)
+    return Effect.fail(
+      ProviderShared.withToolArgumentFinishReason(
+        state.invalidToolArguments,
+        event.response?.incomplete_details?.reason === "max_output_tokens" ? "length" : undefined,
+      ),
+    )
   const events: LLMEvent[] = []
   const lifecycle = Lifecycle.finish(state.lifecycle, events, {
     reason: mapFinishReason(event, state.hasFunctionCall),
@@ -885,7 +896,7 @@ const onResponseFinish = (state: ParserState, event: OpenAIResponsesEvent): Step
           })
         : undefined,
   })
-  return [{ ...state, lifecycle }, events]
+  return Effect.succeed([{ ...state, lifecycle }, events] satisfies StepResult)
 }
 
 // Build a single human-readable message from whatever the provider supplied.
@@ -942,8 +953,7 @@ const step = (state: ParserState, event: OpenAIResponsesEvent) => {
   if (event.type === "response.output_item.added") return Effect.succeed(onOutputItemAdded(state, event))
   if (event.type === "response.function_call_arguments.delta") return onFunctionCallArgumentsDelta(state, event)
   if (event.type === "response.output_item.done") return onOutputItemDone(state, event)
-  if (event.type === "response.completed" || event.type === "response.incomplete")
-    return Effect.succeed(onResponseFinish(state, event))
+  if (event.type === "response.completed" || event.type === "response.incomplete") return onResponseFinish(state, event)
   if (event.type === "response.failed") return Effect.succeed(onResponseFailed(state, event))
   if (event.type === "error") return Effect.succeed(onError(state, event))
   return Effect.succeed<StepResult>([state, NO_EVENTS])
