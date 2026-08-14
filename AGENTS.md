@@ -1,5 +1,5 @@
 - To regenerate the legacy JavaScript SDK, run `./packages/sdk/js/script/build.ts`.
-- After changing the public Protocol or Server `HttpApi`, run `bun run generate` from `packages/client`. Do not edit `src/generated` or `src/generated-effect` directly.
+- After changing the public Protocol or Server `HttpApi`, run `cd packages/sdk/js && bun run build` (`build` runs `bun ./script/build.ts`). Do not hand-edit `packages/sdk/js/src/v2/gen`. When unrelated work is present, regenerate in an isolated clean worktree (`git worktree add <tmp> HEAD`), copy only the protocol/schema change there, run the build, copy back only the generated diff (including committed-source catch-up), then remove the worktree.
 - Keep runtime dependencies directed from Schema to Core and Protocol, then from Core and Protocol to Server. Client runtime code may depend on Schema and Protocol but never Core or Server; `sdk-next` composes Client, Core, and Server.
 - The default branch in this repo is `dev`.
 - Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
