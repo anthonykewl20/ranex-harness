@@ -94,6 +94,28 @@ export const eventError = (route: string, message: string, raw?: string) =>
     reason: new InvalidProviderOutputReason({ route, message, raw }),
   })
 
+export const invalidToolArgumentsError = (route: string, name: string, id: string) =>
+  new LLMError({
+    module: "ProviderShared",
+    method: "stream",
+    reason: new InvalidProviderOutputReason({
+      message: `Invalid JSON input for ${route} tool call ${name}`,
+      route,
+      kind: "invalid-tool-arguments",
+      toolName: name,
+      toolCallID: id,
+    }),
+  })
+
+export const withToolArgumentFinishReason = (error: LLMError, finishReason: "length" | undefined) => {
+  if (finishReason === undefined || error.reason._tag !== "InvalidProviderOutput") return error
+  return new LLMError({
+    module: error.module,
+    method: error.method,
+    reason: new InvalidProviderOutputReason({ ...error.reason, finishReason }),
+  })
+}
+
 export const parseJson = (route: string, input: string, message: string) =>
   Effect.try({
     try: () => decodeJson(input),
@@ -152,8 +174,11 @@ export const wrappedSystemUpdate = Effect.fn("ProviderShared.wrappedSystemUpdate
  * input deltas (e.g. zero-arg tools). The error message is uniform across
  * routes: `Invalid JSON input for <route> tool call <name>`.
  */
-export const parseToolInput = (route: string, name: string, raw: string) =>
-  parseJson(route, raw || "{}", `Invalid JSON input for ${route} tool call ${name}`)
+export const parseToolInput = (route: string, name: string, raw: string, id: string) =>
+  Effect.try({
+    try: () => decodeJson(raw || "{}"),
+    catch: () => invalidToolArgumentsError(route, name, id),
+  })
 
 export const IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const
 export const VIDEO_MIMES = ["video/mp4", "video/webm", "video/quicktime"] as const

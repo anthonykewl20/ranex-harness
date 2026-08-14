@@ -5,6 +5,7 @@ import {
   LLMEvent,
   Model,
   ContentPolicyReason,
+  InvalidProviderOutputReason,
   TransportReason,
   InvalidRequestReason,
   type LLMClientShape,
@@ -67,6 +68,7 @@ const requests: LLMRequest[] = []
 let response: LLMEvent[] = []
 let responses: LLMEvent[][] | undefined
 let responseStream: Stream.Stream<LLMEvent, LLMError> | undefined
+let responseStreams: Stream.Stream<LLMEvent, LLMError>[] | undefined
 let streamGate: Deferred.Deferred<void> | undefined
 let streamStarted: Deferred.Deferred<void> | undefined
 let streamFailure: LLMError | undefined
@@ -96,8 +98,9 @@ const client = Layer.succeed(
     prepare: () => Effect.die("unused"),
     stream: ((request: LLMRequest) => {
       requests.push(request)
-      if (responseStream) {
-        const stream = responseStream
+      const scriptedStream = responseStreams?.shift() ?? responseStream
+      if (scriptedStream) {
+        const stream = scriptedStream
         responseStream = undefined
         return stream
       }
@@ -345,6 +348,7 @@ const setup = Effect.gen(function* () {
   responses = undefined
   streamFailure = undefined
   responseStream = undefined
+  responseStreams = undefined
   streamGate = undefined
   streamStarted = undefined
   toolExecutionGate = undefined
@@ -1485,6 +1489,170 @@ describe("SessionRunnerLLM", () => {
         },
         { type: "assistant", finish: "stop", content: [{ type: "text", id: "text-final", text: "Done" }] },
       ])
+    }),
+  )
+
+  it.effect("recovers one malformed tool call without dispatching it", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const events = yield* EventV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Use echo" }), resume: false })
+      requests.length = 0
+      executions.length = 0
+      const diagnostic = yield* events
+        .subscribe(SessionEvent.Tool.ArgumentsRecovered)
+        .pipe(Stream.runHead, Effect.forkScoped)
+      yield* Effect.yieldNow
+      const malformed = new LLMError({
+        module: "test",
+        method: "stream",
+        reason: new InvalidProviderOutputReason({
+          message: "Invalid JSON input for fake tool call echo",
+          route: "fake",
+          kind: "invalid-tool-arguments",
+          toolName: "echo",
+          toolCallID: "call-malformed",
+        }),
+      })
+      responseStreams = [
+        Stream.concat(
+          Stream.fromIterable([
+            LLMEvent.stepStart({ index: 0 }),
+            LLMEvent.toolInputStart({ id: "call-malformed", name: "echo" }),
+            LLMEvent.toolInputDelta({ id: "call-malformed", name: "echo", text: '{"text"' }),
+          ]),
+          Stream.fail(malformed),
+        ),
+      ]
+      responses = [
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({ id: "call-valid", name: "echo", input: { text: "valid" } }),
+          LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+          LLMEvent.finish({ reason: "tool-calls" }),
+        ],
+        [
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+          LLMEvent.finish({ reason: "stop" }),
+        ],
+      ]
+
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(3)
+      expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"])
+      expect(executions).toEqual(["valid"])
+      expect(
+        (yield* Fiber.join(diagnostic)).pipe(
+          Option.map((event) => event.data),
+          Option.getOrUndefined,
+        ),
+      ).toMatchObject({ tool: "echo", reason: "invalid-tool-arguments-recovered" })
+      expect((yield* session.context(sessionID))[1]).toMatchObject({
+        type: "assistant",
+        content: [
+          {
+            type: "tool",
+            id: "call-malformed",
+            state: { status: "error", error: { message: expect.stringContaining("invalid JSON") } },
+          },
+        ],
+      })
+    }),
+  )
+
+  it.effect("fails malformed tool arguments after dispatching another tool in the provider turn", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const events = yield* EventV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Use echo" }), resume: false })
+      requests.length = 0
+      executions.length = 0
+      let recoveries = 0
+      yield* events
+        .subscribe(SessionEvent.Tool.ArgumentsRecovered)
+        .pipe(Stream.runForEach(() => Effect.sync(() => recoveries++)), Effect.forkScoped)
+      yield* Effect.yieldNow
+      const malformed = new LLMError({
+        module: "test",
+        method: "stream",
+        reason: new InvalidProviderOutputReason({
+          message: "Invalid JSON input for fake tool call echo",
+          route: "fake",
+          kind: "invalid-tool-arguments",
+          toolName: "echo",
+          toolCallID: "call-malformed",
+        }),
+      })
+      responseStreams = [
+        Stream.concat(
+          Stream.fromIterable([
+            LLMEvent.stepStart({ index: 0 }),
+            LLMEvent.toolCall({ id: "call-valid", name: "echo", input: { text: "valid" } }),
+            LLMEvent.toolInputStart({ id: "call-malformed", name: "echo" }),
+            LLMEvent.toolInputDelta({ id: "call-malformed", name: "echo", text: '{"text"' }),
+          ]),
+          Stream.fail(malformed),
+        ),
+      ]
+
+      const exit = yield* session.resume(sessionID).pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(requests).toHaveLength(1)
+      expect(executions).toEqual(["valid"])
+      expect(recoveries).toBe(0)
+      expect((yield* session.context(sessionID)).at(-1)).toMatchObject({
+        type: "assistant",
+        finish: "error",
+        error: { type: "unknown", message: "Invalid JSON input for fake tool call echo" },
+      })
+    }),
+  )
+
+  it.effect("fails after the malformed tool argument recovery budget is exhausted", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Use echo" }), resume: false })
+      requests.length = 0
+      executions.length = 0
+      const malformed = (id: string) =>
+        new LLMError({
+          module: "test",
+          method: "stream",
+          reason: new InvalidProviderOutputReason({
+            message: "Invalid JSON input for fake tool call echo",
+            route: "fake",
+            kind: "invalid-tool-arguments",
+            toolName: "echo",
+            toolCallID: id,
+          }),
+        })
+      responseStreams = [
+        Stream.concat(
+          Stream.fromIterable([LLMEvent.toolInputStart({ id: "call-first", name: "echo" })]),
+          Stream.fail(malformed("call-first")),
+        ),
+        Stream.concat(
+          Stream.fromIterable([LLMEvent.toolInputStart({ id: "call-second", name: "echo" })]),
+          Stream.fail(malformed("call-second")),
+        ),
+      ]
+
+      const exit = yield* session.resume(sessionID).pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(requests).toHaveLength(2)
+      expect(executions).toEqual([])
+      expect((yield* session.context(sessionID)).at(-1)).toMatchObject({
+        type: "assistant",
+        finish: "error",
+        error: { type: "unknown", message: "Invalid JSON input for fake tool call echo" },
+      })
     }),
   )
 

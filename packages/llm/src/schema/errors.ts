@@ -138,6 +138,10 @@ export class InvalidProviderOutputReason extends Schema.Class<InvalidProviderOut
   message: Schema.String,
   route: Schema.optional(Schema.String),
   raw: Schema.optional(Schema.String),
+  kind: Schema.optional(Schema.Literal("invalid-tool-arguments")),
+  toolName: Schema.optional(Schema.String),
+  toolCallID: Schema.optional(Schema.String),
+  finishReason: Schema.optional(Schema.Literal("length")),
   providerMetadata: Schema.optional(ProviderMetadata),
 }) {
   get retryable() {

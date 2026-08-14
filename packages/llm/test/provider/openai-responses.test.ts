@@ -1220,6 +1220,52 @@ describe("OpenAI Responses route", () => {
     }),
   )
 
+  it.effect("tags malformed function arguments truncated at the output limit", () =>
+    Effect.gen(function* () {
+      const error = yield* LLMClient.generate(
+        LLM.updateRequest(request, {
+          tools: [{ name: "lookup", description: "Lookup data", inputSchema: { type: "object" } }],
+        }),
+      ).pipe(
+        Effect.provide(
+          fixedResponse(
+            sseEvents(
+              {
+                type: "response.output_item.added",
+                item: { type: "function_call", id: "item_1", call_id: "call_1", name: "lookup", arguments: "" },
+              },
+              {
+                type: "response.output_item.done",
+                item: {
+                  type: "function_call",
+                  id: "item_1",
+                  call_id: "call_1",
+                  name: "lookup",
+                  arguments: '{"query"',
+                },
+              },
+              {
+                type: "response.incomplete",
+                response: { incomplete_details: { reason: "max_output_tokens" } },
+              },
+            ),
+          ),
+        ),
+        Effect.flip,
+      )
+
+      expect(error.reason).toMatchObject({
+        _tag: "InvalidProviderOutput",
+        kind: "invalid-tool-arguments",
+        toolName: "lookup",
+        toolCallID: "call_1",
+        finishReason: "length",
+      })
+      if (error.reason._tag !== "InvalidProviderOutput") return yield* Effect.die("Expected invalid provider output")
+      expect(error.reason.raw).toBeUndefined()
+    }),
+  )
+
   it.effect("decodes web_search_call as provider-executed tool-call + tool-result", () =>
     Effect.gen(function* () {
       const item = {

@@ -231,6 +231,25 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
     }
   })
 
+  const recoverUncalledTool = Effect.fn("SessionRunner.recoverUncalledTool")(function* (toolInput: {
+    readonly id: string
+    readonly name: string
+    readonly message: string
+  }) {
+    const tool = tools.get(toolInput.id)
+    if (!tool || tool.name !== toolInput.name || tool.called || tool.settled)
+      return yield* Effect.die(`Invalid tool argument recovery for ${toolInput.id}`)
+    tool.settled = true
+    yield* events.publish(SessionEvent.Tool.Failed, {
+      sessionID: input.sessionID,
+      timestamp: yield* timestamp,
+      assistantMessageID: tool.assistantMessageID,
+      callID: toolInput.id,
+      error: { type: "unknown", message: toolInput.message },
+      provider: { executed: false },
+    })
+  })
+
   const assistantMessageIDForTool = (callID: string) => {
     const tool = tools.get(callID)
     return tool ? Effect.succeed(tool.assistantMessageID) : Effect.die(`Unknown tool call: ${callID}`)
@@ -413,8 +432,10 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
     flush,
     failAssistant,
     failUnsettledTools,
+    recoverUncalledTool,
     hasActiveAssistant: () => assistantActive,
     hasAssistantStarted: () => assistantMessageID !== undefined,
+    hasCalledTools: () => [...tools.values()].some((tool) => tool.called),
     hasProviderError: () => providerFailed,
     stepSettlement: () => stepSettlement,
     startAssistant,

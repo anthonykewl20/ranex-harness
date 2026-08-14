@@ -14,6 +14,9 @@ import {
 const WATCHDOG_IDLE_KIND = "watchdog-idle"
 const WATCHDOG_ABSOLUTE_KIND = "watchdog-absolute"
 const MAX_RETRIES = 2
+// One recovery is enough to repair a truncated call while guaranteeing a model
+// that repeatedly emits malformed arguments cannot consume an unbounded turn.
+const MAX_INVALID_TOOL_ARGUMENT_RECOVERIES = 1
 const BASE_DELAY_MS = 500
 const MAX_DELAY_MS = 10_000
 import { Cause, Clock, DateTime, Effect, Exit, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
@@ -190,6 +193,7 @@ const layer = Layer.effect(
       promotion: SessionInput.Delivery | undefined,
       step: number,
       attempt: number,
+      recoveryAttempts: number,
       recoverOverflow?: typeof compaction.compactAfterOverflow,
     ) {
       const session = yield* getSession(sessionID)
@@ -245,6 +249,7 @@ const layer = Layer.effect(
       const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
         withPublication(publisher.publish(event, outputPaths))
       let overflowFailure: ProviderErrorEvent | undefined
+      let recoveredInvalidToolArguments = false
       const idleError = new LLMError({
         module: "SessionRunner",
         method: "stream",
@@ -360,6 +365,45 @@ const layer = Layer.effect(
             return yield* Effect.die(continueAfterOverflowCompaction(currentStep))
           if (overflowFailure) yield* publish(overflowFailure)
           const llmFailure = failure instanceof LLMError ? failure : undefined
+          const invalidToolArguments =
+            llmFailure?.reason._tag === "InvalidProviderOutput" &&
+            llmFailure.reason.kind === "invalid-tool-arguments" &&
+            llmFailure.reason.toolName !== undefined &&
+            llmFailure.reason.toolCallID !== undefined
+              ? {
+                  toolName: llmFailure.reason.toolName,
+                  toolCallID: llmFailure.reason.toolCallID,
+                  finishReason: llmFailure.reason.finishReason,
+                }
+              : undefined
+          if (
+            invalidToolArguments &&
+            recoveryAttempts < MAX_INVALID_TOOL_ARGUMENT_RECOVERIES &&
+            !publisher.hasCalledTools()
+          ) {
+            recoveredInvalidToolArguments = true
+            needsContinuation = true
+            const finishReason = invalidToolArguments.finishReason
+            yield* withPublication(
+              publisher.recoverUncalledTool({
+                id: invalidToolArguments.toolCallID,
+                name: invalidToolArguments.toolName,
+                message:
+                  finishReason === "length"
+                    ? `Tool arguments were incomplete because the provider finished with ${finishReason}; resend ${invalidToolArguments.toolName} with valid JSON.`
+                    : `Tool arguments were invalid JSON; resend ${invalidToolArguments.toolName} with valid JSON.`,
+              }),
+            )
+            yield* withPublication(
+              events.publish(SessionEvent.Tool.ArgumentsRecovered, {
+                sessionID: session.id,
+                timestamp: yield* DateTime.now,
+                tool: invalidToolArguments.toolName,
+                reason: "invalid-tool-arguments-recovered",
+                finishReason,
+              }),
+            )
+          }
           if (
             llmFailure?.retryable &&
             attempt < MAX_RETRIES &&
@@ -368,7 +412,7 @@ const layer = Layer.effect(
             !Cause.hasInterrupts(stream.cause)
           )
             return yield* Effect.die(new RetryTurnError(attempt, llmFailure))
-          if (llmFailure && !publisher.hasProviderError()) {
+          if (llmFailure && !recoveredInvalidToolArguments && !publisher.hasProviderError()) {
             yield* withPublication(publisher.failUnsettledTools("Provider did not return a tool result", true))
             yield* withPublication(publisher.failAssistant(llmFailure.reason.message))
           }
@@ -435,10 +479,20 @@ const layer = Layer.effect(
             yield* withPublication(publisher.failUnsettledTools("Tool execution interrupted"))
           if (stream._tag === "Success" && !publisher.hasProviderError())
             yield* withPublication(publisher.failUnsettledTools("Provider did not return a tool result", true))
+          if (recoveredInvalidToolArguments)
+            return {
+              needsContinuation: true,
+              step: currentStep,
+              recoveryAttempts: recoveryAttempts + 1,
+            }
           if (stream._tag === "Failure") return yield* Effect.failCause(stream.cause)
           if (settled._tag === "Failure" && Cause.hasInterrupts(settled.cause))
             return yield* Effect.failCause(settled.cause)
-          return { needsContinuation: !publisher.hasProviderError() && needsContinuation, step: currentStep }
+          return {
+            needsContinuation: !publisher.hasProviderError() && needsContinuation,
+            step: currentStep,
+            recoveryAttempts,
+          }
         }),
       )
     }, Effect.scoped)
@@ -447,7 +501,11 @@ const layer = Layer.effect(
       promotion: SessionInput.Delivery | undefined,
       step: number,
       attempt: number,
-    ) => Effect.Effect<{ readonly needsContinuation: boolean; readonly step: number }, RunError>
+      recoveryAttempts: number,
+    ) => Effect.Effect<
+      { readonly needsContinuation: boolean; readonly step: number; readonly recoveryAttempts: number },
+      RunError
+    >
 
     const retryDelay = (attempt: number) => Math.min(BASE_DELAY_MS * 2 ** attempt, MAX_DELAY_MS)
     const retryTurn = (
@@ -479,37 +537,58 @@ const layer = Layer.effect(
         return yield* reenter(defect.attempt + 1)
       })
 
-    const runAfterOverflowCompaction: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, attempt) {
-      return yield* runTurnAttempt(sessionID, promotion, step, attempt).pipe(
-        Effect.catchDefect(
-          Effect.fnUntraced(function* (defect) {
-            if (defect instanceof RetryTurnError)
-              return yield* retryTurn(sessionID, defect, (nextAttempt) =>
-                runAfterOverflowCompaction(sessionID, undefined, step, nextAttempt),
+    const runAfterOverflowCompaction: RunTurn = Effect.fnUntraced(
+      function* (sessionID, promotion, step, attempt, recoveryAttempts) {
+        return yield* runTurnAttempt(sessionID, promotion, step, attempt, recoveryAttempts).pipe(
+          Effect.catchDefect(
+            Effect.fnUntraced(function* (defect) {
+              if (defect instanceof RetryTurnError)
+                return yield* retryTurn(sessionID, defect, (nextAttempt) =>
+                  runAfterOverflowCompaction(sessionID, undefined, step, nextAttempt, recoveryAttempts),
+                )
+              if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
+              if (defect.transition._tag === "ContinueAfterOverflowCompaction")
+                return yield* Effect.die("Post-compaction provider attempt cannot recover another overflow")
+              yield* Effect.yieldNow
+              return yield* runAfterOverflowCompaction(
+                sessionID,
+                undefined,
+                defect.transition.step,
+                attempt,
+                recoveryAttempts,
               )
-            if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
-            if (defect.transition._tag === "ContinueAfterOverflowCompaction")
-              return yield* Effect.die("Post-compaction provider attempt cannot recover another overflow")
-            yield* Effect.yieldNow
-            return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step, attempt)
-          }),
-        ),
-      )
-    })
+            }),
+          ),
+        )
+      },
+    )
 
-    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, attempt) {
-      return yield* runTurnAttempt(sessionID, promotion, step, attempt, compaction.compactAfterOverflow).pipe(
+    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, attempt, recoveryAttempts) {
+      return yield* runTurnAttempt(
+        sessionID,
+        promotion,
+        step,
+        attempt,
+        recoveryAttempts,
+        compaction.compactAfterOverflow,
+      ).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {
             if (defect instanceof RetryTurnError)
               return yield* retryTurn(sessionID, defect, (nextAttempt) =>
-                runTurn(sessionID, undefined, step, nextAttempt),
+                runTurn(sessionID, undefined, step, nextAttempt, recoveryAttempts),
               )
             if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
             yield* Effect.yieldNow
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
-              return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step, attempt)
-            return yield* runTurn(sessionID, undefined, defect.transition.step, attempt)
+              return yield* runAfterOverflowCompaction(
+                sessionID,
+                undefined,
+                defect.transition.step,
+                attempt,
+                recoveryAttempts,
+              )
+            return yield* runTurn(sessionID, undefined, defect.transition.step, attempt, recoveryAttempts)
           }),
         ),
       )
@@ -545,8 +624,9 @@ const layer = Layer.effect(
       while (shouldRun) {
         let needsContinuation = true
         let step = 1
+        let recoveryAttempts = 0
         while (needsContinuation) {
-          const exit = yield* runTurn(input.sessionID, promotion, step, attempt).pipe(Effect.exit)
+          const exit = yield* runTurn(input.sessionID, promotion, step, attempt, recoveryAttempts).pipe(Effect.exit)
           if (Exit.isFailure(exit) && (Cause.hasDies(exit.cause) || Cause.hasInterrupts(exit.cause))) return yield* exit
           yield* db
             .update(SessionTable)
@@ -557,6 +637,7 @@ const layer = Layer.effect(
           const result = yield* exit
           needsContinuation = result.needsContinuation
           step = result.step + 1
+          recoveryAttempts = result.recoveryAttempts
           attempt = 0
           promotion = "steer"
           if (!needsContinuation) needsContinuation = yield* SessionInput.hasPending(db, input.sessionID, "steer")
