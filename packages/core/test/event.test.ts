@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect"
+import { Cause, DateTime, Deferred, Effect, Exit, Fiber, FiberSet, Layer, Option, Schema, Stream } from "effect"
 import { EventV2 } from "@ranex/core/event"
 import { Event } from "@ranex/schema/event"
 import { Session } from "@ranex/schema/session"
@@ -348,6 +348,73 @@ describe("EventV2", () => {
         expect.objectContaining({ data: { text: "overflow" } }),
         last,
       ])
+    }),
+  )
+
+  it.effect("releases an interrupted bounded subscriber under load", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const registered = yield* Deferred.make<void>()
+      let offers = 0
+      let unsubscriptions = 0
+      const observed = {
+        ...events,
+        listen: (listener: EventV2.Subscriber) =>
+          events
+            .listen((event) =>
+              Effect.sync(() => {
+                offers++
+              }).pipe(Effect.andThen(listener(event))),
+            )
+            .pipe(
+              Effect.tap(() => Deferred.succeed(registered, undefined)),
+              Effect.map((unsubscribe) =>
+                Effect.sync(() => {
+                  unsubscriptions++
+                }).pipe(Effect.andThen(unsubscribe)),
+              ),
+            ),
+      }
+      const consuming = yield* Deferred.make<void>()
+      const set = yield* FiberSet.make()
+      const consumer = yield* FiberSet.run(
+        set,
+        Effect.scoped(
+          EventV2.allBounded(observed, 256).pipe(
+            Effect.flatMap((stream) =>
+              stream.pipe(
+                Stream.runForEach(() => Deferred.succeed(consuming, undefined).pipe(Effect.andThen(Effect.never))),
+              ),
+            ),
+          ),
+        ),
+      )
+      yield* Deferred.await(registered)
+
+      yield* events.publish(Message, { text: "consuming" })
+      yield* Deferred.await(consuming)
+      yield* Effect.forEach(
+        Array.from({ length: 256 }, (_, index) => index),
+        (index) => events.publish(Message, { text: `queued-${index}` }),
+        { discard: true },
+      )
+      expect(offers).toBe(257)
+
+      yield* Fiber.interrupt(consumer)
+      const exit = yield* Fiber.await(consumer)
+      expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBeTrue()
+      expect(unsubscriptions).toBe(1)
+      expect(yield* FiberSet.size(set)).toBe(0)
+
+      yield* events.publish(Message, { text: "after abort" })
+      expect(offers).toBe(257)
+
+      const fresh = yield* Effect.scoped(
+        EventV2.allBounded(events, 1).pipe(Effect.flatMap((stream) => stream.pipe(Stream.take(1), Stream.runCollect))),
+      ).pipe(Effect.forkChild)
+      yield* Effect.yieldNow
+      const event = yield* events.publish(Message, { text: "healthy" })
+      expect(Array.from(yield* Fiber.join(fresh))).toEqual([event])
     }),
   )
 
