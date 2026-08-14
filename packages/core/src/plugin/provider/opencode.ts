@@ -5,6 +5,7 @@ import { define } from "@ranex/plugin/v2/effect/plugin"
 import type { CredentialValue } from "@ranex/sdk/v2/types"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { EventV2 } from "../../event"
+import { LocationLifecycle } from "../../location-lifecycle"
 import { Credential } from "../../credential"
 import { Integration } from "../../integration"
 import { ModelV2 } from "../../model"
@@ -78,6 +79,8 @@ export const OpencodePlugin = define<HttpClient.HttpClient | EventV2.Service | S
   id: "opencode",
   effect: Effect.fn(function* (ctx) {
     const events = yield* EventV2.Service
+    yield* LocationLifecycle.track("event_consumer", "opencode-refresh")
+    yield* LocationLifecycle.track("fiber", "opencode-refresh")
     const http = yield* HttpClient.HttpClient
     const loading = Semaphore.makeUnsafe(1)
     let connected = false

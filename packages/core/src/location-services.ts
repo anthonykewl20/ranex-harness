@@ -13,6 +13,7 @@ import { Watcher } from "./filesystem/watcher"
 import { Image } from "./image"
 import { Integration } from "./integration"
 import { Location } from "./location"
+import { LocationLifecycle } from "./location-lifecycle"
 import { LocationMutation } from "./location-mutation"
 import { LocationServiceMap } from "./location-service-map"
 import { PermissionV2 } from "./permission"
@@ -83,6 +84,7 @@ export type LocationError = LayerNode.Error<typeof locationServices>
 
 export interface BuildLocationServiceMapOptions {
   readonly idleTimeToLive?: Duration.Input
+  readonly onGenerationClosed?: (inspection: LocationLifecycle.ClosedInspection) => void
 }
 
 export function buildLocationServiceMap(
@@ -100,15 +102,27 @@ export function buildLocationServiceMap(
         // those back out.
         const location = LayerNode.hoist(locationServices, Node.tags.values.global, allReplacements)
 
+        const locationKey = hashLocation(ref.directory)
+        const lifecycle = LocationLifecycle.layer({ location: ref, locationKey, onClosed: options.onGenerationClosed })
         return LayerNode.compile(location.node).pipe(
           Layer.fresh,
           Layer.tap(() =>
-            Effect.logInfo("booting location services", {
-              directory: ref.directory,
-              workspaceID: ref.workspaceID,
+            Effect.gen(function* () {
+              const lifecycle = yield* LocationLifecycle.Service
+              const inspection = yield* lifecycle.inspect()
+              yield* Effect.logInfo("booting location services", {
+                generationID: inspection.generationID,
+                locationKey,
+                workspaceIDPresent: ref.workspaceID !== undefined,
+                state: inspection.state,
+                counts: inspection.counts,
+              })
             }),
           ),
           Layer.provide(LayerNode.compile(location.hoisted)),
+          // Lifecycle is a provider rather than a graph node so it is acquired
+          // before, and finalized after, this generation's graph.
+          Layer.provide(lifecycle),
         )
       },
       { idleTimeToLive: options.idleTimeToLive ?? "60 minutes" },
@@ -118,3 +132,12 @@ export function buildLocationServiceMap(
 
 // This is temporary for backwards compatibility
 export const locationServiceMapLayer = buildLocationServiceMap()
+
+function hashLocation(value: string) {
+  let hash = 0x811c9dc5
+  for (const char of value) {
+    hash ^= char.charCodeAt(0)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0")
+}

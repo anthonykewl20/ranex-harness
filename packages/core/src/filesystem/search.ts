@@ -8,6 +8,7 @@ import fuzzysort from "fuzzysort"
 import { FileSystem } from "../filesystem"
 import { FSUtil } from "../fs-util"
 import { Location } from "../location"
+import { LocationLifecycle } from "../location-lifecycle"
 import { Ripgrep } from "../ripgrep"
 import { RelativePath } from "../schema"
 import { Flag } from "../flag/flag"
@@ -32,6 +33,7 @@ export const ripgrepLayer = Layer.effect(
       directories: [] as string[],
     }
     const directories = new Set<string>()
+    yield* LocationLifecycle.track("fiber", "filesystem-search")
     yield* ripgrep
       .find({
         cwd: location.directory,

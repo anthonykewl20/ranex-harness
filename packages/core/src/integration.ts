@@ -19,6 +19,7 @@ import { Integration } from "@ranex/schema/integration"
 import { Credential } from "./credential"
 import { State } from "./state"
 import { EventV2 } from "./event"
+import { LocationLifecycle } from "./location-lifecycle"
 import { IntegrationConnection } from "./integration/connection"
 
 export const ID = Integration.ID
@@ -223,6 +224,8 @@ export const locationLayer = Layer.effect(
   Effect.gen(function* () {
     const credentials = yield* Credential.Service
     const events = yield* EventV2.Service
+    const lifecycle = yield* LocationLifecycle.capture()
+    yield* LocationLifecycle.track("fiber", "integration-scrub")
     const scope = yield* Scope.Scope
     const attempts = SynchronizedRef.makeUnsafe(new Map<AttemptID, AttemptEntry>())
     const state = State.create<Data, Draft>({
@@ -441,9 +444,18 @@ export const locationLayer = Layer.effect(
             }),
           )
           if (authorization.mode === "auto") {
+            const registration = yield* LocationLifecycle.registerCaptured(lifecycle, "fiber", "integration-attempt")
+            if (registration._tag === "closed") return new Attempt({
+              attemptID: id,
+              url: authorization.url,
+              instructions: authorization.instructions,
+              mode: authorization.mode,
+              time,
+            })
             yield* authorization.callback.pipe(
               Effect.exit,
               Effect.flatMap((exit) => settle(id, exit)),
+              Effect.ensuring(registration._tag === "tracked" ? registration.unregister : Effect.void),
               Effect.forkIn(attemptScope, { startImmediately: true }),
             )
           }

@@ -13,6 +13,7 @@ import { Slug } from "../util/slug"
 import { EventV2 } from "../event"
 import { Database } from "../database/database"
 import { Location } from "../location"
+import { LocationLifecycle } from "../location-lifecycle"
 import { Event } from "@ranex/schema/project-directories"
 import { ProjectCopy } from "@ranex/schema/project-copy"
 
@@ -110,6 +111,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Pr
 export const refreshAfterBoot = Effect.gen(function* () {
   const location = yield* Location.Service
   const copies = yield* Service
+  yield* LocationLifecycle.track("fiber", "project-copy-refresh")
   yield* Effect.gen(function* () {
     yield* Effect.logInfo("project copy refresh started", { projectID: location.project.id })
     const result = yield* copies.refresh({ projectID: location.project.id })

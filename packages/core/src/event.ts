@@ -134,6 +134,7 @@ export interface Interface {
   readonly durable: (input: { readonly aggregateID: string; readonly after?: number }) => Stream.Stream<Payload>
   /** @deprecated Use `all()` and consume the returned stream. */
   readonly listen: (listener: Subscriber) => Effect.Effect<Unsubscribe>
+  readonly listenerCount: () => number
   readonly project: <D extends Definition>(definition: D, projector: Subscriber<D>) => Effect.Effect<void>
   readonly replay: (
     event: SerializedEvent,
@@ -625,6 +626,7 @@ export const layerWith = (options?: LayerOptions) =>
         all: streamAll,
         durable,
         listen,
+        listenerCount: () => listeners.length,
         project,
         replay,
         replayAll,
