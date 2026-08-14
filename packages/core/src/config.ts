@@ -172,6 +172,7 @@ const layer = Layer.effect(
           : decodeInfo(input),
       )
       if (!info) return
+      ConfigPlugin.assertDisabled(info.plugins, filepath)
       return new Document({ type: "document", path: filepath, info })
     })
 
