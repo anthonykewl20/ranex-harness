@@ -1,6 +1,7 @@
 import type {
   AgentV2Info,
   CommandV2Info,
+  Event,
   IntegrationInfo,
   LocationRef,
   ModelV2Info,
@@ -16,13 +17,16 @@ import type {
   SessionMessageAssistantTool,
   SessionV2Info,
   SkillV2Info,
-  V2Event,
 } from "@ranex/sdk/v2"
 import { createStore, produce } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import { useSDK } from "./sdk"
 import { useEvent } from "./event"
 import { createSignal, onCleanup, onMount } from "solid-js"
+
+type V2Event<T extends Event = Event> = T extends { properties: infer Properties }
+  ? Omit<T, "properties"> & { data: Properties; location?: LocationRef }
+  : never
 
 type LocationData = {
   agent?: AgentV2Info[]

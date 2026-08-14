@@ -4,9 +4,17 @@ import { Database } from "@ranex/core/database/database"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { Location } from "@ranex/core/location"
+import { SessionV2 } from "@ranex/core/session"
+import { Global } from "@ranex/core/global"
+import { MANAGED_DIRECTORY } from "@ranex/core/tool-output-store"
+import { ManagedOutput } from "@ranex/schema/managed-output"
 import { ServerEvent } from "@ranex/schema/server-event"
-import { Context, Effect, Schema } from "effect"
+import { SessionEvent } from "@ranex/core/session/event"
+import { SessionMessage } from "@ranex/core/session/message"
+import { Context, DateTime, Effect, Schema } from "effect"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
+import { mkdir, rm } from "node:fs/promises"
+import path from "path"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdir } from "../fixture/fixture"
 import { pollWithTimeout, testEffectShared } from "../lib/effect"
@@ -26,11 +34,23 @@ function request(route: string, directory: string, init: RequestInit = {}) {
   )
 }
 
+async function createSession(directory: string) {
+  const response = await request("/api/session", directory, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ location: { directory } }),
+  })
+  expect(response.status).toBe(200)
+  return (await response.json()) as { data: { id: string } }
+}
+
 const Event = Schema.Struct({
   id: EventV2.ID,
   type: Schema.String,
   location: Schema.optional(Location.Ref),
   data: Schema.Unknown,
+  truncated: Schema.optional(Schema.Boolean),
+  payloadID: Schema.optional(EventV2.ID),
 })
 
 async function* eventStream(body: ReadableStream<Uint8Array>) {
@@ -84,6 +104,12 @@ afterEach(async () => {
 })
 
 describe("v2 location HttpApi", () => {
+  test("rejects relative event subscription directories", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const response = await request("/api/event?directory=relative", tmp.path)
+    expect(response.status).toBe(400)
+  })
+
   test("decodes EventV2 location refs without resolved project metadata", () => {
     expect(
       Schema.decodeUnknownSync(Event)({
@@ -206,6 +232,130 @@ describe("v2 location HttpApi", () => {
         id: published.id,
         type: ServerEvent.Connected.type,
       })
+    }),
+  )
+
+  eventIt.live("projects durable events in session replays and returns their canonical payloads", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const test = yield* Effect.promise(() => tmpdir({ git: true }))
+      yield* Effect.addFinalizer(() => Effect.promise(() => test[Symbol.asyncDispose]()))
+      const session = yield* Effect.promise(() => createSession(test.path))
+      const content = "a".repeat(9 * 1024)
+      const published = yield* events.publish(SessionEvent.Tool.Success, {
+        sessionID: SessionV2.ID.make(session.data.id),
+        timestamp: DateTime.makeUnsafe(Date.now()),
+        assistantMessageID: SessionMessage.ID.create(),
+        callID: "call_payload",
+        structured: { content },
+        content: [],
+        provider: { executed: false },
+      })
+
+      const stream = yield* Effect.promise(() => request(`/api/session/${session.data.id}/event`, test.path))
+      expect(stream.status).toBe(200)
+      const reader = eventStream(stream.body!)
+      yield* Effect.addFinalizer(() => Effect.promise(() => reader.return(undefined)).pipe(Effect.asVoid))
+      const projected = yield* Effect.promise(() => readEvent(reader))
+      expect(projected).toMatchObject({ id: published.id, truncated: true, payloadID: published.id })
+
+      const payload = yield* Effect.promise(() =>
+        request(`/api/session/${session.data.id}/event/${published.id}/payload`, test.path),
+      )
+      expect(payload.status).toBe(200)
+      expect(yield* Effect.promise(() => payload.json())).toEqual({
+        data: Schema.encodeUnknownSync(SessionEvent.Durable)(published),
+      })
+
+      const nonDurable = yield* events.publish(ServerEvent.Connected, {})
+      const missingPayload = yield* Effect.promise(() =>
+        request(`/api/session/${session.data.id}/event/${nonDurable.id}/payload`, test.path),
+      )
+      expect(missingPayload.status).toBe(404)
+      expect(yield* Effect.promise(() => missingPayload.json())).toMatchObject({ _tag: "EventPayloadNotFoundError" })
+    }),
+  )
+
+  eventIt.live("serves managed tool outputs only to their owning session", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const test = yield* Effect.promise(() => tmpdir({ git: true }))
+      yield* Effect.addFinalizer(() => Effect.promise(() => test[Symbol.asyncDispose]()))
+      const owner = yield* Effect.promise(() => createSession(test.path))
+      const other = yield* Effect.promise(() => createSession(test.path))
+      const outputID = ManagedOutput.ID.create()
+      const outputPath = path.join(Global.Path.data, MANAGED_DIRECTORY, `test-${outputID}`)
+      yield* Effect.promise(() => mkdir(path.dirname(outputPath), { recursive: true }))
+      yield* Effect.promise(() => Bun.write(outputPath, "complete output"))
+      yield* Effect.addFinalizer(() => Effect.promise(() => rm(outputPath, { force: true })))
+      yield* events.publish(SessionEvent.Tool.Success, {
+        sessionID: SessionV2.ID.make(owner.data.id),
+        timestamp: DateTime.makeUnsafe(Date.now()),
+        assistantMessageID: SessionMessage.ID.create(),
+        callID: "call_output",
+        structured: {},
+        content: [],
+        outputPaths: [outputPath],
+        outputRefs: [outputID],
+        provider: { executed: false },
+      })
+
+      const hit = yield* Effect.promise(() => request(`/api/session/${owner.data.id}/tool-output/${outputID}`, test.path))
+      expect(hit.status).toBe(200)
+      expect(yield* Effect.promise(() => hit.text())).toBe("complete output")
+
+      const missing = yield* Effect.promise(() =>
+        request(`/api/session/${owner.data.id}/tool-output/${ManagedOutput.ID.create()}`, test.path),
+      )
+      expect(missing.status).toBe(404)
+      expect(yield* Effect.promise(() => missing.json())).toMatchObject({ _tag: "ManagedOutputNotFoundError" })
+
+      const crossSession = yield* Effect.promise(() =>
+        request(`/api/session/${other.data.id}/tool-output/${outputID}`, test.path),
+      )
+      expect(crossSession.status).toBe(404)
+      expect(yield* Effect.promise(() => crossSession.json())).toMatchObject({ _tag: "ManagedOutputNotFoundError" })
+
+      const pathShaped = yield* Effect.promise(() =>
+        request(`/api/session/${owner.data.id}/tool-output/out_%2Fetc%2Fpasswd`, test.path),
+      )
+      expect(pathShaped.status).toBe(400)
+
+      const expiredID = ManagedOutput.ID.create()
+      yield* events.publish(SessionEvent.Tool.Success, {
+        sessionID: SessionV2.ID.make(owner.data.id),
+        timestamp: DateTime.makeUnsafe(0),
+        assistantMessageID: SessionMessage.ID.create(),
+        callID: "call_expired_match",
+        structured: {},
+        content: [],
+        outputPaths: [outputPath],
+        outputRefs: [expiredID],
+        provider: { executed: false },
+      })
+      const expired = yield* Effect.promise(() =>
+        request(`/api/session/${owner.data.id}/tool-output/${expiredID}`, test.path),
+      )
+      expect(expired.status).toBe(410)
+      expect(yield* Effect.promise(() => expired.json())).toMatchObject({ _tag: "ManagedOutputExpiredError" })
+
+      const externalID = ManagedOutput.ID.create()
+      yield* events.publish(SessionEvent.Tool.Success, {
+        sessionID: SessionV2.ID.make(owner.data.id),
+        timestamp: DateTime.makeUnsafe(Date.now()),
+        assistantMessageID: SessionMessage.ID.create(),
+        callID: "call_external_path",
+        structured: {},
+        content: [],
+        outputPaths: ["/etc/passwd"],
+        outputRefs: [externalID],
+        provider: { executed: false },
+      })
+      const external = yield* Effect.promise(() =>
+        request(`/api/session/${owner.data.id}/tool-output/${externalID}`, test.path),
+      )
+      expect(external.status).toBe(410)
+      expect(yield* Effect.promise(() => external.json())).toMatchObject({ _tag: "ManagedOutputExpiredError" })
     }),
   )
 })

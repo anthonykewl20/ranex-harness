@@ -9,9 +9,12 @@ import { Context, Effect, Encoding, Result, Schema, Struct } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
 import {
   ConflictError,
+  EventPayloadNotFoundError,
   InvalidCursorError,
   InvalidRequestError,
   MessageNotFoundError,
+  ManagedOutputExpiredError,
+  ManagedOutputNotFoundError,
   ServiceUnavailableError,
   SessionNotFoundError,
   UnknownError,
@@ -21,6 +24,8 @@ import { Model } from "@ranex/schema/model"
 import { Location } from "@ranex/schema/location"
 import { Revert } from "@ranex/schema/revert"
 import { SessionEvent } from "@ranex/schema/session-event"
+import { Event } from "@ranex/schema/event"
+import { ManagedOutput } from "@ranex/schema/managed-output"
 
 const SessionsQueryFields = {
   workspace: Workspace.ID.pipe(Schema.optional),
@@ -85,6 +90,7 @@ const SessionActive = Schema.Struct({
 }).annotate({ identifier: "SessionActive" })
 
 const SessionHistoryLimit = PositiveInt.check(Schema.isLessThanOrEqualTo(100))
+const OpaqueManagedOutputID = ManagedOutput.ID.check(Schema.isPattern(/^out_[0-9A-Za-z]{26}$/))
 
 export const SessionHistoryQuery = Schema.Struct({
   limit: Schema.NumberFromString.pipe(Schema.decodeTo(SessionHistoryLimit), Schema.optional),
@@ -329,7 +335,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
         query: {
           after: Schema.NumberFromString.pipe(Schema.decodeTo(NonNegativeInt), Schema.optional),
         },
-        success: HttpApiSchema.StreamSse({ data: SessionEvent.Durable }),
+        success: HttpApiSchema.StreamSse({ data: SessionEvent.Projected }),
         error: SessionNotFoundError,
       })
         .middleware(sessionLocationMiddleware)
@@ -355,6 +361,26 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
             description: "Interrupt active execution owned by this OpenCode process. Idle interruption is a no-op.",
           }),
         ),
+      )
+    .add(
+      HttpApiEndpoint.get("session.eventPayload", "/api/session/:sessionID/event/:eventID/payload", {
+        params: { sessionID: Session.ID, eventID: Event.ID },
+        success: Schema.Struct({ data: SessionEvent.Durable }),
+        error: [SessionNotFoundError, EventPayloadNotFoundError],
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({ identifier: "v2.session.eventPayload", summary: "Get canonical durable event payload" }),
+        ),
+    )
+    .add(
+      HttpApiEndpoint.get("session.toolOutput", "/api/session/:sessionID/tool-output/:outputID", {
+        params: { sessionID: Session.ID, outputID: OpaqueManagedOutputID },
+        success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
+        error: [SessionNotFoundError, ManagedOutputNotFoundError, ManagedOutputExpiredError],
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(OpenApi.annotations({ identifier: "v2.session.toolOutput", summary: "Get managed tool output" })),
     )
     .add(
       HttpApiEndpoint.get("session.message", "/api/session/:sessionID/message/:messageID", {
