@@ -9,7 +9,6 @@ import { ProjectTable } from "@ranex/core/project/sql"
 import type { ProjectV2 } from "@ranex/core/project"
 import { Slug } from "@ranex/core/util/slug"
 import { errorMessage } from "../util/error"
-import { GlobalBus } from "@/bus/global"
 import { Git } from "@/git"
 import { Effect, Layer, Path, Schema, Scope, Context } from "effect"
 import { ChildProcess } from "effect/unstable/process"
@@ -17,6 +16,7 @@ import { FSUtil } from "@ranex/core/fs-util"
 import { AppProcess } from "@ranex/core/process"
 import { InstanceState } from "@/effect/instance-state"
 import { WorktreeEvent } from "@ranex/schema/worktree-event"
+import { EventV2Bridge } from "@/event-v2-bridge"
 
 export const Event = WorktreeEvent
 
@@ -24,6 +24,7 @@ export const Info = Schema.Struct({
   name: Schema.String,
   branch: Schema.optional(Schema.String),
   directory: Schema.String,
+  baseSha: Schema.optional(Schema.String),
 }).annotate({ identifier: "Worktree" })
 export type Info = Schema.Schema.Type<typeof Info>
 
@@ -120,7 +121,7 @@ export interface Interface {
   readonly makeWorktreeInfo: (options?: { name?: string; detached?: boolean }) => Effect.Effect<Info, Error>
   readonly createFromInfo: (info: Info, startCommand?: string) => Effect.Effect<void, Error>
   readonly create: (input?: CreateInput) => Effect.Effect<Info, Error>
-  readonly list: () => Effect.Effect<(Omit<Info, "branch"> & { branch?: string })[], Error>
+  readonly list: () => Effect.Effect<(Omit<Info, "branch" | "baseSha"> & { branch?: string })[], Error>
   readonly remove: (input: RemoveInput) => Effect.Effect<boolean, Error>
   readonly reset: (input: ResetInput) => Effect.Effect<boolean, Error>
 }
@@ -139,6 +140,7 @@ const layer: Layer.Layer<
   | Project.Service
   | InstanceStore.Service
   | Database.Service
+  | EventV2Bridge.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -150,6 +152,7 @@ const layer: Layer.Layer<
     const gitSvc = yield* Git.Service
     const project = yield* Project.Service
     const store = yield* InstanceStore.Service
+    const events = yield* EventV2Bridge.Service
 
     const git = Effect.fnUntraced(
       function* (args: string[], opts?: { cwd?: string }) {
@@ -211,85 +214,154 @@ const layer: Layer.Layer<
       return yield* candidate({ root, name: input?.name ? slugify(input.name) : "", detached: input?.detached })
     })
 
-    const setup = Effect.fnUntraced(function* (info: Info) {
+    const logProvisioning = Effect.fnUntraced(function* (
+      info: Info,
+      step: string,
+      exitCode: number,
+      startedAt: number,
+    ) {
+      yield* Effect.logInfo("worktree provisioning", {
+        run_id: info.name,
+        worktree: info.directory,
+        branch: info.branch ?? null,
+        base_sha: info.baseSha ?? null,
+        step,
+        exit_code: exitCode,
+        duration_ms: Date.now() - startedAt,
+      })
+    })
+
+    const setup = Effect.fnUntraced(function* (info: Info, baseSha: string, startedAt: number) {
       const ctx = yield* InstanceState.context
+      const pruned = yield* git(["worktree", "prune"], { cwd: ctx.worktree })
+      yield* logProvisioning(info, "worktree_prune", pruned.code, startedAt)
+      if (pruned.code !== 0) {
+        return yield* new CreateFailedError({ message: pruned.stderr || pruned.text || "Failed to prune git worktrees" })
+      }
+
+      const root = yield* canonical(pathSvc.join(Global.Path.data, "worktree", ctx.project.id))
+      const directory = yield* canonical(info.directory)
+      if (directory.startsWith(`${root}${pathSvc.sep}`)) {
+        const existing = yield* git(["worktree", "list", "--porcelain"], { cwd: ctx.worktree })
+        if (existing.code !== 0) {
+          return yield* new CreateFailedError({
+            message: existing.stderr || existing.text || "Failed to read git worktrees",
+          })
+        }
+        if (existing.text.split("\n").includes(`worktree ${info.directory}`)) return "joined" as const
+        if (yield* fs.exists(directory).pipe(Effect.orDie)) {
+          yield* cleanDirectory(directory).pipe(
+            Effect.mapError((error) => new CreateFailedError({ message: error.message })),
+          )
+        }
+      }
+
       const created = yield* git(
         info.branch
-          ? ["worktree", "add", "--no-checkout", "-b", info.branch, info.directory]
-          : ["worktree", "add", "--no-checkout", "--detach", info.directory, "HEAD"],
+          ? ["worktree", "add", "-b", info.branch, info.directory, baseSha]
+          : ["worktree", "add", "--detach", info.directory, baseSha],
         { cwd: ctx.worktree },
       )
+      yield* logProvisioning(info, "worktree_add", created.code, startedAt)
       if (created.code !== 0) {
+        const existing = yield* git(["worktree", "list", "--porcelain"], { cwd: ctx.worktree })
+        if (existing.code === 0 && existing.text.split("\n").includes(`worktree ${info.directory}`)) {
+          return "joined" as const
+        }
         return yield* new CreateFailedError({
           message: created.stderr || created.text || "Failed to create git worktree",
         })
       }
 
-      yield* project.addSandbox(ctx.project.id, info.directory).pipe(Effect.catch(() => Effect.void))
-    })
-
-    const boot = Effect.fnUntraced(function* (info: Info, startCommand?: string) {
-      const ctx = yield* InstanceState.context
-      const workspaceID = yield* InstanceState.workspaceID
-      const projectID = ctx.project.id
-      const extra = startCommand?.trim()
-
-      const populated = yield* git(["reset", "--hard"], { cwd: info.directory })
-      if (populated.code !== 0) {
-        const message = populated.stderr || populated.text || "Failed to populate worktree"
-        yield* Effect.logError("worktree checkout failed", { directory: info.directory, message })
-        GlobalBus.emit("event", {
-          directory: info.directory,
-          project: ctx.project.id,
-          workspace: workspaceID,
-          payload: { type: Event.Failed.type, properties: { message } },
-        })
-        return
-      }
-
-      const booted = yield* store.load({ directory: info.directory }).pipe(
-        Effect.as(true),
-        Effect.catch((error) =>
-          Effect.gen(function* () {
-            const message = errorMessage(error)
-            yield* Effect.logError("worktree bootstrap failed", { directory: info.directory, message })
-            GlobalBus.emit("event", {
-              directory: info.directory,
-              project: ctx.project.id,
-              workspace: workspaceID,
-              payload: { type: Event.Failed.type, properties: { message } },
-            })
-            return false
+      yield* project.addSandbox(ctx.project.id, info.directory).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("worktree sandbox registration failed", {
+            worktree: info.name,
+            directory: info.directory,
+            cause,
           }),
         ),
       )
-      if (!booted) return
+      return "created" as const
+    })
 
-      GlobalBus.emit("event", {
-        directory: info.directory,
-        project: ctx.project.id,
-        workspace: workspaceID,
-        payload: {
-          type: Event.Ready.type,
-          properties: { name: info.name, ...(info.branch ? { branch: info.branch } : {}) },
-        },
-      })
+    const verifyHead = Effect.fnUntraced(function* (info: Info, baseSha: string, startedAt: number) {
+      const head = yield* git(["rev-parse", "HEAD"], { cwd: info.directory })
+      yield* logProvisioning(info, "verify_head", head.code, startedAt)
+      if (head.code !== 0 || head.text.trim() !== baseSha) {
+        return yield* new CreateFailedError({ message: head.stderr || head.text || "Worktree HEAD did not match pinned base" })
+      }
+    })
 
-      yield* runStartScripts(info.directory, { projectID, extra })
+    const provision = Effect.fnUntraced(function* (info: Info, baseSha: string, startedAt: number) {
+      const ctx = yield* InstanceState.context
+      const populated = yield* git(["reset", "--hard", baseSha], { cwd: info.directory })
+      yield* logProvisioning(info, "reset", populated.code, startedAt)
+      if (populated.code !== 0) {
+        return yield* new CreateFailedError({ message: populated.stderr || populated.text || "Failed to populate worktree" })
+      }
+
+      yield* verifyHead(info, baseSha, startedAt)
+
+      const status = yield* git(["status", "--porcelain=v1"], { cwd: info.directory })
+      yield* logProvisioning(info, "verify_clean", status.code, startedAt)
+      if (status.code !== 0 || status.text.trim()) {
+        return yield* new CreateFailedError({ message: status.stderr || status.text || "Worktree was not clean" })
+      }
+
+      yield* store.load({ directory: info.directory, worktree: info.directory, project: ctx.project }).pipe(
+        Effect.mapError((error) => new CreateFailedError({ message: errorMessage(error) || "Failed to load worktree instance" })),
+      )
+      yield* logProvisioning(info, "instance_load", 0, startedAt)
+    })
+
+    const publishFailure = Effect.fnUntraced(function* (info: Info, error: CreateFailedError, startedAt: number) {
+      yield* events.publish(Event.Failed, { name: info.name, message: error.message })
+      yield* logProvisioning(info, "failed", 1, startedAt)
     })
 
     const createFromInfo = Effect.fn("Worktree.createFromInfo")(function* (info: Info, startCommand?: string) {
-      yield* setup(info)
-      yield* boot(info, startCommand).pipe(
-        Effect.catchCause((cause) => Effect.logError("worktree bootstrap failed", { cause })),
+      const startedAt = Date.now()
+      const baseSha = info.baseSha
+      if (!baseSha) {
+        const error = new CreateFailedError({ message: "Worktree creation requires an explicit base SHA" })
+        yield* publishFailure(info, error, startedAt)
+        return yield* error
+      }
+
+      const result = yield* setup(info, baseSha, startedAt).pipe(
+        Effect.flatMap((result) =>
+          result === "created" ? provision(info, baseSha, startedAt).pipe(Effect.as(result)) : Effect.succeed(result),
+        ),
+        Effect.catch((error) => publishFailure(info, error, startedAt).pipe(Effect.andThen(Effect.fail(error)))),
+      )
+      if (result === "joined") {
+        yield* verifyHead(info, baseSha, startedAt).pipe(
+          Effect.catch((error) => publishFailure(info, error, startedAt).pipe(Effect.andThen(Effect.fail(error)))),
+        )
+        return
+      }
+
+      yield* events.publish(Event.Ready, { name: info.name, ...(info.branch ? { branch: info.branch } : {}) })
+      yield* logProvisioning(info, "ready", 0, startedAt)
+      const ctx = yield* InstanceState.context
+      yield* runStartScripts(info.directory, { projectID: ctx.project.id, extra: startCommand?.trim() }).pipe(
+        Effect.timeout("5 minutes"),
+        Effect.ignore,
         Effect.forkIn(scope),
       )
     })
 
     const create = Effect.fn("Worktree.create")(function* (input?: CreateInput) {
       const info = yield* makeWorktreeInfo({ name: input?.name })
-      yield* createFromInfo(info, input?.startCommand)
-      return info
+      const ctx = yield* InstanceState.context
+      const base = yield* git(["rev-parse", "HEAD"], { cwd: ctx.worktree })
+      if (base.code !== 0 || !base.text.trim()) {
+        return yield* new CreateFailedError({ message: base.stderr || base.text || "Failed to resolve worktree base SHA" })
+      }
+      const pinned = { ...info, baseSha: base.text.trim() }
+      yield* createFromInfo(pinned, input?.startCommand)
+      return pinned
     })
 
     const canonical = Effect.fnUntraced(function* (input: string) {
@@ -512,6 +584,19 @@ const layer: Layer.Layer<
     })
 
     const sweep = Effect.fnUntraced(function* (root: string) {
+      const protectedFiles = yield* git(["clean", "-ndx"], { cwd: root })
+      if (
+        protectedFiles.code !== 0 ||
+        protectedFiles.text
+          .split("\n")
+          .some((line) => /^Would remove (?:\.env(?:\/|$)|node_modules(?:\/|$))/.test(line.trim()))
+      ) {
+        return {
+          code: 1,
+          text: "Refusing to clean protected untracked files",
+          stderr: protectedFiles.stderr,
+        } satisfies GitResult
+      }
       const first = yield* git(["clean", "-ffdx"], { cwd: root })
       if (first.code === 0) return first
 
@@ -617,7 +702,7 @@ const layer: Layer.Layer<
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [FSUtil.node, path, AppProcess.node, Git.node, Project.node, InstanceStore.node, Database.node],
+  deps: [FSUtil.node, path, AppProcess.node, Git.node, Project.node, InstanceStore.node, Database.node, EventV2Bridge.node],
 })
 
 export * as Worktree from "."

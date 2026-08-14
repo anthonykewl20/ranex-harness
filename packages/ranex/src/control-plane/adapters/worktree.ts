@@ -6,12 +6,17 @@ const WorktreeConfig = Schema.Struct({
   name: WorkspaceInfo.fields.name,
   branch: Schema.optional(Schema.NullOr(Schema.String)),
   directory: Schema.String,
+  baseSha: Schema.optional(Schema.String),
 })
 const decodeWorktreeConfig = Schema.decodeUnknownSync(WorktreeConfig)
 
 async function loadWorktree() {
-  const [{ AppRuntime }, { Worktree }] = await Promise.all([import("@/effect/app-runtime"), import("@/worktree")])
-  return { AppRuntime, Worktree }
+  const [{ AppRuntime }, { Worktree }, { Git }] = await Promise.all([
+    import("@/effect/app-runtime"),
+    import("@/worktree"),
+    import("@/git"),
+  ])
+  return { AppRuntime, Worktree, Git }
 }
 
 function requireInstance(context: WorkspaceAdapterContext | undefined) {
@@ -29,17 +34,22 @@ export const WorktreeAdapter: WorkspaceAdapter = {
   name: "Worktree",
   description: "Create a git worktree",
   async configure(info, context) {
-    const { AppRuntime, Worktree } = await loadWorktree()
+    const { AppRuntime, Worktree, Git } = await loadWorktree()
     const next = await AppRuntime.runPromise(
       provideContext(
         Worktree.Service.use((svc) => svc.makeWorktreeInfo({ detached: true })),
         context,
       ),
     )
+    const base = await AppRuntime.runPromise(
+      provideContext(Git.Service.use((svc) => svc.run(["rev-parse", "HEAD"], { cwd: requireInstance(context).worktree })), context),
+    )
+    if (base.exitCode !== 0 || !base.text().trim()) throw new Error("Worktree adapter failed to resolve base SHA")
     return {
       ...info,
-      name: next.name,
-      directory: next.directory,
+        name: next.name,
+        directory: next.directory,
+        baseSha: base.text().trim(),
     }
   },
   async create(info, _env, _from, context) {
@@ -51,6 +61,7 @@ export const WorktreeAdapter: WorkspaceAdapter = {
           svc.createFromInfo({
             name: config.name,
             directory: config.directory,
+            ...(config.baseSha ? { baseSha: config.baseSha } : {}),
             ...(config.branch ? { branch: config.branch } : {}),
           }),
         ),
