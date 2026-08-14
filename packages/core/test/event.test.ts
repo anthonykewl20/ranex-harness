@@ -418,6 +418,15 @@ describe("EventV2", () => {
     }),
   )
 
+  it.effect("returns bounded listener diagnostics to their baseline after disconnect", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const baseline = events.listenerCount()
+      yield* Effect.scoped(EventV2.allBounded(events, 1).pipe(Effect.asVoid))
+      expect(events.listenerCount()).toBe(baseline)
+    }),
+  )
+
   it.effect("preserves observer interruption", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service

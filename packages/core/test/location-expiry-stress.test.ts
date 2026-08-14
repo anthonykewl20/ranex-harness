@@ -100,6 +100,7 @@ function stress(cycles: number, maximumRssGrowth: number) {
     Effect.flatMap((directory) =>
       Effect.gen(function* () {
         const locations = yield* LocationServiceMap.Service
+        const listenerBaseline = (yield* EventV2.Service).listenerCount()
         const ref = Location.Ref.make({ directory: AbsolutePath.make(directory.path) })
         const expired: boolean[] = []
         let baseline: ReturnType<typeof snapshot> | undefined
@@ -111,6 +112,7 @@ function stress(cycles: number, maximumRssGrowth: number) {
           expect(finalization.closed).toHaveLength(index + 1)
           yield* Deferred.await(finalization.closed[index]!).pipe(Effect.timeout("5 seconds"))
           expired.push(yield* RcMap.has(locations.rcMap, ref))
+          expect((yield* EventV2.Service).listenerCount()).toBe(listenerBaseline)
           if (index === 19) {
             baseline = yield* Effect.sync(snapshot)
           }

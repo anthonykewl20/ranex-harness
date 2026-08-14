@@ -5,6 +5,7 @@ import { Context, Effect, Layer, Scope, Types } from "effect"
 import { Reference } from "@ranex/schema/reference"
 import { Global } from "./global"
 import { EventV2 } from "./event"
+import { LocationLifecycle } from "./location-lifecycle"
 import { Repository } from "./repository"
 import { RepositoryCache } from "./repository-cache"
 import { AbsolutePath } from "./schema"
@@ -46,6 +47,7 @@ const layer = Layer.effect(
     const global = yield* Global.Service
     const events = yield* EventV2.Service
     const cache = yield* RepositoryCache.Service
+    const lifecycle = yield* LocationLifecycle.capture()
     const scope = yield* Scope.Scope
     const materialized = new Map<string, Info>()
     const state = State.create<Data, Draft>({
@@ -91,6 +93,8 @@ const layer = Layer.effect(
                 source,
               }),
             )
+            const registration = yield* LocationLifecycle.registerCaptured(lifecycle, "fiber", "reference-refresh")
+            if (registration._tag === "closed") continue
             yield* cache.ensure({ reference: repository, branch: source.branch, refresh: true }).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("failed to materialize reference", {
@@ -99,6 +103,7 @@ const layer = Layer.effect(
                   cause,
                 }),
               ),
+              Effect.ensuring(registration._tag === "tracked" ? registration.unregister : Effect.void),
               Effect.forkIn(scope),
             )
           }

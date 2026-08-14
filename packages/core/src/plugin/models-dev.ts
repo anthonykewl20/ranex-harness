@@ -2,6 +2,7 @@ import { define } from "./internal"
 import type { ModelV2Info } from "@ranex/sdk/v2/types"
 import { Effect, Stream } from "effect"
 import { EventV2 } from "../event"
+import { LocationLifecycle } from "../location-lifecycle"
 import { ModelsDev } from "../models-dev"
 import { ProviderV2 } from "../provider"
 
@@ -121,6 +122,8 @@ export const ModelsDevPlugin = define({
   effect: Effect.fn(function* (ctx) {
     const modelsDev = yield* ModelsDev.Service
     const events = yield* EventV2.Service
+    yield* LocationLifecycle.track("event_consumer", "models-dev-refresh")
+    yield* LocationLifecycle.track("fiber", "models-dev-refresh")
     yield* ctx.integration.transform(
       Effect.fn(function* (integrations) {
         const data = yield* modelsDev.get()

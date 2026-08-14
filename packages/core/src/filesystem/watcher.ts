@@ -13,6 +13,7 @@ import { Flag } from "../flag/flag"
 import { FSUtil } from "../fs-util"
 import { Git } from "../git"
 import { Location } from "../location"
+import { LocationLifecycle } from "../location-lifecycle"
 import { lazy } from "../util/lazy"
 import { Ignore } from "./ignore"
 import { Protected } from "./protected"
@@ -107,6 +108,8 @@ const layer = Layer.effect(
       .filter((entry): entry is Config.Document => entry.type === "document")
       .flatMap((item) => item.info.watcher?.ignore ?? [])
     if (location.vcs && (yield* Flag.RANEX_EXPERIMENTAL_FILEWATCHER)) {
+      yield* LocationLifecycle.track("fiber", "watcher")
+      yield* LocationLifecycle.track("subscription", "watcher")
       yield* Effect.forkScoped(
         subscribe(location.directory, [...Ignore.PATTERNS, ...config, ...protecteds(location.directory)]),
       )
@@ -119,6 +122,8 @@ const layer = Layer.effect(
         const ignore = (yield* fs.readDirectoryEntries(vcs).pipe(Effect.catch(() => Effect.succeed([])))).flatMap(
           (entry) => (entry.name === "HEAD" ? [] : [entry.name]),
         )
+        yield* LocationLifecycle.track("fiber", "watcher")
+        yield* LocationLifecycle.track("subscription", "watcher")
         yield* Effect.forkScoped(subscribe(vcs, ignore))
       }
     }

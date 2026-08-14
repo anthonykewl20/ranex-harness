@@ -19,6 +19,7 @@ import { FSUtil } from "../fs-util"
 import { Global } from "../global"
 import { Integration } from "../integration"
 import { Location } from "../location"
+import { LocationLifecycle } from "../location-lifecycle"
 import { ModelsDev } from "../models-dev"
 import { Npm } from "../npm"
 import { PluginV2 } from "../plugin"
@@ -104,6 +105,7 @@ const layer = Layer.effectDiscard(
       return plugin.add(PluginV2.ID.make(loaded.id), loaded.effect)
     }
 
+    yield* LocationLifecycle.track("fiber", "plugin-boot")
     yield* State.batch(
       Effect.gen(function* () {
         yield* add(ConfigReferencePlugin.Plugin)
@@ -118,7 +120,10 @@ const layer = Layer.effectDiscard(
         yield* add(ConfigProviderPlugin.Plugin)
         yield* add(VariantPlugin.Plugin)
       }),
-    ).pipe(Effect.withSpan("PluginInternal.boot"), Effect.forkScoped({ startImmediately: true }))
+    ).pipe(
+      Effect.withSpan("PluginInternal.boot"),
+      Effect.forkScoped({ startImmediately: true }),
+    )
   }),
 )
 
