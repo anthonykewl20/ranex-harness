@@ -422,8 +422,54 @@ describe("EventV2", () => {
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const baseline = events.listenerCount()
+      const diagnostics = events.diagnostics()
       yield* Effect.scoped(EventV2.allBounded(events, 1).pipe(Effect.asVoid))
       expect(events.listenerCount()).toBe(baseline)
+      expect(events.diagnostics()).toEqual(diagnostics)
+    }),
+  )
+
+  it.effect("rejects ineligible events before they consume bounded capacity", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* EventV2.allBoundedScoped(events, 8, (event) => event.type === Message.type)
+          yield* Effect.forEach(Array.from({ length: 300 }), () => events.publish(GlobalMessage, { text: "ineligible" }), {
+            discard: true,
+          })
+          expect(events.diagnostics()).toMatchObject({
+            offered: 300,
+            accepted: 0,
+            rejected: 300,
+            overflow: 0,
+            activeSubscribers: 1,
+          })
+        }),
+      )
+      expect(events.diagnostics().activeSubscribers).toBe(0)
+    }),
+  )
+
+  it.effect("retains typed overflow semantics for eligible events", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const exit = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const stream = yield* EventV2.allBoundedScoped(events, 1, () => true)
+          yield* events.publish(Message, { text: "first" })
+          yield* events.publish(Message, { text: "overflow" })
+          return yield* stream.pipe(Stream.runDrain, Effect.exit)
+        }),
+      )
+      expect(Exit.findErrorOption(exit).pipe(Option.getOrUndefined)).toBeInstanceOf(EventV2.SubscriberOverflowError)
+      expect(events.diagnostics()).toMatchObject({
+        offered: 2,
+        accepted: 1,
+        rejected: 0,
+        overflow: 1,
+        activeSubscribers: 0,
+      })
     }),
   )
 
