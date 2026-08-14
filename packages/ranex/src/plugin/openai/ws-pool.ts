@@ -10,6 +10,7 @@ export interface CreateWebSocketFetchOptions {
   url?: string
   connectTimeout?: number
   idleTimeout?: number
+  streamIdleTimeout?: number
   maxConnectionAge?: number
   streamRetries?: number
 }
@@ -33,6 +34,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
   const pool = new Map<string, PoolEntry>()
   const connectTimeout = options?.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT
   const idleTimeout = options?.idleTimeout ?? DEFAULT_IDLE_TIMEOUT
+  const streamIdleTimeout = options?.streamIdleTimeout ?? idleTimeout
   const maxConnectionAge = options?.maxConnectionAge ?? DEFAULT_MAX_CONNECTION_AGE
   const streamRetries = options?.streamRetries ?? 5
   const pruneTimer = setInterval(() => prune(), Math.min(idleTimeout, 60_000))
@@ -99,7 +101,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
       const response = OpenAIWebSocket.streamResponsesWebSocket({
         socket: entry.socket,
         body,
-        idleTimeout,
+        idleTimeout: streamIdleTimeout,
         signal: init?.signal ?? undefined,
         onFirstEvent: (error) => resolveFirstEvent(error ?? true),
         onTerminal: (event) => {

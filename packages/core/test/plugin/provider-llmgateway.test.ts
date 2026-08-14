@@ -48,7 +48,7 @@ describe("LLMGatewayPlugin", () => {
         Existing: "value",
         "HTTP-Referer": "https://ranex.dev/",
         "X-Title": "ranex",
-        "X-Source": "opencode",
+        "X-Source": "ranex",
       })
       expect((yield* catalog.provider.get(ProviderV2.ID.openrouter))?.request.headers).toEqual({})
     }),
