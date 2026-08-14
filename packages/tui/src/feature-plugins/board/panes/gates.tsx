@@ -1,7 +1,10 @@
 import type { TuiPluginApi } from "@ranex/plugin/tui"
 import { For, Show, createMemo } from "solid-js"
-import { detectGlyphs, type GlyphSet } from "../../../theme/glyphs"
+import { detectGlyphs } from "../../../theme/glyphs"
 import type { BoardPaneProps } from "../pane"
+import { causePresentation, classifyCause } from "../verdict-cause"
+
+export { KNOWN_CAUSES } from "@ranex/schema/verdict"
 
 const glyphs = detectGlyphs()
 
@@ -21,31 +24,11 @@ const glyphs = detectGlyphs()
  */
 export const GATE_PAGE_SIZE = 10
 
-export const KNOWN_CAUSES = [
-  "contradicted",
-  "failed",
-  "mismatched",
-  "stale",
-  "absent",
-  "refused",
-  "unattributable",
-] as const
-type KnownCause = (typeof KNOWN_CAUSES)[number]
-const KNOWN_CAUSE_SET = new Set<string>(KNOWN_CAUSES)
-
 export type GateRow = {
   readonly gate: string
   readonly evidence: string
   readonly verdict: "PASS" | "FAIL"
   readonly causes: readonly string[]
-}
-
-type Theme = TuiPluginApi["theme"]["current"]
-type CausePresentation = {
-  readonly word: string
-  readonly explanation: string
-  readonly glyph: string
-  readonly color: Theme["error"]
 }
 
 export function paginateGateRows(rows: readonly GateRow[], requestedPage: number) {
@@ -146,7 +129,7 @@ export function GateTable(props: {
                 >
                   <For each={row.causes}>
                     {(cause) => {
-                      const presentation = causePresentation(cause, theme(), glyphs)
+                      const presentation = causePresentation(classifyCause(cause), theme(), glyphs)
                       return (
                         <text fg={presentation.color}>
                           {presentation.glyph} {presentation.word} — {presentation.explanation}
@@ -181,39 +164,6 @@ function Gates(props: BoardPaneProps) {
       <text fg={props.api.theme.current.textMuted}>subject {props.data.record.subject_digest}</text>
     </box>
   )
-}
-
-export function causePresentation(cause: string, theme: Theme, set: GlyphSet): CausePresentation {
-  if (!KNOWN_CAUSE_SET.has(cause)) {
-    return {
-      word: "unclassified",
-      explanation: "unknown cause; blocks",
-      glyph: set.flag,
-      color: theme.error,
-    }
-  }
-  return knownCausePresentation(cause as KnownCause, theme, set)
-}
-
-function knownCausePresentation(cause: KnownCause, theme: Theme, set: GlyphSet): CausePresentation {
-  switch (cause) {
-    case "contradicted":
-      return { word: cause, explanation: "evidence disagrees", glyph: set.no, color: theme.error }
-    case "failed":
-      return { word: cause, explanation: "bound command failed", glyph: set.no, color: theme.error }
-    case "mismatched":
-      return { word: cause, explanation: "command does not match", glyph: set.warn, color: theme.warning }
-    case "stale":
-      return { word: cause, explanation: "evidence names another subject", glyph: set.warn, color: theme.warning }
-    case "absent":
-      return { word: cause, explanation: "work never done", glyph: set.warn, color: theme.warning }
-    case "refused":
-      return { word: cause, explanation: "record refused", glyph: set.flag, color: theme.error }
-    case "unattributable":
-      return { word: cause, explanation: "no usable claim", glyph: set.flag, color: theme.error }
-  }
-  const exhaustive: never = cause
-  return exhaustive
 }
 
 export const GatesPane = {
