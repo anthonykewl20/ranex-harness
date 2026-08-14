@@ -1,7 +1,7 @@
 import path from "path"
 import fs from "fs/promises"
 import { describe, expect } from "bun:test"
-import { Effect, Layer, Schema } from "effect"
+import { Cause, Effect, Exit, Layer, Schema } from "effect"
 import { FastCheck } from "effect/testing"
 import { Config } from "@ranex/core/config"
 import { ConfigProvider } from "@ranex/core/config/provider"
@@ -9,6 +9,7 @@ import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { ConfigMigrateV1 } from "@ranex/core/v1/config/migrate"
 import { ConfigV1 } from "@ranex/core/v1/config/config"
+import { ConfigErrorV1 } from "@ranex/core/v1/config/error"
 import { FSUtil } from "@ranex/core/fs-util"
 import { Global } from "@ranex/core/global"
 import { Location } from "@ranex/core/location"
@@ -51,6 +52,24 @@ const provider = {
   models: {},
 }
 
+function expectPluginsRejected(exit: Exit.Exit<unknown, unknown>, entries: readonly unknown[]) {
+  if (!Exit.isFailure(exit)) throw new Error("expected external plugin configuration to fail")
+  const error = Cause.squash(exit.cause)
+  if (!ConfigErrorV1.InvalidError.isInstance(error)) throw error
+  expect(error.data.issues?.[0]?.path).toEqual(["plugins"])
+  for (const entry of entries) {
+    const name =
+      typeof entry === "string"
+        ? entry
+        : Array.isArray(entry)
+          ? String(entry[0])
+          : typeof entry === "object" && entry !== null && "package" in entry
+            ? String(entry.package)
+            : "unknown"
+    expect(error.data.issues?.[0]?.message).toContain(name)
+  }
+}
+
 describe("Config", () => {
   it.effect("returns the latest defined scalar from priority-ordered documents", () =>
     Effect.sync(() => {
@@ -85,6 +104,52 @@ describe("Config", () => {
         { numRuns: 100 },
       )
     }),
+  )
+
+  it.live("rejects v2 external plugin declarations", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const entries = ["file:///tmp/plugin.ts", { package: "@example/plugin", options: { enabled: true } }]
+          const global = path.join(tmp.path, "global")
+          yield* Effect.promise(() => fs.mkdir(global, { recursive: true }))
+          yield* Effect.promise(() => fs.writeFile(path.join(global, "ranex.json"), JSON.stringify({ plugins: entries })))
+          const exit = yield* Effect.exit(
+            Effect.gen(function* () {
+              const config = yield* Config.Service
+              yield* config.entries()
+            }).pipe(Effect.provide(testLayer(tmp.path))),
+          )
+          expectPluginsRejected(exit, entries)
+        }),
+      ),
+    ),
+  )
+
+  it.live("rejects migrated v1 external plugin declarations", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const entries = ["https://plugins.example/plugin.ts", ["@example/plugin", { enabled: true }]]
+          const global = path.join(tmp.path, "global")
+          yield* Effect.promise(() => fs.mkdir(global, { recursive: true }))
+          yield* Effect.promise(() => fs.writeFile(path.join(global, "ranex.json"), JSON.stringify({ plugin: entries })))
+          const exit = yield* Effect.exit(
+            Effect.gen(function* () {
+              const config = yield* Config.Service
+              yield* config.entries()
+            }).pipe(Effect.provide(testLayer(tmp.path))),
+          )
+          expectPluginsRejected(exit, entries)
+        }),
+      ),
+    ),
   )
 
   it.effect("migrates v1 provider setup options into AISDK settings", () =>
@@ -348,10 +413,6 @@ describe("Config", () => {
                   sdk: { repository: "github.com/example/sdk", branch: "main" },
                   shorthand: "github.com/example/docs",
                 },
-                plugins: [
-                  "opencode-helicone-session",
-                  { package: "@my-org/audit-plugin", options: { endpoint: "https://audit.example.com" } },
-                ],
               }),
             ),
           )
@@ -442,10 +503,6 @@ describe("Config", () => {
               sdk: { repository: "github.com/example/sdk", branch: "main" },
               shorthand: "github.com/example/docs",
             })
-            expect(documents[0]?.info.plugins).toEqual([
-              "opencode-helicone-session",
-              { package: "@my-org/audit-plugin", options: { endpoint: "https://audit.example.com" } },
-            ])
           }).pipe(Effect.provide(testLayer(tmp.path)))
         }),
       ),
@@ -516,10 +573,6 @@ describe("Config", () => {
                     permission: { read: "allow" },
                   },
                 },
-                plugin: [
-                  "opencode-helicone-session",
-                  ["@my-org/audit-plugin", { endpoint: "https://audit.example.com" }],
-                ],
                 skills: { paths: ["./skills"], urls: ["https://example.com/.well-known/skills/"] },
                 references: {
                   docs: { path: "../docs", description: "Use for product documentation", hidden: true },
@@ -595,10 +648,6 @@ describe("Config", () => {
               request: { body: { temperature: 0.2 } },
               permissions: [{ action: "read", resource: "*", effect: "allow" }],
             })
-            expect(documents[0]?.info.plugins).toEqual([
-              "opencode-helicone-session",
-              { package: "@my-org/audit-plugin", options: { endpoint: "https://audit.example.com" } },
-            ])
             expect(documents[0]?.info.skills).toEqual(["./skills", "https://example.com/.well-known/skills/"])
             expect(documents[0]?.info.references).toEqual({
               docs: { path: "../docs", description: "Use for product documentation", hidden: true },

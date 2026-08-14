@@ -227,6 +227,15 @@ export const TuiThreadCommand = cmd({
         worker.terminate()
       }
 
+      try {
+        await client.call("initialize", { directory: cwd })
+      } catch (error) {
+        await stop()
+        UI.error(errorMessage(error))
+        process.exitCode = 1
+        return
+      }
+
       const prompt = await input(args.prompt)
       const config = await TuiConfig.get()
 
@@ -235,18 +244,27 @@ export const TuiThreadCommand = cmd({
 
       const headers = external ? ServerAuth.headers() : undefined
 
-      const transport = external
-        ? {
-            url: (await client.call("server", network)).url,
-            fetch: undefined,
-            events: undefined,
-            headers,
-          }
-        : {
-            url: "http://opencode.internal",
-            fetch: createWorkerFetch(client),
-            events: createEventSource(client),
-          }
+      const transport = await (async () => {
+        try {
+          return external
+            ? {
+                url: (await client.call("server", network)).url,
+                fetch: undefined,
+                events: undefined,
+                headers,
+              }
+            : {
+                url: "http://opencode.internal",
+                fetch: createWorkerFetch(client),
+                events: createEventSource(client),
+              }
+        } catch (error) {
+          await stop()
+          UI.error(errorMessage(error))
+          process.exitCode = 1
+        }
+      })()
+      if (!transport) return
 
       try {
         await validateSession({

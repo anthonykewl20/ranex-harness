@@ -2,7 +2,6 @@ import { LayerNode } from "@ranex/core/effect/layer-node"
 import { httpClient } from "@ranex/core/effect/app-node-platform"
 import { serviceUse } from "@ranex/core/effect/service-use"
 import path from "path"
-import { pathToFileURL } from "url"
 import os from "os"
 import { mergeDeep } from "remeda"
 import { Global } from "@ranex/core/global"
@@ -23,8 +22,9 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/
 import { EffectFlock } from "@ranex/core/util/effect-flock"
 import { containsPath, type InstanceContext } from "../project/instance-context"
 import { ConfigV1 } from "@ranex/core/v1/config/config"
-import { RemoteAuthError } from "@ranex/core/v1/config/error"
+import { ConfigErrorV1, RemoteAuthError } from "@ranex/core/v1/config/error"
 import { ConfigPermissionV1 } from "@ranex/core/v1/config/permission"
+import { ConfigPluginV1 } from "@ranex/core/v1/config/plugin"
 import { ConfigAgent } from "./agent"
 import { ConfigCommand } from "./command"
 import { ConfigManaged } from "./managed"
@@ -208,6 +208,7 @@ const layer = Layer.effect(
       )
       const parsed = ConfigParse.jsonc(expanded, source)
       const data = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(parsed), source)
+      ConfigPluginV1.assertDisabled(data.plugin, source, "plugin")
       if (!("path" in options)) return data
 
       if (!data.$schema) {
@@ -243,18 +244,27 @@ const layer = Layer.effect(
 
       const legacy = path.join(Global.Path.config, "config")
       if (existsSync(legacy)) {
-        yield* Effect.promise(() =>
-          import(pathToFileURL(legacy).href, { with: { type: "toml" } })
-            .then(async (mod) => {
-              const { provider, model, ...rest } = mod.default
-              if (provider && model) result.model = `${provider}/${model}`
-              result["$schema"] = "https://opencode.ai/config.json"
-              result = mergeConfig(result, rest)
-              await fsNode.writeFile(path.join(Global.Path.config, "config.json"), JSON.stringify(result, null, 2))
-              await fsNode.unlink(legacy)
-            })
-            .catch(() => {}),
-        )
+        const config = yield* Effect.promise(() => Bun.file(legacy).text().then(Bun.TOML.parse).catch(() => undefined))
+        if (config) {
+          const { provider, model, ...rest } = config as {
+            provider?: string
+            model?: string
+            plugin?: readonly unknown[]
+          }
+          try {
+            ConfigPluginV1.assertDisabled(rest.plugin, legacy, "plugin")
+          } catch (error) {
+            if (ConfigErrorV1.InvalidError.isInstance(error)) yield* Effect.fail(error)
+            throw error
+          }
+          if (provider && model) result.model = `${provider}/${model}`
+          result["$schema"] = "https://opencode.ai/config.json"
+          result = mergeConfig(result, rest as Info)
+          yield* Effect.promise(async () => {
+            await fsNode.writeFile(path.join(Global.Path.config, "config.json"), JSON.stringify(result, null, 2))
+            await fsNode.unlink(legacy)
+          }).pipe(Effect.catch(() => Effect.void))
+        }
       }
 
       return result
@@ -265,7 +275,10 @@ const layer = Layer.effect(
         Effect.tapError((error) =>
           Effect.logError("failed to load global config, using defaults", { error: String(error) }),
         ),
-        Effect.orElseSucceed((): Info => ({})),
+        Effect.catch((error) => {
+          if (ConfigErrorV1.InvalidError.isInstance(error)) return Effect.die(error)
+          return Effect.succeed({} as Info)
+        }),
       ),
       Duration.infinity,
     )
@@ -367,6 +380,66 @@ const layer = Layer.effect(
         result.mode = result.mode || {}
         result.plugin = result.plugin || []
 
+        const configContent = process.env.RANEX_CONFIG_CONTENT
+          ? yield* loadConfig(process.env.RANEX_CONFIG_CONTENT, {
+              dir: ctx.directory,
+              source: "RANEX_CONFIG_CONTENT",
+            })
+          : undefined
+        const activeAccount = Option.getOrUndefined(
+          yield* accountSvc.active().pipe(Effect.catch(() => Effect.succeed(Option.none()))),
+        )
+        const accountConfig = activeAccount?.active_org_id
+          ? yield* Effect.gen(function* () {
+              const accountID = activeAccount.id
+              const orgID = activeAccount.active_org_id
+              if (!orgID) return
+              const url = activeAccount.url
+              const [configOpt, tokenOpt] = yield* Effect.all(
+                [accountSvc.config(accountID, orgID), accountSvc.token(accountID)],
+                { concurrency: 2 },
+              )
+              if (Option.isSome(tokenOpt)) {
+                process.env["RANEX_CONSOLE_TOKEN"] = tokenOpt.value
+                yield* env.set("RANEX_CONSOLE_TOKEN", tokenOpt.value)
+              }
+              if (Option.isNone(configOpt)) return
+
+              const source = `${url}/api/config`
+              return { source, config: configOpt.value }
+            }).pipe(
+              Effect.withSpan("Config.loadActiveOrgConfig"),
+              Effect.catch((err) =>
+                Effect.logDebug("failed to fetch remote account config", {
+                  error: err instanceof Error ? err.message : String(err),
+                }),
+              ),
+            )
+          : undefined
+        const loadedAccountConfig = accountConfig
+          ? yield* Effect.gen(function* () {
+              const next = yield* loadConfig(JSON.stringify(accountConfig.config), {
+                dir: path.dirname(accountConfig.source),
+                source: accountConfig.source,
+              })
+              return { source: accountConfig.source, next, providerIDs: Object.keys(next.provider ?? {}) }
+            })
+          : undefined
+        const managedDir = ConfigManaged.managedConfigDir()
+        const managedConfigs = existsSync(managedDir)
+          ? yield* Effect.forEach(["ranex.json", "ranex.jsonc"], (file) => {
+              const source = path.join(managedDir, file)
+              return Effect.map(loadFile(source), (next) => ({ source, next }))
+            })
+          : []
+        const managed = yield* Effect.promise(() => ConfigManaged.readManagedPreferences())
+        const managedConfig = managed
+          ? yield* loadConfig(managed.text, {
+              dir: path.dirname(managed.source),
+              source: managed.source,
+            })
+          : undefined
+
         const directories = yield* ConfigPaths.directories(ctx.directory, ctx.worktree)
 
         if (Flag.RANEX_CONFIG_DIR) {
@@ -415,72 +488,24 @@ const layer = Layer.effect(
           result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.loadMode(dir)))
         }
 
-        if (process.env.RANEX_CONFIG_CONTENT) {
-          const source = "RANEX_CONFIG_CONTENT"
-          const next = yield* loadConfig(process.env.RANEX_CONFIG_CONTENT, {
-            dir: ctx.directory,
-            source,
-          })
-          yield* merge(source, next, "local")
+        if (configContent) {
+          yield* merge("RANEX_CONFIG_CONTENT", configContent, "local")
           yield* Effect.logDebug("loaded custom config from RANEX_CONFIG_CONTENT")
         }
 
-        const activeAccount = Option.getOrUndefined(
-          yield* accountSvc.active().pipe(Effect.catch(() => Effect.succeed(Option.none()))),
-        )
-        if (activeAccount?.active_org_id) {
-          const accountID = activeAccount.id
-          const orgID = activeAccount.active_org_id
-          const url = activeAccount.url
-          yield* Effect.gen(function* () {
-            const [configOpt, tokenOpt] = yield* Effect.all(
-              [accountSvc.config(accountID, orgID), accountSvc.token(accountID)],
-              { concurrency: 2 },
-            )
-            if (Option.isSome(tokenOpt)) {
-              process.env["RANEX_CONSOLE_TOKEN"] = tokenOpt.value
-              yield* env.set("RANEX_CONSOLE_TOKEN", tokenOpt.value)
-            }
-
-            if (Option.isSome(configOpt)) {
-              const source = `${url}/api/config`
-              const next = yield* loadConfig(JSON.stringify(configOpt.value), {
-                dir: path.dirname(source),
-                source,
-              })
-              for (const providerID of Object.keys(next.provider ?? {})) {
-                consoleManagedProviders.add(providerID)
-              }
-              yield* merge(source, next, "global")
-            }
-          }).pipe(
-            Effect.withSpan("Config.loadActiveOrgConfig"),
-            Effect.catch((err) =>
-              Effect.logDebug("failed to fetch remote account config", {
-                error: err instanceof Error ? err.message : String(err),
-              }),
-            ),
-          )
-        }
-
-        const managedDir = ConfigManaged.managedConfigDir()
-        if (existsSync(managedDir)) {
-          for (const file of ["ranex.json", "ranex.jsonc"]) {
-            const source = path.join(managedDir, file)
-            yield* merge(source, yield* loadFile(source), "global")
+        if (loadedAccountConfig) {
+          for (const providerID of loadedAccountConfig.providerIDs) {
+            consoleManagedProviders.add(providerID)
           }
+          yield* merge(loadedAccountConfig.source, loadedAccountConfig.next, "global")
         }
 
-        // macOS managed preferences (.mobileconfig deployed via MDM) override everything
-        const managed = yield* Effect.promise(() => ConfigManaged.readManagedPreferences())
-        if (managed) {
-          result = mergeConfigConcatArrays(
-            result,
-            yield* loadConfig(managed.text, {
-              dir: path.dirname(managed.source),
-              source: managed.source,
-            }),
-          )
+        for (const managedConfig of managedConfigs) {
+          yield* merge(managedConfig.source, managedConfig.next, "global")
+        }
+
+        if (managedConfig) {
+          result = mergeConfigConcatArrays(result, managedConfig)
         }
 
         for (const [name, mode] of Object.entries(result.mode ?? {})) {
