@@ -94,17 +94,26 @@ a system whose hardest conceptual part — the verdict path — lives in the
 kernel.
 
 This is where ADR-015's durable-execution program runs: milestone #1, "Durable
-execution, failover, and recovery." Two of its five durability claims are in
-production here:
+execution, failover, and recovery." All five of its durability claims are in
+production here, and milestone #1 is closed:
 
 - **Provider watchdog** — SLICE-012, `23d6a5b4ee`. A stalled provider stream
   now reaches a terminal state on its own instead of hanging forever.
 - **Reconciler reorder and startup sweep** — SLICE-013, `a8bc7bdf35`. A crash
   with an empty inbox no longer strands tools projected `running` forever.
+- **Durable retry** — SLICE-014, `2a098d4963`. A retryable provider failure
+  persists its attempt and survives a restart.
+- **Durable blockers** — SLICE-015, `0aea8a19a7`. Pending permission/question
+  waits survive teardown, settle exactly once, and rehydrate without republish.
+- **Session-ID fencing** — SLICE-016, `1834c96260`. Cross-process drain
+  ownership is claimed and released against a live owner check.
 
-Three remain: durable retry, durable blockers, and Session-ID fencing. Each is
-gated by the SLICE-011 prototype record. The prototype proved the design. It
-shipped none of those three claims into production.
+A `v0.1.2 — opportunity backlog` hardening pass layered on top of milestone #1,
+scoped from an upstream-opencode audit: durable permission/question blockers
+are now Location-scoped (no cross-location settle), cascade on session delete,
+and block session moves while pending; retryable in-band provider errors
+(Anthropic/OpenAI) enter the bounded retry path; and settlement failures return
+typed errors instead of dangling waiters. See milestone #3 and issues #55–#82.
 
 The TUI is being redesigned on a **separate track** under ADR-018: "the board
 is the front door." It neither consumes the durability program nor changes
