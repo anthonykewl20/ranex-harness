@@ -155,7 +155,10 @@ describe("Worktree", () => {
         Effect.gen(function* () {
           const test = yield* TestInstance
           const svc = yield* Worktree.Service
-          const info = yield* svc.makeWorktreeInfo({ name: "detached-test", detached: true })
+          const info = {
+            ...(yield* svc.makeWorktreeInfo({ name: "detached-test", detached: true })),
+            baseSha: (yield* git(test.directory, ["rev-parse", "HEAD"])).trim(),
+          }
           const ready = yield* waitReady().pipe(Effect.forkScoped)
           yield* svc.createFromInfo(info)
 
@@ -247,7 +250,10 @@ describe("Worktree", () => {
         Effect.gen(function* () {
           const test = yield* TestInstance
           const svc = yield* Worktree.Service
-          const info = yield* svc.makeWorktreeInfo({ name: "from-info-test" })
+          const info = {
+            ...(yield* svc.makeWorktreeInfo({ name: "from-info-test" })),
+            baseSha: (yield* git(test.directory, ["rev-parse", "HEAD"])).trim(),
+          }
           const ready = yield* waitReady().pipe(Effect.forkScoped)
           yield* svc.createFromInfo(info)
 
