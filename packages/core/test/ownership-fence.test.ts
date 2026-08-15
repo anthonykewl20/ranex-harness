@@ -15,6 +15,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const worker = join(import.meta.dir, "fixture/ownership-fence-worker.ts")
+// Each case cold-starts one or more Bun worker processes while the core suite runs test files in parallel; matches the budget used by session-reconcile-fence.test.ts.
+const workerTestTimeout = 30_000
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "ranex-ownership-fence-"))
@@ -81,7 +83,7 @@ function runWorker(
 }
 
 async function waitFor(path: string) {
-  const deadline = Date.now() + 5_000
+  const deadline = Date.now() + workerTestTimeout
   while (!(await Bun.file(path).exists())) {
     if (Date.now() > deadline) throw new Error(`Timed out waiting for ${path}`)
     await Bun.sleep(10)
@@ -121,7 +123,7 @@ test("BASELINE: unfenced processes double-dispatch", async () => {
   } finally {
     rmSync(input.dir, { recursive: true, force: true })
   }
-})
+}, workerTestTimeout)
 
 test("GREEN: shared flock and CAS allow exactly one overlapping dispatch", async () => {
   const input = fixture()
@@ -134,7 +136,7 @@ test("GREEN: shared flock and CAS allow exactly one overlapping dispatch", async
   } finally {
     rmSync(input.dir, { recursive: true, force: true })
   }
-})
+}, workerTestTimeout)
 
 test("ISOLATION: CAS alone refuses a second live owner", async () => {
   const input = fixture()
@@ -151,7 +153,7 @@ test("ISOLATION: CAS alone refuses a second live owner", async () => {
   } finally {
     rmSync(input.dir, { recursive: true, force: true })
   }
-})
+}, workerTestTimeout)
 
 test("sad path 7: owner is live while busy and cleared after idle", async () => {
   const input = fixture()
@@ -165,7 +167,7 @@ test("sad path 7: owner is live while busy and cleared after idle", async () => 
   } finally {
     rmSync(input.dir, { recursive: true, force: true })
   }
-})
+}, workerTestTimeout)
 
 test("owner release lets a later process acquire", async () => {
   const input = fixture()
@@ -181,7 +183,7 @@ test("owner release lets a later process acquire", async () => {
   } finally {
     rmSync(input.dir, { recursive: true, force: true })
   }
-})
+}, workerTestTimeout)
 
 test("stale owner is reclaimed by CAS", async () => {
   const input = fixture()
@@ -193,4 +195,4 @@ test("stale owner is reclaimed by CAS", async () => {
   } finally {
     rmSync(input.dir, { recursive: true, force: true })
   }
-})
+}, workerTestTimeout)

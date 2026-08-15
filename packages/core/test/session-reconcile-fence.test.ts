@@ -46,6 +46,8 @@ import { join } from "node:path"
 
 const root = join(import.meta.dir, "..")
 const worker = join(import.meta.dir, "fixture/reconcile-fence-worker.ts")
+// Each case cold-starts one or more Bun worker processes while the core suite runs test files in parallel; matches the budget used by ownership-fence.test.ts.
+const workerTestTimeout = 30_000
 
 const client = Layer.mock(LLMClient.Service, {
   prepare: () => Effect.die("unused"),
@@ -206,7 +208,7 @@ async function currentExecutionIdentity() {
   return { bootID, startTime }
 }
 
-async function wait(file: string, timeout = 3_000) {
+async function wait(file: string, timeout = workerTestTimeout) {
   const stop = Date.now() + timeout
   while (Date.now() < stop) {
     if (await Bun.file(file).exists()) return
