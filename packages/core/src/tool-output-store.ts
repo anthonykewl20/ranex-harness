@@ -29,6 +29,15 @@ export interface BoundResult {
   readonly outputRefs?: ReadonlyArray<ManagedOutput.ID>
 }
 
+export interface ReadManagedInput {
+  readonly path: string
+  readonly createdAt: unknown
+}
+
+export type ReadManagedResult =
+  | { readonly _tag: "Read"; readonly bytes: Uint8Array }
+  | { readonly _tag: "Expired" }
+
 export class StorageError extends Schema.TaggedErrorClass<StorageError>()("ToolOutputStore.StorageError", {
   operation: Schema.Literals(["encode", "write"]),
   cause: Schema.Defect(),
@@ -44,6 +53,7 @@ export type Error = StorageError
 export interface Interface {
   readonly limits: () => Effect.Effect<{ readonly maxLines: number; readonly maxBytes: number }>
   readonly bound: (input: BoundInput) => Effect.Effect<BoundResult, Error>
+  readonly readManaged: (input: ReadManagedInput) => Effect.Effect<ReadManagedResult>
   readonly cleanup: () => Effect.Effect<void>
 }
 
@@ -137,6 +147,18 @@ const layer = Layer.effect(
       return file
     })
 
+    const readManaged = Effect.fn("ToolOutputStore.readManaged")(function* (input: ReadManagedInput) {
+      const resolved = path.resolve(input.path)
+      if (!resolved.startsWith(path.resolve(directory) + path.sep)) return { _tag: "Expired" as const }
+      const timestamp = typeof input.createdAt === "string" ? Date.parse(input.createdAt) : Number(input.createdAt)
+      if (!Number.isFinite(timestamp) || timestamp < Date.now() - Duration.toMillis(RETENTION)) {
+        return { _tag: "Expired" as const }
+      }
+      const file = Bun.file(resolved)
+      if (!(yield* Effect.promise(() => file.exists()))) return { _tag: "Expired" as const }
+      return { _tag: "Read" as const, bytes: new Uint8Array(yield* Effect.promise(() => file.arrayBuffer())) }
+    })
+
     const bound = Effect.fn("ToolOutputStore.bound")(function* (input: BoundInput) {
       const outputLimits = yield* limits()
       const media = input.output.content.filter((item) => item.type === "file")
@@ -191,7 +213,7 @@ const layer = Layer.effect(
       }
     })
 
-    return Service.of({ limits, bound, cleanup })
+    return Service.of({ limits, bound, readManaged, cleanup })
   }),
 )
 

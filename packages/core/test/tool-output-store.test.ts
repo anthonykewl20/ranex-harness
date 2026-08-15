@@ -225,6 +225,32 @@ describe("ToolOutputStore", () => {
     ),
   )
 
+  it.live("reads only retained files in the managed directory", () =>
+    withStore(({ root, store, fs }) =>
+      Effect.gen(function* () {
+        const directory = path.join(root, ToolOutputStore.MANAGED_DIRECTORY)
+        const managed = path.join(directory, "tool_valid")
+        const outside = path.join(root, "outside")
+        yield* fs.ensureDir(directory)
+        yield* fs.writeFileString(managed, "managed output")
+        yield* fs.writeFileString(outside, "outside output")
+
+        expect(
+          yield* store.readManaged({ path: outside, createdAt: Date.now() }),
+        ).toEqual({ _tag: "Expired" })
+        expect(
+          yield* store.readManaged({
+            path: managed,
+            createdAt: Date.now() - 8 * 24 * 60 * 60 * 1_000,
+          }),
+        ).toEqual({ _tag: "Expired" })
+        expect(
+          yield* store.readManaged({ path: managed, createdAt: Date.now() }),
+        ).toEqual({ _tag: "Read", bytes: new TextEncoder().encode("managed output") })
+      }),
+    ),
+  )
+
   it.live("cleans expired managed files and preserves unrelated files", () =>
     withStore(({ root, store, fs }) =>
       Effect.gen(function* () {
