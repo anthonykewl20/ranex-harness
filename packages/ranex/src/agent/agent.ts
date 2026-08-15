@@ -101,8 +101,16 @@ const layer = Layer.effect(
         const skillDirs = yield* skill.dirs()
         const referenceDirs = Object.keys(cfg.references ?? cfg.reference ?? {}).length
           ? yield* Effect.gen(function* () {
-              yield* (yield* PluginV2.Service).wait(PluginV2.ID.make("core/config-reference"))
-              return (yield* (yield* Reference.Service).list()).map((reference) => reference.path)
+              const plugins = yield* PluginV2.Service
+              yield* plugins.wait(PluginV2.ID.make("core/config-reference"))
+              // A boot plugin's effect only registers its transform; applying
+              // it is deferred to the boot batch flush, which slow boot
+              // plugins (command awaits project resolution) can hold open
+              // past the wait above. Reload to materialize the registered
+              // config-reference transform before reading the reference list.
+              const references = yield* Reference.Service
+              yield* references.reload()
+              return (yield* references.list()).map((reference) => reference.path)
             }).pipe(Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))))
           : []
         const whitelistedDirs = [

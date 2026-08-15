@@ -308,17 +308,22 @@ const writeText = Effect.fn("test.writeText")(function* (file: string, text: str
   yield* fs.writeWithDirs(file, text)
 })
 
-const writeConfig = Effect.fn("test.writeConfig")(function* (dir: string, config: Partial<ConfigV1.Info>) {
-  yield* writeText(
-    path.join(dir, "ranex.json"),
-    JSON.stringify({ $schema: "https://opencode.ai/config.json", ...config }),
-  )
-})
-
+// Project-scope ranex.json is sanitized (sanitizeProjectConfig strips the
+// mock provider's npm/apiKey/baseURL), so the config is delivered via
+// RANEX_CONFIG_CONTENT (user-initiated, trusted) for the remainder of the
+// test. Config loads lazily per instance, so the first config access after
+// this call picks the env payload up.
 const useServerConfig = Effect.fn("test.useServerConfig")(function* (config: (url: string) => Partial<ConfigV1.Info>) {
   const { directory: dir } = yield* TestInstance
   const llm = yield* TestLLMServer
-  yield* writeConfig(dir, config(llm.url))
+  const previous = process.env.RANEX_CONFIG_CONTENT
+  process.env.RANEX_CONFIG_CONTENT = JSON.stringify(config(llm.url))
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      if (previous === undefined) delete process.env.RANEX_CONFIG_CONTENT
+      else process.env.RANEX_CONFIG_CONTENT = previous
+    }),
+  )
   return { dir, llm }
 })
 
