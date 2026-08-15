@@ -10,6 +10,7 @@ export const WorkspaceInfo = Schema.Struct({
   name: Schema.String,
   branch: Schema.optional(Schema.NullOr(Schema.String)),
   directory: Schema.optional(Schema.NullOr(Schema.String)),
+  baseSha: Schema.optional(Schema.String),
   extra: Schema.optional(Schema.NullOr(Schema.Unknown)),
   projectID: ProjectV2.ID,
 }).annotate({ identifier: "Workspace" })
