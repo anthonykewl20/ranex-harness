@@ -164,6 +164,9 @@ _Avoid_: Response envelope
 - A capability intended for both networked and **Embedded OpenCode** belongs in the authoritative public `HttpApi`; embedded-only same-process capabilities extend **Embedded OpenCode** separately.
 - `sessions.events({ sessionID, after })` is a public durable Session event stream. It verifies the Session, replays durable events after the optional aggregate sequence, continues with newly committed durable events, excludes live-only fragments, and is transported as SSE in both networked and embedded modes.
 - `events.subscribe()` is a distinct public instance-wide live stream for Session and non-Session activity. It has no replay guarantee and includes connection, heartbeat, and instance-disposal lifecycle events; consumers recover from disconnection by refreshing authoritative state.
+- Public projections on the live instance stream are byte-bounded **ProjectedEvents**: 8 KiB per variable field and 32 KiB per encoded event, with `truncated` marking and a durable `payloadID` when recoverable content was dropped.
+- A location-scoped `events.subscribe()` subscription receives matching events and location-less process-global events.
+- One live stream generation is active per mounted client identity; its successor terminates the predecessor with a live-only `server.superseded` event.
 - A Session ID is not an optional filter on `events.subscribe()`: instance-wide live events and durable Session events have different schemas, replay guarantees, cursors, lifecycle events, and failure behavior.
 - The initial common OpenCode Client does not expose server-global event aggregation. `events.subscribe()` is bounded to the connected OpenCode instance or workspace; any future cross-instance administrative stream requires a separately designed API.
 - `events.subscribe()` does not automatically reconnect after transport loss. The live-only stream fails with `ClientError`; consumers refresh authoritative state before explicitly opening a new subscription because events missed during disconnection cannot be replayed.
@@ -187,6 +190,8 @@ _Avoid_: Response envelope
 - When the effective aggregate instruction set changes, its **Mid-Conversation System Message** includes the complete current ordered set and supersedes the prior aggregate value; when no ambient instructions remain, the message states that previously loaded instructions no longer apply.
 - Ambient project instruction discovery honors `RANEX_DISABLE_PROJECT_CONFIG`; global instructions remain eligible.
 - Oversized textual **Model Tool Output** retains a bounded preview in Session history while its complete text moves to managed tool-output storage. Arbitrary structured-result size is a separate concern.
+- `outputRefs` are opaque `out_` identifiers resolving through a session-scoped fetch. They are retained with their **Managed Tool Output File** and expire with it.
+- `sessions.eventPayload` fetches a canonical durable event payload. `sessions.toolOutput` fetches managed bytes with typed not-found and expired results and managed-directory containment.
 - One tool settlement receives one aggregate textual limit, using the configured maximum lines or UTF-8 bytes, whichever is reached first. The limit is provider-independent; token pressure belongs to context assembly and compaction.
 - Generic truncation preserves the beginning and end of textual output. Tools may apply a more meaningful strategy before the Tool Registry enforces the final limit.
 - A truncated **Model Tool Output** identifies its complete text both in the bounded model-visible preview and as a typed managed output path. Managed output paths do not modify the tool's validated structured result.

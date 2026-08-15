@@ -114,6 +114,10 @@ are now Location-scoped (no cross-location settle), cascade on session delete,
 and block session moves while pending; retryable in-band provider errors
 (Anthropic/OpenAI) enter the bounded retry path; and settlement failures return
 typed errors instead of dangling waiters. See milestone #3 and issues #55–#82.
+This pass also closed issues #56, #59, #61, and #64: Location lifecycle
+teardown is generation-scoped, cold location acquisition is non-blocking, V2
+event streams are interest-scoped and byte-bounded with durable recovery, and
+every V2 permission/question wait path is durable.
 
 The TUI is being redesigned on a **separate track** under ADR-018: "the board
 is the front door." It neither consumes the durability program nor changes
@@ -126,6 +130,8 @@ kernel authority.
 - Today's `task fanout` is free-prompt JSONL prototype mechanics, **not**
   production mutation authority. Keep one mutation writer until SLICE-044's
   exit.
+- Legacy `/event` and `/global/event` planes remain canonical and unbounded;
+  #83 tracks their bounding after the ADR-018 TUI migration.
 
 ## Where the kernel lives
 
@@ -164,16 +170,19 @@ bun typecheck
 Tests cannot run from the repository root; the root `test` script guards this.
 Run them from the relevant package directory.
 
-After changing the public Protocol or Server `HttpApi`, regenerate clients:
+After changing the public Protocol or Server `HttpApi`, regenerate the legacy
+JavaScript SDK:
 
 ```bash
-cd packages/client
-bun run generate
+cd packages/sdk/js
+bun run build
 ```
 
-Do not edit `src/generated` or `src/generated-effect` directly. See
-[CONTRIBUTING.md](./CONTRIBUTING.md) for the remaining development workflow and
-[AGENTS.md](./AGENTS.md) for repository rules and style.
+Do not edit `src/v2/gen` directly. When the tree contains unrelated work, use
+an isolated clean worktree: copy only the Protocol/schema change there, build,
+then copy back only the generated diff. See [CONTRIBUTING.md](./CONTRIBUTING.md)
+for the remaining development workflow and [AGENTS.md](./AGENTS.md) for
+repository rules and style.
 
 ## Provenance and license
 
