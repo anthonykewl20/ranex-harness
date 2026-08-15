@@ -101,18 +101,20 @@ describe("PublicApi OpenAPI v2 errors", () => {
     })
   })
 
-  test("names the v2 event union without the SSE string wrapper collision", () => {
+  test("documents projected v2 events without stale stream components", () => {
     const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
 
-    expect(spec.components.schemas.V2Event1).toBeUndefined()
-    expect(spec.components.schemas.V2Event?.anyOf?.length).toBeGreaterThan(0)
-    expect(spec.components.schemas.V2EventStream).toMatchObject({
+    expect(
+      Object.keys(spec.components.schemas).filter((name) => ["V2Event", "V2Event1", "V2EventStream"].includes(name)),
+    ).toEqual([])
+    expect(spec.components.schemas.ProjectedEvent?.properties?.truncated).toEqual({ type: "boolean" })
+    expect(spec.components.schemas.ProjectedEventStream).toMatchObject({
       type: "string",
       contentMediaType: "application/json",
-      contentSchema: { $ref: "#/components/schemas/V2Event" },
+      contentSchema: { $ref: "#/components/schemas/ProjectedEvent" },
     })
     expect(spec.paths["/api/event"]?.get?.responses?.["200"]?.content?.["text/event-stream"]?.schema).toEqual({
-      $ref: "#/components/schemas/V2Event",
+      $ref: "#/components/schemas/ProjectedEvent",
     })
   })
 
