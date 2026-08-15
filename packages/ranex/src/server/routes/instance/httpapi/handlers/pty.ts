@@ -10,7 +10,7 @@ import { LocationServiceMap, locationServiceMapLayer } from "@ranex/core/locatio
 import { Location } from "@ranex/core/location"
 import { AbsolutePath } from "@ranex/core/schema"
 import { Shell } from "@ranex/core/shell"
-import { CorsConfig, isAllowedRequestOrigin, type CorsOptions } from "@ranex/server/cors"
+import { CorsConfig, isAllowedHost, isAllowedRequestOrigin, type CorsOptions } from "@ranex/server/cors"
 import {
   PTY_CONNECT_TICKET_QUERY,
   PTY_CONNECT_TOKEN_HEADER,
@@ -193,11 +193,18 @@ export const ptyConnectHandlers = HttpApiBuilder.group(PtyConnectApi, "pty-conne
         const query = Schema.decodeUnknownOption(CursorQuery)(yield* HttpServerRequest.ParsedSearchParams)
         if (Option.isNone(query)) return HttpServerResponse.empty({ status: 400 })
         const ticket = new URL(ctx.request.url, "http://localhost").searchParams.get(PTY_CONNECT_TICKET_QUERY)
+        // Origin validation is unconditional: ticketed connects keep their own
+        // origin+ticket path, and ticketless connects must never upgrade unvalidated.
+        // Absent Host/Origin means a non-browser or in-process client — nothing to validate.
+        const originAllowed =
+          validOrigin(ctx.request, cors) && (!ctx.request.headers.host || isAllowedHost(ctx.request.headers.host, cors))
         if (ticket) {
-          const valid = validOrigin(ctx.request, cors)
+          const valid = originAllowed
             ? yield* tickets.consume({ ticket, ptyID: ctx.params.ptyID, ...(yield* ticketScope) })
             : false
           if (!valid) return HttpServerResponse.empty({ status: 403 })
+        } else if (!originAllowed) {
+          return HttpServerResponse.empty({ status: 403 })
         }
         const parsedCursor = query.value.cursor === undefined ? undefined : Number(query.value.cursor)
         const cursor =

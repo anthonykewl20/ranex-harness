@@ -211,6 +211,37 @@ describe("Snapshot", () => {
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
     ),
   )
+  testEffect(Layer.empty).live("rejects option-shaped snapshot IDs with a typed error", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          const project = path.join(tmp.path, "project")
+          yield* Effect.promise(async () => {
+            await fs.mkdir(project)
+            await fs.writeFile(path.join(project, "tracked.txt"), "one\n")
+            await $`git init`.cwd(project).quiet()
+            await $`git config core.fsmonitor false`.cwd(project).quiet()
+            await $`git config commit.gpgsign false`.cwd(project).quiet()
+            await $`git config user.email test@opencode.test`.cwd(project).quiet()
+            await $`git config user.name Test`.cwd(project).quiet()
+            await $`git add .`.cwd(project).quiet()
+            await $`git commit -m initial`.cwd(project).quiet()
+          })
+
+          yield* Effect.gen(function* () {
+            const snapshot = yield* Snapshot.Service
+            // `Snapshot.ID.make` validates in effect v4, so cast to simulate a
+            // value that reached the boundary without validation.
+            const failure = yield* snapshot.checkout("--index-output=x" as Snapshot.ID).pipe(Effect.flip)
+            expect(failure).toBeInstanceOf(Snapshot.Error)
+            expect(failure).toMatchObject({ operation: "restore" })
+            expect(failure.message).toContain("tree ID")
+          }).pipe(Effect.provide(snapshotLayer(tmp.path, project)))
+        }),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
 })
 
 function snapshotLayer(

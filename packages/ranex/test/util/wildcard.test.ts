@@ -88,3 +88,17 @@ test("match handles case-insensitivity on Windows", () => {
     expect(Wildcard.match("/users/test/file", "/Users/test/*")).toBe(false)
   }
 })
+
+// Invariant: this legacy copy serves tool-name/vocabulary matching only
+// (session/llm.ts); resource/permission pattern matching must flow through
+// @ranex/core/util/wildcard's effect-aware matcher (see permission/index.ts
+// evaluate). Pin the legacy casing semantics so an accidental change to
+// either matcher surfaces here.
+test("match keeps command-style input case-sensitive on POSIX (legacy copy is vocab-only)", () => {
+  if (process.platform === "win32") {
+    expect(Wildcard.match("GIT STATUS", "git status")).toBe(true)
+  } else {
+    expect(Wildcard.match("GIT STATUS", "git status")).toBe(false)
+    expect(Wildcard.match("git status", "git status")).toBe(true)
+  }
+})

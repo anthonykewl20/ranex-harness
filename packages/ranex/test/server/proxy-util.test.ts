@@ -81,6 +81,24 @@ describe("ProxyUtil", () => {
       expect(result.get("x-custom")).toBe("keep")
     })
 
+    test("strips end-client credential headers", () => {
+      const req = new Request("http://localhost", {
+        headers: {
+          authorization: "Basic dXNlcjpwYXNz",
+          cookie: "session=abc123",
+          "x-api-key": "secret-key",
+          "x-auth-token": "secret-token",
+          "x-custom": "keep",
+        },
+      })
+      const result = ProxyUtil.headers(req)
+      expect(result.get("authorization")).toBeNull()
+      expect(result.get("cookie")).toBeNull()
+      expect(result.get("x-api-key")).toBeNull()
+      expect(result.get("x-auth-token")).toBeNull()
+      expect(result.get("x-custom")).toBe("keep")
+    })
+
     test("merges extra headers", () => {
       const req = new Request("http://localhost", {
         headers: { "content-type": "application/json" },

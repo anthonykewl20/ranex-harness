@@ -257,6 +257,50 @@ describe("FileMutation", () => {
     ),
   )
 
+  it.live("detects a parent-directory symlink swap on new-file writes", () =>
+    withTmp((directory) =>
+      withTmp((outside) => {
+        const escape = path.join(outside, "escaped")
+        const filesystem = Layer.effect(
+          FSUtil.Service,
+          Effect.gen(function* () {
+            const real = yield* FSUtil.Service
+            return FSUtil.Service.of({
+              ...real,
+              // Plant the swap inside the write, deterministically inside the
+              // post-resolution TOCTOU window: resolve saw no symlink.
+              writeWithDirs: (target, content, mode) =>
+                Effect.promise(async () => {
+                  await fs.mkdir(escape, { recursive: true })
+                  await fs.symlink(escape, path.dirname(target))
+                }).pipe(Effect.andThen(real.writeWithDirs(target, content, mode))),
+            })
+          }),
+        ).pipe(Layer.provide(LayerNode.compile(FSUtil.node)))
+
+        return Effect.gen(function* () {
+          const target = yield* (yield* LocationMutation.Service).resolve({ path: path.join("swapped", "new.txt") })
+          const failure = yield* (yield* FileMutation.Service).write({ target, content: "payload" }).pipe(Effect.flip)
+
+          expect(failure).toBeInstanceOf(FileMutation.WrittenPathEscapedError)
+          expect(failure).toMatchObject({
+            _tag: "FileMutation.WrittenPathEscapedError",
+            target: target.canonical,
+            realPath: path.join(escape, "new.txt"),
+          })
+          expect(
+            yield* Effect.promise(() =>
+              fs.stat(path.join(escape, "new.txt")).then(
+                () => true,
+                () => false,
+              ),
+            ),
+          ).toBe(false)
+        }).pipe(provide(directory, filesystem))
+      }),
+    ),
+  )
+
   it.live("allows only one concurrent conditional write based on the same bytes", () =>
     withTmp((directory) =>
       Effect.gen(function* () {

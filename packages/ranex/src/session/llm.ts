@@ -343,6 +343,10 @@ const live: Layer.Layer<
           }),
           experimental_telemetry: {
             isEnabled: cfg.experimental?.openTelemetry,
+            // Never record prompt/completion contents in telemetry spans; only
+            // metadata above. There is no opt-in config for content recording.
+            recordInputs: false,
+            recordOutputs: false,
             functionId: "session.llm",
             tracer: telemetryTracer,
             metadata: {

@@ -9,9 +9,9 @@ import path from "path"
 
 import { createClient } from "@hey-api/openapi-ts"
 
-const opencode = path.resolve(dir, "../../opencode")
+const opencode = path.resolve(dir, "../../ranex")
 
-await $`bun dev generate > ${dir}/openapi.json`.cwd(opencode)
+await $`RANEX_TASK_ID=sdk-generation RANEX_EMIT=/dev/null bun dev generate > ${dir}/openapi.json`.cwd(opencode)
 
 const document = (await Bun.file("./openapi.json").json()) as {
   components?: { schemas?: Record<string, unknown> }

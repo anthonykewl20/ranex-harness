@@ -2,6 +2,47 @@
 exact = true
 # Only install newly resolved package versions published at least 3 days ago.
 minimumReleaseAge = 259200
+# SECURITY (security-audit finding): every entry in minimumReleaseAgeExcludes
+# bypasses the 3-day publish-delay supply-chain control above for that
+# package, accepting freshly-published-supply-chain risk in exchange for
+# freshness. Per-entry documentation below is derived from repo history
+# (offline archaeology, 2026-08). NEW additions require an inline reason
+# documenting why the bypass is required, and any addition mandates re-review
+# of the entire list: re-justify every existing entry at the same time and
+# remove entries whose reason no longer holds.
+#
+# "@ai-sdk/amazon-bedrock"            # AWS Bedrock provider SDK; day-fresh 4.0.112 carried the mantle/OpenAI-on-Bedrock support being added (added 9f42bd4a85: feat: bump bedrock and add proper mantle support for openai models through aws bedrock (#30464))
+# "@ai-sdk/anthropic"                 # Anthropic provider SDK; day-fresh 3.0.82 carried the fallback-responses fix (added 954d618790: fix(opencode): support Anthropic fallback responses (#31611))
+# "@opentui/core"                     # TUI framework the repo TUI is built on; list was created to keep consuming day-fresh opentui (0.2.6->0.2.8 here, policy added a day earlier in 5a4596c879) (added d6367853ae: Add TUI notifications and attention sounds (disabled by default) (#26980))
+# "@opentui/core-darwin-arm64"        # prebuilt macOS arm64 binary of @opentui/core, installed in lockstep with day-fresh opentui releases (added d6367853ae: Add TUI notifications and attention sounds (disabled by default) (#26980))
+# "@opentui/core-darwin-x64"          # prebuilt macOS x64 binary of @opentui/core, installed in lockstep with day-fresh opentui releases (added d6367853ae: Add TUI notifications and attention sounds (disabled by default) (#26980))
+# "@opentui/core-linux-arm64"         # prebuilt Linux arm64 (glibc) binary of @opentui/core, installed in lockstep with day-fresh opentui releases (added d6367853ae: Add TUI notifications and attention sounds (disabled by default) (#26980))
+# "@opentui/core-linux-arm64-musl"    # musl variant of the opentui prebuilt binary, first published with opentui 0.3.2 (added e464999eb9: upgrade opentui to 0.3.2 (#30748))
+# "@opentui/core-linux-x64"           # prebuilt Linux x64 (glibc) binary of @opentui/core, installed in lockstep with day-fresh opentui releases (added d6367853ae: Add TUI notifications and attention sounds (disabled by default) (#26980))
+# "@opentui/core-linux-x64-musl"      # musl variant of the opentui prebuilt binary, first published with opentui 0.3.2 (added e464999eb9: upgrade opentui to 0.3.2 (#30748))
+# "@opentui/core-win32-arm64"         # prebuilt Windows arm64 binary of @opentui/core, installed in lockstep with day-fresh opentui releases (added d6367853ae: Add TUI notifications and attention sounds (disabled by default) (#26980))
+# "@opentui/core-win32-x64"           # prebuilt Windows x64 binary of @opentui/core, installed in lockstep with day-fresh opentui releases (added d6367853ae: Add TUI notifications and attention sounds (disabled by default) (#26980))
+# "@opentui/keymap"                   # opentui companion keymap module, upgraded in lockstep with day-fresh opentui releases (added d6367853ae: Add TUI notifications and attention sounds (disabled by default) (#26980))
+# "@opentui/solid"                    # Solid.js bindings of opentui, upgraded in lockstep with day-fresh opentui releases (added d6367853ae: Add TUI notifications and attention sounds (disabled by default) (#26980))
+# "opentui-spinner"                   # opentui spinner widget, upgraded in lockstep with day-fresh opentui releases (added 8bd249d8cf: upgrade opentui-spinner (#31561))
+# "gitlab-ai-provider"                # GitLab AI provider integration; excluded to install the day-fresh 6.8.0 release (added e00a62e461: chore: bump gitlab-ai-provider to 6.8.0 (#29792))
+# "opencode-gitlab-auth"              # GitLab auth companion to gitlab-ai-provider; excluded for the 2.1.0 bump (added 04e5ca9d1b: chore: bump gitlab-ai-provider to 6.9.3 and opencode-gitlab-auth to 2.1.0 (#31913))
+# "@ff-labs/fff-node"                 # fff (fast file finder) Node binding introduced with the fff search-tools feature (added 7d3d80f840: feat(opencode): fff search tools (#27802))
+# "@ff-labs/fff-bun"                  # fff Bun binding; version-locked by patchedDependencies via patches/@ff-labs%2Ffff-bun@0.9.3.patch (added 7d3d80f840: feat(opencode): fff search tools (#27802))
+# "@ff-labs/fff-bin-darwin-arm64"     # per-platform binary distribution of the fff search tool, published per release (added 7d3d80f840: feat(opencode): fff search tools (#27802))
+# "@ff-labs/fff-bin-darwin-x64"       # per-platform binary distribution of the fff search tool, published per release (added 7d3d80f840: feat(opencode): fff search tools (#27802))
+# "@ff-labs/fff-bin-linux-arm64-gnu"  # per-platform binary distribution of the fff search tool, published per release (added 7d3d80f840: feat(opencode): fff search tools (#27802))
+# "@ff-labs/fff-bin-linux-arm64-musl" # per-platform binary distribution of the fff search tool, published per release (added 7d3d80f840: feat(opencode): fff search tools (#27802))
+# "@ff-labs/fff-bin-linux-x64-gnu"    # per-platform binary distribution of the fff search tool, published per release (added 7d3d80f840: feat(opencode): fff search tools (#27802))
+# "@ff-labs/fff-bin-linux-x64-musl"   # per-platform binary distribution of the fff search tool, published per release (added 7d3d80f840: feat(opencode): fff search tools (#27802))
+# "@ff-labs/fff-bin-win32-arm64"      # per-platform binary distribution of the fff search tool, published per release (added 7d3d80f840: feat(opencode): fff search tools (#27802))
+# "@ff-labs/fff-bin-win32-x64"        # per-platform binary distribution of the fff search tool, published per release (added 7d3d80f840: feat(opencode): fff search tools (#27802))
+# "@pierre/diffs"                     # Pierre diff-view components for web-app session timelines; 1.2.10 was published day-of (added 3b811bd019: feat(app): make session timelines much faster AND without flicker or scroll jumps (#32331))
+# "@pierre/theming"                   # new transitive dep of @pierre/diffs@1.2.10; 0.0.1 was published day-of (added 3b811bd019: feat(app): make session timelines much faster AND without flicker or scroll jumps (#32331))
+# "app-builder-lib"                   # electron-builder internal package resolved fresh in lockstep with the 26.15.2 bump that restored macOS auto-updates (added e0449c0b96: fix(desktop): restore macOS auto-updates (#31621))
+# "dmg-builder"                       # electron-builder internal package resolved fresh in lockstep with the 26.15.2 bump that restored macOS auto-updates (added e0449c0b96: fix(desktop): restore macOS auto-updates (#31621))
+# "electron-builder"                  # desktop packaging toolchain; day-fresh 26.15.2 (26.15.0->26.15.2) restored macOS auto-updates (added e0449c0b96: fix(desktop): restore macOS auto-updates (#31621))
+# "electron-publish"                  # electron-builder internal package resolved fresh in lockstep with the 26.15.2 bump that restored macOS auto-updates (added e0449c0b96: fix(desktop): restore macOS auto-updates (#31621))
 minimumReleaseAgeExcludes = ["@ai-sdk/amazon-bedrock", "@ai-sdk/anthropic", "@opentui/core", "@opentui/core-darwin-arm64", "@opentui/core-darwin-x64", "@opentui/core-linux-arm64", "@opentui/core-linux-arm64-musl", "@opentui/core-linux-x64", "@opentui/core-linux-x64-musl", "@opentui/core-win32-arm64", "@opentui/core-win32-x64", "@opentui/keymap", "@opentui/solid", "opentui-spinner", "gitlab-ai-provider", "opencode-gitlab-auth", "@ff-labs/fff-node", "@ff-labs/fff-bun", "@ff-labs/fff-bin-darwin-arm64", "@ff-labs/fff-bin-darwin-x64", "@ff-labs/fff-bin-linux-arm64-gnu", "@ff-labs/fff-bin-linux-arm64-musl", "@ff-labs/fff-bin-linux-x64-gnu", "@ff-labs/fff-bin-linux-x64-musl", "@ff-labs/fff-bin-win32-arm64", "@ff-labs/fff-bin-win32-x64", "@pierre/diffs", "@pierre/theming", "app-builder-lib", "dmg-builder", "electron-builder", "electron-publish"]
 
 [test]

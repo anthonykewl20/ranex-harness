@@ -59,6 +59,166 @@ function normalizeLoadedConfig(data: unknown) {
   return copy
 }
 
+// Option keys every provider lowerer (core/v1/config/provider-options.ts) and
+// migrate.ts turn into credentials, auth headers, or request URLs. A hostile
+// repo can use them to redirect provider traffic and exfiltrate stored keys.
+const providerCredentialOptionKeys = ["apiKey", "authToken", "baseURL", "headers", "enterpriseUrl"] as const
+
+/**
+ * Strip credential- and redirect-bearing provider fields and environment
+ * escalation from an untrusted (project-repo) config. Returns the sanitized
+ * copy plus the removed key paths so callers can log what was stripped.
+ */
+export function sanitizeProjectConfig(info: Info): { info: Info; stripped: string[] } {
+  const stripped: string[] = []
+  let next = info
+  if (info.provider !== undefined) next = { ...next, provider: sanitizeProjectProviders(info.provider, stripped) }
+  if (info.mcp !== undefined) next = { ...next, mcp: sanitizeProjectMcp(info.mcp, stripped) }
+  if (info.experimental !== undefined)
+    next = { ...next, experimental: sanitizeProjectExperimental(info.experimental, stripped) }
+  return { info: next, stripped }
+}
+
+function sanitizeProjectProviders(provider: NonNullable<Info["provider"]>, stripped: string[]) {
+  const next: Record<string, NonNullable<Info["provider"]>[string]> = {}
+  for (const [id, entry] of Object.entries(provider)) {
+    const copy = { ...entry }
+    if (copy.api !== undefined) {
+      stripped.push(`provider.${id}.api`)
+      delete copy.api
+    }
+    // `provider.<id>.npm` selects an arbitrary SDK package: provider.ts feeds
+    // it into apiNpm (provider.ts:1442-1445) and later installs it with
+    // Npm.add plus a dynamic import (provider.ts:1794-1809). A repo must not
+    // choose which package gets installed and imported.
+    if (copy.npm !== undefined) {
+      stripped.push(`provider.${id}.npm`)
+      delete copy.npm
+    }
+    if (isRecord(copy.options)) {
+      const options: Record<string, unknown> = { ...copy.options }
+      for (const key of providerCredentialOptionKeys) {
+        if (!(key in options)) continue
+        stripped.push(`provider.${id}.options.${key}`)
+        delete options[key]
+      }
+      copy.options = options as typeof copy.options
+    }
+    if (isRecord(copy.models)) copy.models = sanitizeProviderModels(id, copy.models, stripped)
+    next[id] = copy
+  }
+  return next
+}
+
+// Project sources must not escalate environment inheritance: `inheritEnv` on a
+// local (stdio) MCP entry hands the complete parent environment — including
+// secret env vars — to a repo-chosen command.
+function sanitizeProjectMcp(mcp: NonNullable<Info["mcp"]>, stripped: string[]) {
+  const next: NonNullable<Info["mcp"]> = {}
+  for (const [name, server] of Object.entries(mcp)) {
+    if (!isRecord(server)) {
+      next[name] = server
+      continue
+    }
+    const copy: Record<string, unknown> = { ...server }
+    if (copy.type !== "local" || copy.inheritEnv !== true) {
+      next[name] = server
+      continue
+    }
+    stripped.push(`mcp.${name}.inheritEnv`)
+    delete copy.inheritEnv
+    next[name] = copy as (typeof mcp)[string]
+  }
+  return next
+}
+
+// `experimental.openTelemetry` turns on OTel spans for AI SDK calls
+// (session/llm.ts, agent/agent.ts): prompt and completion contents get
+// exported as telemetry to the user's env-configured OTLP endpoint. Only the
+// user may flip that switch. `experimental.policies` are permission-adjacent:
+// policy statements can allow actions on resources (core/policy.ts evaluate),
+// so project sources must not grant. The other experimental toggles
+// (primary_tools, continue_loop_on_deny, mcp_timeout, disable_paste_summary,
+// batch_tool) carry no permission or prompt-egress path, so they pass through.
+function sanitizeProjectExperimental(experimental: NonNullable<Info["experimental"]>, stripped: string[]) {
+  const copy = { ...experimental }
+  if (copy.openTelemetry === undefined && copy.policies === undefined) return experimental
+  if (copy.openTelemetry !== undefined) {
+    stripped.push("experimental.openTelemetry")
+    delete copy.openTelemetry
+  }
+  // Policies are permission-adjacent; project sources must not grant.
+  if (copy.policies !== undefined) {
+    stripped.push("experimental.policies")
+    delete copy.policies
+  }
+  return copy
+}
+
+// migrate.ts turns per-model `headers` into request headers and
+// `models.<id>.provider.api` into the model-level api.url override — the same
+// exfiltration surface as provider-level credentials. `models.<id>.provider.npm`
+// rides the same arbitrary-package install+dynamic-import path as
+// `provider.<id>.npm` (see sanitizeProjectProviders).
+function sanitizeProviderModels(
+  providerID: string,
+  models: Record<string, ProviderModelInfo>,
+  stripped: string[],
+) {
+  const next: Record<string, ProviderModelInfo> = {}
+  for (const [modelID, model] of Object.entries(models)) {
+    if (!isRecord(model)) {
+      next[modelID] = model
+      continue
+    }
+    const copy = { ...model }
+    if (copy.headers !== undefined) {
+      stripped.push(`provider.${providerID}.models.${modelID}.headers`)
+      delete copy.headers
+    }
+    if (isRecord(copy.provider)) {
+      const override = { ...copy.provider }
+      if (override.api !== undefined) {
+        stripped.push(`provider.${providerID}.models.${modelID}.provider.api`)
+        delete override.api
+      }
+      if (override.npm !== undefined) {
+        stripped.push(`provider.${providerID}.models.${modelID}.provider.npm`)
+        delete override.npm
+      }
+      copy.provider = override as typeof copy.provider
+    }
+    next[modelID] = copy
+  }
+  return next
+}
+
+/**
+ * Find a repo-controlled `.npmrc` between `dir` (inclusive) and `stop`
+ * (inclusive — the worktree root is repo territory). npm reads per-directory
+ * `.npmrc` files by walking up from its cwd, so one on this path can redirect
+ * the automatic `@ranex/plugin` install.
+ */
+export function findProjectNpmrc(dir: string, stop: string): string | undefined {
+  let current = path.resolve(dir)
+  const limit = path.resolve(stop)
+  while (FSUtil.contains(limit, current)) {
+    const candidate = path.join(current, ".npmrc")
+    if (existsSync(candidate)) return candidate
+    const parent = path.dirname(current)
+    if (parent === current) return undefined
+    current = parent
+  }
+  return undefined
+}
+
+// Config dirs the user owns directly: global config, ~/.opencode, and an
+// explicit RANEX_CONFIG_DIR. Everything else inside the project boundary is
+// repo-controlled.
+function trustedConfigDir(dir: string) {
+  return dir === Global.Path.config || dir === Flag.RANEX_CONFIG_DIR || dir === path.join(Global.Path.home, ".opencode")
+}
+
 async function substituteWellKnownRemoteConfig(input: {
   value: unknown
   dir: string
@@ -97,6 +257,10 @@ async function substituteWellKnownRemoteConfig(input: {
 }
 
 type Info = ConfigV1.Info
+
+type ProviderInfo = NonNullable<Info["provider"]>[string]
+
+type ProviderModelInfo = NonNullable<ProviderInfo["models"]>[string]
 
 type State = {
   config: Info
@@ -197,13 +361,14 @@ const layer = Layer.effect(
       text: string,
       options: { path: string } | { dir: string; source: string },
       env?: Record<string, string>,
+      untrusted?: boolean,
     ) {
       const source = "path" in options ? options.path : options.source
       const expanded = yield* Effect.promise(() =>
         ConfigVariable.substitute(
           "path" in options
-            ? { text, type: "path", path: options.path, env }
-            : { text, type: "virtual", ...options, env },
+            ? { text, type: "path", path: options.path, env, untrusted }
+            : { text, type: "virtual", ...options, env, untrusted },
         ),
       )
       const parsed = ConfigParse.jsonc(expanded, source)
@@ -219,11 +384,11 @@ const layer = Layer.effect(
       return data
     })
 
-    const loadFile = Effect.fnUntraced(function* (filepath: string, env?: Record<string, string>) {
+    const loadFile = Effect.fnUntraced(function* (filepath: string, env?: Record<string, string>, untrusted?: boolean) {
       yield* Effect.logInfo("loading", { path: filepath })
       const text = yield* readConfigFile(filepath)
       if (!text) return {} as Info
-      return yield* loadConfig(text, { path: filepath }, env)
+      return yield* loadConfig(text, { path: filepath }, env, untrusted)
     })
 
     const loadGlobal = Effect.fnUntraced(function* (env?: Record<string, string>) {
@@ -315,10 +480,20 @@ const layer = Layer.effect(
         const consoleManagedProviders = new Set<string>()
         let activeOrgName: string | undefined
 
-        const merge = (_source: string, next: Info, _kind?: "global" | "local") => {
-          result = mergeConfigConcatArrays(result, next)
-          return Effect.void
-        }
+        const merge = Effect.fnUntraced(function* (source: string, next: Info, kind?: "global" | "local") {
+          if (kind !== "local") {
+            result = mergeConfigConcatArrays(result, next)
+            return
+          }
+          const sanitized = sanitizeProjectConfig(next)
+          if (sanitized.stripped.length) {
+            yield* Effect.logWarning("stripped credential-bearing provider options from untrusted project config", {
+              source,
+              stripped: sanitized.stripped,
+            })
+          }
+          result = mergeConfigConcatArrays(result, sanitized.info)
+        })
 
         for (const [key, value] of Object.entries(auth)) {
           if (value.type === "wellknown") {
@@ -372,7 +547,7 @@ const layer = Layer.effect(
 
         if (!Flag.RANEX_DISABLE_PROJECT_CONFIG) {
           for (const file of yield* ConfigPaths.files("ranex", ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
-            yield* merge(file, yield* loadFile(file, authEnv), "local")
+            yield* merge(file, yield* loadFile(file, authEnv, true), "local")
           }
         }
 
@@ -450,10 +625,13 @@ const layer = Layer.effect(
 
         for (const dir of directories) {
           if (dir.endsWith(".opencode") || dir === Flag.RANEX_CONFIG_DIR) {
+            const untrusted = !trustedConfigDir(dir) && containsPath(dir, ctx)
             for (const file of ["ranex.json", "ranex.jsonc"]) {
               const source = path.join(dir, file)
               yield* Effect.logDebug(`loading config from ${source}`)
-              yield* merge(source, yield* loadFile(source, authEnv))
+              // Repo-controlled .opencode dirs merge as "local" so the
+              // project-config sanitize pass applies to them too.
+              yield* merge(source, yield* loadFile(source, authEnv, untrusted), untrusted ? "local" : undefined)
               result.agent ??= {}
               result.mode ??= {}
               result.plugin ??= []
@@ -462,26 +640,34 @@ const layer = Layer.effect(
 
           yield* ensureGitignore(dir).pipe(Effect.orDie)
 
-          const dep = yield* npmSvc
-            .install(dir, {
-              add: [
-                {
-                  name: "@ranex/plugin",
-                  version: InstallationLocal ? undefined : InstallationVersion,
-                },
-              ],
+          const npmrc = trustedConfigDir(dir) ? undefined : findProjectNpmrc(dir, ctx.worktree)
+          if (npmrc) {
+            yield* Effect.logWarning("skipping @ranex/plugin install: project .npmrc may redirect npm", {
+              dir,
+              npmrc,
             })
-            .pipe(
-              Effect.exit,
-              Effect.tap((exit) =>
-                Exit.isFailure(exit)
-                  ? Effect.logWarning("background dependency install failed", { dir, error: String(exit.cause) })
-                  : Effect.void,
-              ),
-              Effect.asVoid,
-              Effect.forkDetach,
-            )
-          deps.push(dep)
+          } else {
+            const dep = yield* npmSvc
+              .install(dir, {
+                add: [
+                  {
+                    name: "@ranex/plugin",
+                    version: InstallationLocal ? undefined : InstallationVersion,
+                  },
+                ],
+              })
+              .pipe(
+                Effect.exit,
+                Effect.tap((exit) =>
+                  Exit.isFailure(exit)
+                    ? Effect.logWarning("background dependency install failed", { dir, error: String(exit.cause) })
+                    : Effect.void,
+                ),
+                Effect.asVoid,
+                Effect.forkDetach,
+              )
+            deps.push(dep)
+          }
 
           result.command = mergeDeep(result.command ?? {}, yield* Effect.promise(() => ConfigCommand.load(dir)))
           result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.load(dir)))
@@ -489,7 +675,8 @@ const layer = Layer.effect(
         }
 
         if (configContent) {
-          yield* merge("RANEX_CONFIG_CONTENT", configContent, "local")
+          // Env-provided content is user-initiated (trusted): merged without the "local" kind.
+          yield* merge("RANEX_CONFIG_CONTENT", configContent)
           yield* Effect.logDebug("loaded custom config from RANEX_CONFIG_CONTENT")
         }
 
@@ -599,7 +786,7 @@ const layer = Layer.effect(
     const update = Effect.fn("Config.update")(function* (config: Info) {
       const dir = yield* InstanceState.directory
       const file = path.join(dir, "config.json")
-      const existing = yield* loadFile(file)
+      const existing = yield* loadFile(file, undefined, true)
       yield* fs
         .writeFileString(file, JSON.stringify(mergeDeep(writable(existing), writable(config)), null, 2))
         .pipe(Effect.orDie)

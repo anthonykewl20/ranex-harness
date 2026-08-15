@@ -121,6 +121,62 @@ export const Plugin = define({
       { action: "read", resource: "*.env.example", effect: "allow" },
     ]
 
+    // Plan-mode bash policy ported from V1: prompt by default, allow read-only
+    // inspection commands, and flat-deny known mutating gh/git commands.
+    const planBash: PermissionV2.Ruleset = [
+      { action: "bash", resource: "*", effect: "ask" },
+      { action: "bash", resource: "gh issue list *", effect: "allow" },
+      { action: "bash", resource: "gh issue view *", effect: "allow" },
+      { action: "bash", resource: "gh pr list *", effect: "allow" },
+      { action: "bash", resource: "gh pr view *", effect: "allow" },
+      { action: "bash", resource: "gh pr diff *", effect: "allow" },
+      { action: "bash", resource: "git status *", effect: "allow" },
+      { action: "bash", resource: "git log *", effect: "allow" },
+      { action: "bash", resource: "git diff *", effect: "allow" },
+      { action: "bash", resource: "git show *", effect: "allow" },
+      { action: "bash", resource: "ls *", effect: "allow" },
+      { action: "bash", resource: "cat *", effect: "allow" },
+      { action: "bash", resource: "grep *", effect: "allow" },
+      { action: "bash", resource: "rg *", effect: "allow" },
+      { action: "bash", resource: "find *", effect: "allow" },
+      { action: "bash", resource: "head *", effect: "allow" },
+      { action: "bash", resource: "tail *", effect: "allow" },
+      { action: "bash", resource: "pwd", effect: "allow" },
+      { action: "bash", resource: "echo *", effect: "allow" },
+      { action: "bash", resource: "wc *", effect: "allow" },
+      { action: "bash", resource: "which *", effect: "allow" },
+      { action: "bash", resource: "file *", effect: "allow" },
+      { action: "bash", resource: "gh issue comment *", effect: "deny" },
+      { action: "bash", resource: "gh issue create *", effect: "deny" },
+      { action: "bash", resource: "gh issue close *", effect: "deny" },
+      { action: "bash", resource: "gh issue edit *", effect: "deny" },
+      { action: "bash", resource: "gh issue delete *", effect: "deny" },
+      { action: "bash", resource: "gh issue reopen *", effect: "deny" },
+      { action: "bash", resource: "gh pr create *", effect: "deny" },
+      { action: "bash", resource: "gh pr merge *", effect: "deny" },
+      { action: "bash", resource: "gh pr close *", effect: "deny" },
+      { action: "bash", resource: "gh pr edit *", effect: "deny" },
+      { action: "bash", resource: "gh pr review *", effect: "deny" },
+      { action: "bash", resource: "gh release create *", effect: "deny" },
+      { action: "bash", resource: "gh release delete *", effect: "deny" },
+      { action: "bash", resource: "gh release edit *", effect: "deny" },
+      { action: "bash", resource: "gh repo create *", effect: "deny" },
+      { action: "bash", resource: "gh repo delete *", effect: "deny" },
+      { action: "bash", resource: "gh label create *", effect: "deny" },
+      { action: "bash", resource: "gh label delete *", effect: "deny" },
+      { action: "bash", resource: "gh label edit *", effect: "deny" },
+      { action: "bash", resource: "gh workflow run *", effect: "deny" },
+      { action: "bash", resource: "gh workflow disable *", effect: "deny" },
+      { action: "bash", resource: "gh run cancel *", effect: "deny" },
+      { action: "bash", resource: "gh run rerun *", effect: "deny" },
+      { action: "bash", resource: "git push *", effect: "deny" },
+      { action: "bash", resource: "git commit *", effect: "deny" },
+      { action: "bash", resource: "git merge *", effect: "deny" },
+      { action: "bash", resource: "git rebase *", effect: "deny" },
+      { action: "bash", resource: "git reset *", effect: "deny" },
+      { action: "bash", resource: "git cherry-pick *", effect: "deny" },
+    ]
+
     yield* ctx.agent.transform((draft) => {
       draft.update(AgentV2.defaultID, (item) => {
         item.description = "The default agent. Executes tools based on configured permissions."
@@ -138,18 +194,22 @@ export const Plugin = define({
         item.description = "Plan mode. Disallows all edit tools."
         item.mode = "primary"
         item.permissions.push(
-          ...PermissionV2.merge(defaults, [
-            { action: "question", resource: "*", effect: "allow" },
-            { action: "plan_exit", resource: "*", effect: "allow" },
-            { action: "external_directory", resource: path.join(Global.Path.data, "plans", "*"), effect: "allow" },
-            { action: "edit", resource: "*", effect: "deny" },
-            { action: "edit", resource: path.join(".ranex", "plans", "*.md"), effect: "allow" },
-            {
-              action: "edit",
-              resource: path.relative(worktree, path.join(Global.Path.data, "plans", "*.md")),
-              effect: "allow",
-            },
-          ]),
+          ...PermissionV2.merge(
+            defaults,
+            [
+              { action: "question", resource: "*", effect: "allow" },
+              { action: "plan_exit", resource: "*", effect: "allow" },
+              { action: "external_directory", resource: path.join(Global.Path.data, "plans", "*"), effect: "allow" },
+              { action: "edit", resource: "*", effect: "deny" },
+              { action: "edit", resource: path.join(".ranex", "plans", "*.md"), effect: "allow" },
+              {
+                action: "edit",
+                resource: path.relative(worktree, path.join(Global.Path.data, "plans", "*.md")),
+                effect: "allow",
+              },
+            ],
+            planBash,
+          ),
         )
       })
 

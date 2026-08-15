@@ -125,7 +125,7 @@ it.instance(
       ).toBe("https://bedrock-mantle.us-east-2.api.aws/openai/v1/responses")
     }),
   {
-    config: {
+    trustedConfig: {
       provider: {
         "amazon-bedrock": {
           options: { region: "us-east-2", apiKey: "test-bearer-token" },
@@ -164,7 +164,10 @@ it.instance(
       ).toBe("https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions")
     }),
   {
-    config: {
+    // mantleModelConfig routes through model-level provider.npm, which
+    // project-scope delivery strips (sanitizeProjectConfig); deliver via
+    // trusted RANEX_CONFIG_CONTENT like the GPT-5.5 Mantle test above.
+    trustedConfig: {
       provider: {
         "amazon-bedrock": {
           options: { region: "us-east-1" },

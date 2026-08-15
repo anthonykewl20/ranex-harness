@@ -232,7 +232,11 @@ const layer = Layer.effect(
       // Apply general settings first and more specific settings last:
       // global config, project files, then config-directory files.
       const entries = [...globalEntries, ...direct, ...supplementary.flat()]
-      yield* loadPolicy(entries)
+      // Policy statements are permission-adjacent (Policy.evaluate honors
+      // allow statements), so project-sourced documents — direct files and
+      // config directories between the opened directory and the project
+      // root — must not grant; only global config may load them.
+      yield* loadPolicy(globalEntries)
       state.entries = entries
       state.projectDirectory = projectDirectory
       yield* Deferred.succeed(ready, entries)

@@ -158,6 +158,7 @@ const nativeLayer = (config: Config) =>
       yield* Effect.addFinalizer(() => Effect.sync(() => native.close()))
       native.exec("PRAGMA busy_timeout = 5000;")
       if (config.disableWAL !== true && config.readonly !== true) native.exec("PRAGMA journal_mode = WAL;")
+      if (config.readonly !== true) Sqlite.restrictToFileOwner(config.filename)
       return native
     }),
   )

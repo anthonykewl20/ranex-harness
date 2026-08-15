@@ -46,14 +46,31 @@ Next reviewed slices:
 - remove the public in-memory `@ranex/llm` tool loop after replacing its
   remaining one-turn native-adapter use with a narrow typed dispatcher
 - batch streamed deltas and add covering context indexes
-- expose replayable Session event cursors over HTTP and the generated SDK where remote consumers need them
+- expose replayable Session event cursors over HTTP and the generated SDK where remote consumers need them — **done**: `GET /api/session/:sessionID/history` with generated clients shipped (schema-changelog 2026-06-26)
 - integrate the new BackgroundJob service with V2 tool execution: support background
   bash jobs and background agent dispatch with durable status observation,
   completion delivery, and explicit cancellation / continuation semantics
 - add durable/clustered interruption, retries, and stale-owner fencing only as
-  their slices become concrete
+  their slices become concrete — **done 2026-08-13**: milestone #1 of the
+  ADR-015 durable-execution program closed with watchdog (SLICE-012,
+  `23d6a5b4ee`), reconciler hoist plus startup sweep (SLICE-013, `a8bc7bdf35`),
+  durable retry (SLICE-014, `2a098d4963`), durable blockers (SLICE-015,
+  `0aea8a19a7`), and Session-ID fencing (SLICE-016, `1834c96260`); the
+  clustered placement itself remains unimplemented
 
 ### Deferred durable continuation recovery
+
+Status (2026-08-15): the durable-execution subset of this design shipped and
+milestone #1 of the ADR-015 program, "Durable execution, failover, and
+recovery," closed on 2026-08-13 — provider watchdog (SLICE-012, `23d6a5b4ee`),
+reconciler hoist plus startup sweep (SLICE-013, `a8bc7bdf35`), durable retry
+via the existing `session.next.retried` event (SLICE-014, `2a098d4963`),
+durable permission/question blocker rows (SLICE-015, `0aea8a19a7`), and
+Session-ID fencing via the existing flock plus EventV2 owner claims
+(SLICE-016, `1834c96260`), followed by the three permanent regression tests
+(`275adaf623`). Cross-model failover (#8) and subagent recovery (#9) remain
+deferred. The brief below predates that closure and is kept as the design
+record for what is still open.
 
 Do not infer that ambiguous provider work is safe to retry from an advisory wake.
 The first inbox-driven runner intentionally omits outer provider-attempt markers
@@ -111,7 +128,9 @@ replay-owner claims without relying on the old bus system.
 Remaining slices:
 
 - expose the embedded consumer-facing Session cursor API over HTTP and the
-  generated SDK where remote consumers need it
+  generated SDK where remote consumers need it — **done**: the finite
+  `GET /api/session/:sessionID/history` endpoint and generated clients
+  shipped (schema-changelog 2026-06-26)
 - keep replay-owner claims distinct from future clustered Session execution
   ownership and stale-runtime fencing
 

@@ -5,6 +5,7 @@ import { Context, Effect, Layer, Schema } from "effect"
 import { dirname } from "path"
 import { KeyedMutex } from "./effect/keyed-mutex"
 import { FSUtil } from "./fs-util"
+import { Location } from "./location"
 
 export interface Target {
   readonly canonical: string
@@ -37,6 +38,23 @@ export class TargetExistsError extends Schema.TaggedErrorClass<TargetExistsError
   path: Schema.String,
 }) {}
 
+/**
+ * A new-file write landed outside the location root: a parent directory was
+ * swapped to a symlink between resolution and write (TOCTOU). The written tail
+ * path is unlinked best-effort; the bytes may have reached the swapped target.
+ */
+export class WrittenPathEscapedError extends Schema.TaggedErrorClass<WrittenPathEscapedError>()(
+  "FileMutation.WrittenPathEscapedError",
+  {
+    target: Schema.String,
+    realPath: Schema.String,
+  },
+) {
+  override get message() {
+    return `Written file escaped the location root: ${this.target} resolved to ${this.realPath}`
+  }
+}
+
 export interface WriteResult {
   readonly operation: "write"
   readonly target: string
@@ -53,10 +71,12 @@ export interface RemoveResult {
 
 export interface Interface {
   /** Create without replacing an existing target. */
-  readonly create: (input: WriteInput) => Effect.Effect<WriteResult, TargetExistsError | FSUtil.Error>
-  readonly write: (input: WriteInput) => Effect.Effect<WriteResult, FSUtil.Error>
+  readonly create: (
+    input: WriteInput,
+  ) => Effect.Effect<WriteResult, TargetExistsError | WrittenPathEscapedError | FSUtil.Error>
+  readonly write: (input: WriteInput) => Effect.Effect<WriteResult, WrittenPathEscapedError | FSUtil.Error>
   /** Write text while retaining an existing UTF-8 BOM and emitting at most one BOM. */
-  readonly writeTextPreservingBom: (input: TextWriteInput) => Effect.Effect<WriteResult, FSUtil.Error>
+  readonly writeTextPreservingBom: (input: TextWriteInput) => Effect.Effect<WriteResult, WrittenPathEscapedError | FSUtil.Error>
   /** Commit only if an existing target still has the expected bytes. */
   readonly writeIfUnchanged: (
     input: ConditionalWriteInput,
@@ -75,11 +95,27 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
+    const locationRoot = yield* fs.realPath((yield* Location.Service).directory).pipe(Effect.orDie)
     const locks = KeyedMutex.makeUnsafe<string>()
     const withTargetLock =
       (target: Target) =>
       <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         locks.withLock(target.canonical)(Effect.uninterruptible(effect))
+
+    // TOCTOU guard (audit F-07): a new-file write composes the missing tail
+    // below a realPath'd anchor instead of resolving it, so a parent directory
+    // swapped to a symlink after resolution can redirect the bytes outside the
+    // location. Detect it by re-realPath-ing the written file; on violation,
+    // best-effort unlink the written tail path and fail loudly — the error is
+    // the detection. Explicitly resolved external targets are outside the root
+    // by design and are exempt.
+    const verifyNewTarget = Effect.fnUntraced(function* (target: Target) {
+      if (!FSUtil.contains(locationRoot, target.canonical)) return
+      const written = yield* fs.realPath(target.canonical).pipe(Effect.orDie)
+      if (FSUtil.contains(locationRoot, written)) return
+      yield* fs.remove(target.canonical).pipe(Effect.ignore)
+      return yield* new WrittenPathEscapedError({ target: target.canonical, realPath: written })
+    })
 
     const writeResult = (target: Target, existed: boolean): WriteResult => ({
       operation: "write",
@@ -100,6 +136,7 @@ const layer = Layer.effect(
         Effect.gen(function* () {
           const existed = yield* fs.exists(input.target.canonical)
           yield* fs.writeWithDirs(input.target.canonical, input.content)
+          if (!existed) yield* verifyNewTarget(input.target)
           return writeResult(input.target, existed)
         }),
       ),
@@ -116,6 +153,7 @@ const layer = Layer.effect(
             input.target.canonical,
             joinBom(next.text, Boolean(current && hasUtf8Bom(current)) || next.bom),
           )
+          if (current === undefined) yield* verifyNewTarget(input.target)
           return writeResult(input.target, current !== undefined)
         }),
       ),
@@ -136,6 +174,7 @@ const layer = Layer.effect(
               Effect.fail(new TargetExistsError({ path: input.target.canonical })),
             ),
           )
+          yield* verifyNewTarget(input.target)
           return writeResult(input.target, false)
         }),
       ),
@@ -193,7 +232,11 @@ function sameBytes(left: Uint8Array, right: Uint8Array) {
 
 export const locationLayer = layer
 
-export const node = makeLocationNode({ service: Service, layer, deps: [FSUtil.node] })
+export const node = makeLocationNode({
+  service: Service,
+  layer: layer.pipe(Layer.orDie),
+  deps: [FSUtil.node, Location.node],
+})
 
 /**
  * Deferred until the corresponding V2 integrations exist.

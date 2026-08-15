@@ -260,7 +260,10 @@ it.instance(
     ).toBe(false)
   }),
   {
-    config: {
+    // Project-scope delivery strips provider npm/api (sanitizeProjectConfig),
+    // but this test asserts npm-package-dependent behavior, so deliver via
+    // trusted RANEX_CONFIG_CONTENT.
+    trustedConfig: {
       provider: {
         "custom-provider": {
           name: "Custom Provider",
@@ -388,15 +391,15 @@ it.instance(
   { config: { enabled_providers: [] } },
 )
 
+// Trusted-scope config source for tests that exercise provider option
+// plumbing: project-scope config is sanitized (credential/redirect options
+// stripped), so these fixtures are provided via RANEX_CONFIG_CONTENT instead.
+const setTrustedConfig = (config: object) => setProcessEnv("RANEX_CONFIG_CONTENT", JSON.stringify(config))
+
 it.instance(
   "provider with baseURL from config",
   Effect.gen(function* () {
-    const providers = yield* list
-    expect(providers[ProviderV2.ID.make("custom-openai")]).toBeDefined()
-    expect(providers[ProviderV2.ID.make("custom-openai")].options.baseURL).toBe("https://custom.openai.com/v1")
-  }),
-  {
-    config: {
+    yield* setTrustedConfig({
       provider: {
         "custom-openai": {
           name: "Custom OpenAI",
@@ -406,8 +409,11 @@ it.instance(
           options: { apiKey: "test-key", baseURL: "https://custom.openai.com/v1" },
         },
       },
-    },
-  },
+    })
+    const providers = yield* list
+    expect(providers[ProviderV2.ID.make("custom-openai")]).toBeDefined()
+    expect(providers[ProviderV2.ID.make("custom-openai")].options.baseURL).toBe("https://custom.openai.com/v1")
+  }),
 )
 
 it.instance(
@@ -506,12 +512,7 @@ it.instance(
 it.instance(
   "provider api field sets model api.url",
   Effect.gen(function* () {
-    const providers = yield* list
-    // api field is stored on model.api.url, used by getSDK to set baseURL
-    expect(providers[ProviderV2.ID.make("custom-api")].models["model-1"].api.url).toBe("https://api.example.com/v1")
-  }),
-  {
-    config: {
+    yield* setTrustedConfig({
       provider: {
         "custom-api": {
           name: "Custom API",
@@ -522,18 +523,17 @@ it.instance(
           options: { apiKey: "test-key" },
         },
       },
-    },
-  },
+    })
+    const providers = yield* list
+    // api field is stored on model.api.url, used by getSDK to set baseURL
+    expect(providers[ProviderV2.ID.make("custom-api")].models["model-1"].api.url).toBe("https://api.example.com/v1")
+  }),
 )
 
 it.instance(
   "explicit baseURL overrides api field",
   Effect.gen(function* () {
-    const providers = yield* list
-    expect(providers[ProviderV2.ID.make("custom-api")].options.baseURL).toBe("https://custom.override.com/v1")
-  }),
-  {
-    config: {
+    yield* setTrustedConfig({
       provider: {
         "custom-api": {
           name: "Custom API",
@@ -544,8 +544,10 @@ it.instance(
           options: { apiKey: "test-key", baseURL: "https://custom.override.com/v1" },
         },
       },
-    },
-  },
+    })
+    const providers = yield* list
+    expect(providers[ProviderV2.ID.make("custom-api")].options.baseURL).toBe("https://custom.override.com/v1")
+  }),
 )
 
 it.instance(
@@ -594,7 +596,10 @@ it.instance(
     expect(model.variants?.max).toBeUndefined()
   }),
   {
-    config: {
+    // The npm override drives the behavior under test; project-scope delivery
+    // would strip it (sanitizeProjectConfig), so deliver via trusted
+    // RANEX_CONFIG_CONTENT.
+    trustedConfig: {
       provider: {
         anthropic: {
           npm: "@ai-sdk/openai-compatible",
@@ -870,13 +875,7 @@ it.instance(
 it.instance(
   "provider with custom npm package",
   Effect.gen(function* () {
-    const providers = yield* list
-    expect(providers[ProviderV2.ID.make("local-llm")]).toBeDefined()
-    expect(providers[ProviderV2.ID.make("local-llm")].models["llama-3"].api.npm).toBe("@ai-sdk/openai-compatible")
-    expect(providers[ProviderV2.ID.make("local-llm")].options.baseURL).toBe("http://localhost:11434/v1")
-  }),
-  {
-    config: {
+    yield* setTrustedConfig({
       provider: {
         "local-llm": {
           name: "Local LLM",
@@ -886,8 +885,12 @@ it.instance(
           options: { apiKey: "not-needed", baseURL: "http://localhost:11434/v1" },
         },
       },
-    },
-  },
+    })
+    const providers = yield* list
+    expect(providers[ProviderV2.ID.make("local-llm")]).toBeDefined()
+    expect(providers[ProviderV2.ID.make("local-llm")].models["llama-3"].api.npm).toBe("@ai-sdk/openai-compatible")
+    expect(providers[ProviderV2.ID.make("local-llm")].options.baseURL).toBe("http://localhost:11434/v1")
+  }),
 )
 
 // Edge cases for model configuration
@@ -1089,7 +1092,9 @@ it.instance(
     })
   }),
   {
-    config: {
+    // Model headers survive only for trusted config — project-scope delivery
+    // strips them (sanitizeProjectConfig), so deliver via trustedConfig.
+    trustedConfig: {
       provider: {
         "headers-provider": {
           name: "Headers Provider",
@@ -1272,6 +1277,9 @@ it.instance(
   "provider options are deeply merged",
   Effect.gen(function* () {
     yield* set("ANTHROPIC_API_KEY", "test-api-key")
+    yield* setTrustedConfig({
+      provider: { anthropic: { options: { headers: { "X-Custom": "custom-value" }, timeout: 30000 } } },
+    })
     const providers = yield* list
     // Custom options should be merged
     expect(providers[ProviderV2.ID.anthropic].options.timeout).toBe(30000)
@@ -1279,11 +1287,6 @@ it.instance(
     // anthropic custom loader adds its own headers, they should coexist
     expect(providers[ProviderV2.ID.anthropic].options.headers["anthropic-beta"]).toBeDefined()
   }),
-  {
-    config: {
-      provider: { anthropic: { options: { headers: { "X-Custom": "custom-value" }, timeout: 30000 } } },
-    },
-  },
 )
 
 it.instance(
@@ -1315,11 +1318,7 @@ it.instance(
 it.instance(
   "explicit nvidia billing origin header is preserved",
   Effect.gen(function* () {
-    const providers = yield* list
-    expect(providers[ProviderV2.ID.make("nvidia")].options.headers["X-BILLING-INVOKE-ORIGIN"]).toBe("CustomOrigin")
-  }),
-  {
-    config: {
+    yield* setTrustedConfig({
       provider: {
         nvidia: {
           options: {
@@ -1329,8 +1328,10 @@ it.instance(
           },
         },
       },
-    },
-  },
+    })
+    const providers = yield* list
+    expect(providers[ProviderV2.ID.make("nvidia")].options.headers["X-BILLING-INVOKE-ORIGIN"]).toBe("CustomOrigin")
+  }),
 )
 
 it.instance(
@@ -1792,12 +1793,7 @@ it.instance(
   "Google Vertex: retains baseURL for custom proxy",
   Effect.gen(function* () {
     yield* set("GOOGLE_APPLICATION_CREDENTIALS", "test-creds")
-    const providers = yield* list
-    expect(providers[ProviderV2.ID.make("vertex-proxy")]).toBeDefined()
-    expect(providers[ProviderV2.ID.make("vertex-proxy")].options.baseURL).toBe("https://my-proxy.com/v1")
-  }),
-  {
-    config: {
+    yield* setTrustedConfig({
       provider: {
         "vertex-proxy": {
           name: "Vertex Proxy",
@@ -1812,8 +1808,11 @@ it.instance(
           },
         },
       },
-    },
-  },
+    })
+    const providers = yield* list
+    expect(providers[ProviderV2.ID.make("vertex-proxy")]).toBeDefined()
+    expect(providers[ProviderV2.ID.make("vertex-proxy")].options.baseURL).toBe("https://my-proxy.com/v1")
+  }),
 )
 
 it.instance(
@@ -1935,9 +1934,7 @@ const provideMultiInstance = <A, E, R>(eff: Effect.Effect<A, E, R>) =>
 it.effect("opencode loader keeps paid models when config apiKey is present", () =>
   Effect.gen(function* () {
     const noneDir = yield* tmpdirScoped()
-    const keyedDir = yield* tmpdirScoped({
-      config: { provider: { opencode: { options: { apiKey: "test-key" } } } },
-    })
+    const keyedDir = yield* tmpdirScoped()
 
     const listIn = (directory: string) =>
       Provider.use
@@ -1946,6 +1943,9 @@ it.effect("opencode loader keeps paid models when config apiKey is present", () 
         .pipe(Effect.provide(instanceStoreLayer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node)))
 
     const none = paid(yield* listIn(noneDir))
+
+    // Project-scope config is sanitized; provide the apiKey via trusted RANEX_CONFIG_CONTENT.
+    yield* setProcessEnv("RANEX_CONFIG_CONTENT", JSON.stringify({ provider: { opencode: { options: { apiKey: "test-key" } } } }))
     const keyedCount = paid(yield* listIn(keyedDir))
 
     expect(none).toBe(0)

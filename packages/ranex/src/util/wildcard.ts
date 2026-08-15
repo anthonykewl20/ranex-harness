@@ -1,5 +1,12 @@
 import { sortBy, pipe } from "remeda"
 
+// Legacy v1 matcher. Its only production consumer is tool-name matching
+// against the permission vocabulary (session/llm.ts); `all`/`allStructured`
+// have no production callers. Resource/permission pattern matching (file
+// paths, commands) must go through @ranex/core/util/wildcard, whose
+// effect-aware caseInsensitive handling keeps POSIX allow rules from widening
+// across casing — do not route it through this copy.
+
 export function match(str: string, pattern: string) {
   if (str) str = str.replaceAll("\\", "/")
   if (pattern) pattern = pattern.replaceAll("\\", "/")

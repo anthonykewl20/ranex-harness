@@ -184,6 +184,6 @@ it.live("tool execution produces non-empty session diff (snapshot race)", () =>
       }
       expect(diff.length).toBeGreaterThan(0)
     }),
-    { git: true, config: providerCfg },
+    { git: true, trustedConfig: providerCfg },
   ),
 )

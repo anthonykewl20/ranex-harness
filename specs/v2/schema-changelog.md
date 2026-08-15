@@ -1,5 +1,97 @@
 # V2 Schema Changelog
 
+## 2026-08-14: Cascade Blocker Rows On Session Delete
+
+Affected schema:
+
+- `permission_request` and `question_request` from `20260813173227_session_blocker_cascade.ts` (commit `6336eb5610`).
+
+Change:
+
+- Delete blocker rows whose `session_id` no longer resolves to a `session` row, then rebuild both tables with `session_id` foreign keys referencing `session(id)` with `ON DELETE CASCADE`.
+
+Reason:
+
+- Pending permission and question blockers must not outlive their Session; session deletion now cascades (v0.1.2 hardening pass).
+
+Compatibility:
+
+- Orphaned rows are removed during migration; surviving rows are preserved through the table rebuild.
+
+## 2026-08-12: Clear Legacy Session Execution Owners
+
+Affected schema:
+
+- `session.execution_owner` stored data from `20260812160000_clear_legacy_execution_owner.ts` (SLICE-016, commit `54c88ce347`).
+
+Change:
+
+- Set `execution_owner` to `NULL` where the stored value does not match the live three-part `pid:boot_id:start_time` owner format.
+
+Reason:
+
+- Values written before live-owner-check fencing cannot be validated for liveness, so they must not be trusted as cross-process ownership claims.
+
+Compatibility:
+
+- No column or type changes; legacy claims are dropped and live-format claims are preserved.
+
+## 2026-08-12: Durable Permission And Question Blockers
+
+Affected schema:
+
+- New `permission_request` and `question_request` tables from `20260812134550_fearless_havok.ts` (SLICE-015, commit `0c29721576`).
+- New `packages/core/src/permission/sql.ts` and `packages/core/src/question/sql.ts` table modules.
+
+Change:
+
+- Persist pending permission requests (`id`, `session_id`, encoded `data`, optional `agent`, timestamps) and pending question requests (`id`, `session_id`, encoded `data`, timestamps).
+
+Reason:
+
+- Pending permission and question waits must survive teardown, settle exactly once, and rehydrate without republish (ADR-015 milestone #1).
+
+Compatibility:
+
+- Additive tables; existing databases gain them empty.
+
+## 2026-08-12: Persist Session Retry Attempt
+
+Affected schema:
+
+- Nullable `session.retry_attempt` and `session.retry_next_attempt_at` integer columns from `20260812114223_session_retry.ts` (SLICE-014, commit `926efa1365`).
+
+Change:
+
+- Persist the current retry attempt count and the next-attempt time on the Session row. Durable retry reuses the existing `session.next.retried` event rather than adding a new durable event.
+
+Reason:
+
+- A retryable provider failure must persist its attempt and survive a restart while the contract stays at-most-once with explicit interruption.
+
+Compatibility:
+
+- Both columns are nullable additions; Sessions without retry state are unaffected.
+
+## 2026-08-10: Add Session Execution Owner
+
+Affected schema:
+
+- Nullable `session.execution_owner` text column from `20260810130935_add_session_execution_owner.ts` (commit `98130460a0`).
+- New `packages/core/src/session/execution-owner.ts` owner identity and liveness check.
+
+Change:
+
+- Record which process owns a Session drain as a three-part `pid:boot_id:start_time` owner string so a later process can check whether the claimed owner is still live.
+
+Reason:
+
+- Cross-process drain ownership needs a claim that survives restart and can be invalidated against a live owner check.
+
+Compatibility:
+
+- Nullable addition; existing Sessions migrate with no owner claim.
+
 ## 2026-06-26: Add Finite Session History
 
 - Add `GET /api/session/:sessionID/history` and generated Promise, Effect, and legacy JavaScript client methods.

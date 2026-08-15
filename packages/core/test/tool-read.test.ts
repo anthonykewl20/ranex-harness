@@ -186,7 +186,7 @@ describe("ReadTool", () => {
           mime: "text/plain",
         },
       })
-      expect(assertions).toMatchObject([{ sessionID, action: "read", resources: ["README.md"], save: ["*"] }])
+      expect(assertions).toMatchObject([{ sessionID, action: "read", resources: ["README.md"], save: ["README.md"] }])
       expect(readCalls).toEqual([
         {
           input: AbsolutePath.make(path.join(process.cwd(), "README.md")),
@@ -214,7 +214,7 @@ describe("ReadTool", () => {
           action: "external_directory",
           resources: [path.join(path.dirname(external), "*").replaceAll("\\", "/")],
         },
-        { sessionID, action: "read", resources: [external.replaceAll("\\", "/")], save: ["*"] },
+        { sessionID, action: "read", resources: [external.replaceAll("\\", "/")], save: [external.replaceAll("\\", "/")] },
       ])
       expect(readCalls).toEqual([{ input: AbsolutePath.make(external), page: { offset: undefined, limit: undefined } }])
     }),
@@ -577,7 +577,7 @@ describe("ReadTool", () => {
           },
         }),
       ).toEqual({ type: "json", value: { entries: [], truncated: false } })
-      expect(assertions).toMatchObject([{ sessionID, action: "read", resources: ["src"], save: ["*"] }])
+      expect(assertions).toMatchObject([{ sessionID, action: "read", resources: ["src"], save: ["src"] }])
       expect(listCalls).toEqual([{ offset: 2, limit: 10 }])
     }),
   )

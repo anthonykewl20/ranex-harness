@@ -69,6 +69,7 @@ import { SessionReconcile } from "@ranex/core/session/reconcile"
 import * as SessionExecutionLocal from "@ranex/core/session/execution/local"
 import { lazy } from "@/util/lazy"
 import { CorsConfig, isAllowedCorsOrigin, type CorsOptions } from "@ranex/server/cors"
+import { bodyLimitLayer } from "@ranex/server/middleware/body-limit"
 import { serveUIEffect } from "@/server/shared/ui"
 import { ServerAuth } from "@/server/auth"
 import { InstanceHttpApi, RootHttpApi } from "./api"
@@ -179,6 +180,7 @@ const serverRoutes = HttpApiBuilder.layer(Api).pipe(
   Layer.provide(handlers),
   Layer.provide(PluginPtyEnvironment.layer),
   Layer.provide([serverHttpApiAuthLayer, v2SchemaErrorLayer]),
+  Layer.provide(ServerAuth.Config.layer),
 )
 
 // `OpenApi.fromApi` is non-trivial; defer until /doc is actually hit so
@@ -288,6 +290,7 @@ export function createRoutes(
       compressionLayer,
       corsVaryFix,
       fenceLayer,
+      bodyLimitLayer,
       cors(corsOptions),
       AppNodeBuilderV1.build(MoveSession.node, [[LocationServiceMap.node, locationServiceMapV2]]),
       HttpServer.layerServices,

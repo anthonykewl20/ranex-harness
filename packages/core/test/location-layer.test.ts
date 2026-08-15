@@ -162,7 +162,7 @@ describe("LocationServiceMap", () => {
     ),
   )
 
-  it.live("isolates location state while sharing location policy with catalog", () =>
+  it.live("isolates location state while ignoring project-sourced policy", () =>
     Effect.acquireRelease(
       Effect.promise(() => Promise.all([tmpdir(), tmpdir()])),
       (dirs) => Effect.promise(() => Promise.all(dirs.map((dir) => dir[Symbol.asyncDispose]())).then(() => undefined)),
@@ -203,7 +203,7 @@ describe("LocationServiceMap", () => {
             )
 
           const blockedState = yield* update(blocked.path)
-          expect(blockedState.providers.some((provider) => provider.id === ProviderV2.ID.make("test"))).toBe(false)
+          expect(blockedState.providers.some((provider) => provider.id === ProviderV2.ID.make("test"))).toBe(true)
           expect(blockedState.tools.map((tool) => tool.name).sort()).toEqual([
             "application_context",
             "apply_patch",

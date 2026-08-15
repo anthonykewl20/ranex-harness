@@ -19,6 +19,7 @@ import { Api } from "./api"
 import { ServerAuth } from "./auth"
 import { handlers } from "./handlers"
 import { authorizationLayer } from "./middleware/authorization"
+import { bodyLimitLayer } from "./middleware/body-limit"
 import { schemaErrorLayer } from "./middleware/schema-error"
 import { PtyEnvironment } from "./pty-environment"
 import { layer as locationLayer } from "./location"
@@ -59,6 +60,7 @@ function makeRoutes<AuthError, AuthServices>(auth: Layer.Layer<ServerAuth.Config
     Layer.provide(locationLayer),
     Layer.provide(authorizationLayer),
     Layer.provide(schemaErrorLayer),
+    Layer.provide(bodyLimitLayer),
     Layer.provide(auth),
     Layer.provide(serviceLayer),
   )

@@ -113,10 +113,11 @@ const layer = Layer.effectDiscard(
                     source,
                   })
                 }
+                const resources = [...new Set(targets.map(({ target }) => target.resource))]
                 yield* permission.assert({
                   action: "edit",
-                  resources: [...new Set(targets.map(({ target }) => target.resource))],
-                  save: ["*"],
+                  resources,
+                  save: resources,
                   sessionID: context.sessionID,
                   agent: context.agent,
                   source,

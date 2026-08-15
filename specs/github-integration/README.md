@@ -2,6 +2,14 @@
 
 Native GitHub issues, milestones, and Projects (v2) integration for the ranex agent. Direct customization of the ranex CLI — no MCP.
 
+> **Status (2026-08-15): shipped.** The `packages/ranex/src/github/` foundation
+> and the three built-in tools (`github_issue`, `github_milestone`,
+> `github_project`) are in production. The shipped credential-resolution
+> order, default-repo behavior, permission patterns, and rate-limit retry are
+> documented in the "GitHub Tools" section of `packages/ranex/AGENTS.md`,
+> which supersedes the v1-only details below. The milestones and issues
+> section remains the plan of record for unfinished work.
+
 ## Goal
 
 Let the interactive ranex agent create, list, update, and close GitHub issues, milestones, and Projects (v2) items as first-class built-in tools, with permission gating and rich TUI rendering.

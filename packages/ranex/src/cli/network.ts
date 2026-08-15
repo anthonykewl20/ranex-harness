@@ -1,5 +1,6 @@
 import type { Argv, InferredOptionTypes } from "yargs"
 import { ConfigV1 } from "@ranex/core/v1/config/config"
+import { Flag } from "@ranex/core/flag/flag"
 import type { Config } from "@/config/config"
 import { Effect } from "effect"
 
@@ -76,5 +77,24 @@ export function resolveNetworkOptionsNoConfig(args: NetworkOptions, config?: Con
   const argsCors = Array.isArray(args.cors) ? args.cors : args.cors ? [args.cors] : []
   const cors = [...configCors, ...argsCors]
 
+  ensureAuthenticatedBind(hostname)
+
   return { hostname, port, mdns, mdnsDomain, cors }
+}
+
+function isLoopbackBind(hostname: string) {
+  const bare = hostname.toLowerCase()
+  const unbracketed = bare.startsWith("[") && bare.endsWith("]") ? bare.slice(1, -1) : bare
+  if (unbracketed === "localhost" || unbracketed === "127.0.0.1" || unbracketed === "::1") return true
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(unbracketed)
+}
+
+// A non-loopback bind without a server password exposes an unauthenticated server
+// to the network; refuse it instead of warning so the fork's local-only posture
+// stays the default.
+export function ensureAuthenticatedBind(hostname: string) {
+  if (isLoopbackBind(hostname) || Flag.RANEX_SERVER_PASSWORD) return
+  throw new Error(
+    `Refusing to listen on ${hostname} without authentication: set RANEX_SERVER_PASSWORD or bind a loopback hostname (e.g. --hostname 127.0.0.1)`,
+  )
 }

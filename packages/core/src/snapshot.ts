@@ -13,7 +13,11 @@ import { ProjectResolution } from "./project-resolution"
 import { AbsolutePath, RelativePath } from "./schema"
 import { Hash } from "./util/hash"
 
-export const ID = Schema.String.pipe(Schema.brand("Snapshot.ID"))
+export const ID = Schema.String.check(
+  // Snapshot IDs are git tree object IDs; hex-only so option-shaped values
+  // cannot flow into git argv (audit F-06).
+  Schema.isPattern(/^[0-9a-f]{4,64}$/),
+).pipe(Schema.brand("Snapshot.ID"))
 export type ID = typeof ID.Type
 
 export class Error extends Schema.TaggedErrorClass<Error>()("Snapshot.Error", {
@@ -163,8 +167,8 @@ const layer = Layer.effect(
         current,
         repository: yield* repository(current, operation),
         scope: yield* scope(current),
-        from: Git.TreeID.make(input.from),
-        to: Git.TreeID.make(input.to),
+        from: treeID(input.from),
+        to: treeID(input.to),
       }
     })
 
@@ -211,7 +215,7 @@ const layer = Layer.effect(
         const absolute = path.resolve(current.worktree, file)
         if (!FSUtil.contains(current.worktree, absolute))
           return yield* new Error({ operation, message: `Path escapes the project: ${file}` })
-        files.set(file, Git.TreeID.make(snapshot))
+        files.set(file, treeID(snapshot))
       }
       return files
     })
@@ -254,7 +258,7 @@ const layer = Layer.effect(
       const current = yield* state("restore")
       const repo = yield* repository(current, "restore")
       yield* git.tree
-        .checkout({ repository: repo, tree: Git.TreeID.make(snapshot) })
+        .checkout({ repository: repo, tree: treeID(snapshot) })
         .pipe(Effect.mapError((cause) => failure("restore", cause)))
     })
 
@@ -289,6 +293,14 @@ function failure(operation: Error["operation"], cause: unknown) {
     message: cause instanceof globalThis.Error ? cause.message : String(cause),
     cause,
   })
+}
+
+/**
+ * Re-brand without re-validating: the git argv boundary performs the typed
+ * validation (audit F-06).
+ */
+function treeID(id: ID) {
+  return id as unknown as Git.TreeID
 }
 
 /** Legacy persisted session diff shape. */

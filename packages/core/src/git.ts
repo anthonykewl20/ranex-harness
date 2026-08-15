@@ -26,7 +26,11 @@ export class DiscoveryError extends Schema.TaggedErrorClass<DiscoveryError>()("G
 export const ChangeSet = Schema.String.pipe(Schema.brand("Git.ChangeSet"))
 export type ChangeSet = typeof ChangeSet.Type
 
-export const TreeID = Schema.String.pipe(Schema.brand("Git.TreeID"))
+export const TreeID = Schema.String.check(
+  // Defense-in-depth (audit F-06): object IDs are always hex; anything else
+  // must never reach git argv, where a `-`-prefixed value becomes an option.
+  Schema.isPattern(/^[0-9a-f]{4,64}$/),
+).pipe(Schema.brand("Git.TreeID"))
 export type TreeID = typeof TreeID.Type
 
 export class OperationError extends Schema.TaggedErrorClass<OperationError>()("Git.OperationError", {
@@ -340,6 +344,8 @@ const layer = Layer.effect(
       input: { remote?: string; branch: string; force?: boolean },
     ) {
       const remoteName = input.remote ?? "origin"
+      yield* refArg("fetch", input.branch)
+      yield* refArg("fetch", remoteName)
       const spec = `refs/heads/${input.branch}:refs/remotes/${remoteName}/${input.branch}`
       yield* operation("fetch", repository.worktree, ["fetch", remoteName, input.force === false ? spec : `+${spec}`])
     })
@@ -349,6 +355,8 @@ const layer = Layer.effect(
       input: { remote?: string; branch: string; reset?: boolean },
     ) {
       const remoteName = input.remote ?? "origin"
+      yield* refArg("checkout", input.branch)
+      yield* refArg("checkout", remoteName)
       yield* operation("checkout", repository.worktree, [
         "checkout",
         ...(input.reset === false ? [input.branch] : ["-B", input.branch, `${remoteName}/${input.branch}`]),
@@ -356,6 +364,7 @@ const layer = Layer.effect(
     })
 
     const reset = Effect.fn("Git.sync.resetHard")(function* (repository: Repository, revision: string) {
+      yield* refArg("reset", revision)
       yield* operation("reset", repository.worktree, ["reset", "--hard", revision])
     })
 
@@ -493,9 +502,15 @@ const layer = Layer.effect(
       if (!candidates.length) return { skipped: [] }
       const ignored = input.ignores
         ? new Set(
-            (yield* repositoryOperation("refresh", input.ignores, ["check-ignore", "--no-index", "--stdin", "-z"], {
-              stdin: candidates.join("\0") + "\0",
-            }).pipe(Effect.catch(() => Effect.succeed({ text: "", stderr: "" })))).text
+            // input.ignores is the discovered repository, whose config is user-controlled.
+            (yield* repositoryOperation(
+              "refresh",
+              input.ignores,
+              [...discoveredRepoHardening, "check-ignore", "--no-index", "--stdin", "-z"],
+              {
+                stdin: candidates.join("\0") + "\0",
+              },
+            ).pipe(Effect.catch(() => Effect.succeed({ text: "", stderr: "" })))).text
               .split("\0")
               .filter(Boolean),
           )
@@ -541,10 +556,15 @@ const layer = Layer.effect(
       if (!input.paths.length) return new Set<RelativePath>()
       const result = yield* proc
         .run(
-          ChildProcess.make("git", repositoryArgs(input.repository, ["check-ignore", "--no-index", "--stdin", "-z"]), {
-            cwd: input.repository.worktree,
-            extendEnv: true,
-          }),
+          // Callers pass the discovered repository, whose config is user-controlled.
+          ChildProcess.make(
+            "git",
+            repositoryArgs(input.repository, [...discoveredRepoHardening, "check-ignore", "--no-index", "--stdin", "-z"]),
+            {
+              cwd: input.repository.worktree,
+              extendEnv: true,
+            },
+          ),
           { stdin: input.paths.join("\0") + "\0" },
         )
         .pipe(
@@ -574,7 +594,9 @@ const layer = Layer.effect(
     })
 
     const writeTree = Effect.fn("Git.tree.write")(function* (repository: Repository) {
-      return TreeID.make((yield* repositoryOperation("write_tree", repository, ["write-tree"])).text.trim())
+      const id = (yield* repositoryOperation("write_tree", repository, ["write-tree"])).text.trim()
+      yield* treeArg("write_tree", id)
+      return TreeID.make(id)
     })
 
     const captureTree = Effect.fn("Git.tree.capture")(
@@ -598,6 +620,8 @@ const layer = Layer.effect(
       from: TreeID
       to: TreeID
     }) {
+      yield* treeArg("list_files", input.from)
+      yield* treeArg("list_files", input.to)
       return (yield* repositoryOperation("list_files", input.repository, [
         "diff",
         "--name-only",
@@ -617,6 +641,8 @@ const layer = Layer.effect(
       context?: number
       paths?: readonly RelativePath[]
     }) {
+      yield* treeArg("diff", input.from)
+      yield* treeArg("diff", input.to)
       const paths = input.paths ?? (yield* treeFiles(input))
       return yield* Effect.forEach(paths, (file) =>
         Effect.gen(function* () {
@@ -663,6 +689,7 @@ const layer = Layer.effect(
     })
 
     const entry = Effect.fnUntraced(function* (repository: Repository, tree: TreeID, file: RelativePath) {
+      yield* treeArg("restore", tree)
       const text = (yield* repositoryOperation("restore", repository, [
         "ls-tree",
         "-z",
@@ -691,6 +718,7 @@ const layer = Layer.effect(
         locked(
           input.repository,
           Effect.gen(function* () {
+            yield* treeArg("diff", input.current)
             const index = path.join(input.repository.gitDirectory, `preview-${randomUUID()}.index`)
             const env = { GIT_INDEX_FILE: index }
             return yield* Effect.gen(function* () {
@@ -718,9 +746,11 @@ const layer = Layer.effect(
                   }),
                 { discard: true },
               )
-              const target = TreeID.make(
-                (yield* repositoryOperation("diff", input.repository, ["write-tree"], { env })).text.trim(),
-              )
+              const written = (
+                yield* repositoryOperation("diff", input.repository, ["write-tree"], { env })
+              ).text.trim()
+              yield* treeArg("diff", written)
+              const target = TreeID.make(written)
               return yield* treeDiff({
                 repository: input.repository,
                 from: input.current,
@@ -766,6 +796,7 @@ const layer = Layer.effect(
       locked(
         input.repository,
         Effect.gen(function* () {
+          yield* treeArg("restore", input.tree)
           yield* repositoryOperation("restore", input.repository, ["read-tree", input.tree])
           yield* repositoryOperation("restore", input.repository, ["checkout-index", "--all", "--force"])
         }),
@@ -839,7 +870,7 @@ const layer = Layer.effect(
     }) {
       const result = yield* proc
         .run(
-          ChildProcess.make("git", ["apply", "-"], {
+          ChildProcess.make("git", [...discoveredRepoHardening, "apply", "-"], {
             cwd: input.path,
             extendEnv: true,
             stdin: Stream.make(new TextEncoder().encode(input.changes)),
@@ -906,7 +937,7 @@ const layer = Layer.effect(
       cwd = repository.worktree,
     ) {
       const result = yield* proc
-        .run(ChildProcess.make("git", args, { cwd, extendEnv: true, stdin: "ignore" }))
+        .run(ChildProcess.make("git", [...discoveredRepoHardening, ...args], { cwd, extendEnv: true, stdin: "ignore" }))
         .pipe(
           Effect.mapError(
             (cause) => new WorktreeError({ operation, directory: worktreeDirectory, message: cause.message, cause }),
@@ -1006,7 +1037,7 @@ function execute(cwd: string, proc: AppProcess.Interface) {
   return (args: string[]) =>
     proc
       .run(
-        ChildProcess.make("git", args, {
+        ChildProcess.make("git", [...discoveredRepoHardening, ...args], {
           cwd,
           extendEnv: true,
           stdin: "ignore",
@@ -1023,6 +1054,85 @@ function execute(cwd: string, proc: AppProcess.Interface) {
         ),
       )
 }
+
+/**
+ * Hardening for git invocations that run inside a *discovered* repository
+ * (audit F-07): its `.git/config` is user-controlled, and `core.fsmonitor`
+ * can be configured to execute a command during index refresh while auto-gc
+ * can spawn background maintenance. Applied only on the discovered-repo code
+ * paths — `execute`/`run` (discovery, history, sync, change capture), the
+ * discovered-repo `check-ignore` calls, patch `apply`, and `worktree` — so the
+ * snapshot repository, which uses an isolated gitdir with its own config
+ * (already `core.fsmonitor=false`), keeps its behavior untouched.
+ * clean/smudge filters and textconv from a copied repo's `.git/config` remain
+ * a documented residual (see SECURITY.md).
+ *
+ * Coverage: `core.hooksPath=/dev/null` disables every hook (post-checkout,
+ * pre-commit, …) for these invocations, and an empty `credential.helper`
+ * resets the inherited helper list — command-line `-c` config is applied
+ * after file config, so fake helpers in the copied repo's `.git/config`
+ * never receive credentials, while unauthenticated fetches of public
+ * remotes proceed normally.
+ *
+ * Deliberately not set: `diff.external` only runs under `--ext-diff` or
+ * `difftool`, which no discovered-repo code path uses, and
+ * `core.attributesFile` neutralization would only disable the user's own
+ * global attributes — the attacker-controlled worktree `.gitattributes`
+ * always applies with higher precedence and may select clean/smudge filter
+ * (or textconv) drivers defined in the repo's own `.git/config`. Those
+ * filters are the residual above: `filter.<name>.*` keys cannot be
+ * wildcard-disabled via `-c`, so they are mitigated only by the snapshot
+ * repo's isolation.
+ */
+const discoveredRepoHardening = [
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "gc.auto=0",
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "credential.helper=",
+]
+
+const HEX_OBJECT_ID = /^[0-9a-f]{4,64}$/
+
+/**
+ * Refname components and commit-ish revisions interpolated into git argv or
+ * refspecs are validated with a blocklist mirroring `git check-ref-format`:
+ * option-shaped (`-`-prefixed) and traversal-bearing (`..`, `@{`) values are
+ * rejected alongside the characters git itself forbids (ASCII control, space,
+ * `~^:?*[\`), leading/trailing separators, double slashes, and `.lock`-suffixed
+ * components. Everything else — including `@` (when not followed by `{`) and
+ * Unicode — is allowed, so refs like `release@2026` or `feature/ünïcode` pass
+ * (audit F-06).
+ */
+const UNSAFE_REF_CHARS = /[\s~^:?*[\\\x00-\x1f\x7f]/
+const isSafeRefComponent = (value: string) =>
+  value !== "" &&
+  !value.startsWith("-") &&
+  !value.startsWith("/") &&
+  !value.endsWith("/") &&
+  !value.endsWith(".") &&
+  !value.includes("..") &&
+  !value.includes("//") &&
+  !value.includes("@{") &&
+  !UNSAFE_REF_CHARS.test(value) &&
+  value.split("/").every((part) => part !== "" && !part.startsWith(".") && !part.endsWith(".lock"))
+
+/**
+ * Tree IDs are re-validated at the argv boundary: construction-time checks do
+ * not cover values arriving via decode, casts, or cross-module re-brands.
+ */
+const treeArg = (operation: OperationError["operation"], tree: string) =>
+  HEX_OBJECT_ID.test(tree)
+    ? Effect.void
+    : new OperationError({ operation, message: `Rejected malformed git tree ID: ${JSON.stringify(tree)}` })
+
+const refArg = (operation: OperationError["operation"], value: string) =>
+  isSafeRefComponent(value)
+    ? Effect.void
+    : new OperationError({ operation, message: `Rejected unsafe git refname: ${JSON.stringify(value)}` })
 
 function resolvePath(cwd: string, value: string) {
   const trimmed = value.replace(/[\r\n]+$/, "")

@@ -29,7 +29,8 @@ describe("ConfigAgentPlugin.Plugin", () => {
       expect(PermissionV2.evaluate("external_directory", "/home/test/cache/files/*", permissions).effect).toBe("deny")
       expect(PermissionV2.evaluate("external_directory", "/some/~/path", permissions).effect).toBe("deny")
       expect(PermissionV2.evaluate("external_directory", "$HOMELESS/private/*", permissions).effect).toBe("deny")
-      expect(PermissionV2.evaluate("bash", "$HOME/private/key", permissions).effect).toBe("deny")
+      expect(PermissionV2.evaluate("bash", "$HOME/private/key", permissions).effect).toBe("ask")
+      expect(PermissionV2.evaluate("bash", "cat /home/test/private/key", permissions).effect).toBe("deny")
     }),
   )
 
@@ -320,6 +321,7 @@ function loadHomePermissions(home: string) {
                   },
                   bash: {
                     "$HOME/private/**": "deny",
+                    "cat /home/test/private/**": "deny",
                   },
                 },
                 agent: {

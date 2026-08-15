@@ -250,6 +250,32 @@ describe("PermissionV2", () => {
     }),
   )
 
+  it.effect("cannot be bypassed by changing resource casing", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "Secrets/*", effect: "deny" }])
+      const service = yield* PermissionV2.Service
+      expect(yield* service.ask(assertion({ resources: ["secrets/key.pem"] }))).toMatchObject({ effect: "deny" })
+      expect(yield* service.ask(assertion({ resources: ["SECRETS/key.pem"] }))).toMatchObject({ effect: "deny" })
+    }),
+  )
+
+  it.effect("keeps POSIX allow rules casing-strict while deny rules match broadly", () =>
+    Effect.gen(function* () {
+      // On POSIX, `allow Secrets/*` must not widen to `secrets/x` (the
+      // directory is a different path on a case-sensitive filesystem), while
+      // an exact-case resource still matches.
+      yield* setup([{ action: "read", resource: "Secrets/*", effect: "allow" }])
+      const service = yield* PermissionV2.Service
+      expect(yield* service.ask(assertion({ resources: ["Secrets/key.pem"] }))).toMatchObject({ effect: "allow" })
+      expect(yield* service.ask(assertion({ resources: ["secrets/key.pem"] }))).toMatchObject({ effect: "ask" })
+
+      // Deny rules keep matching across casing so they cannot be bypassed.
+      yield* setRules([{ action: "read", resource: "Secrets/*", effect: "deny" }])
+      expect(yield* service.ask(assertion({ resources: ["secrets/key.pem"] }))).toMatchObject({ effect: "deny" })
+      expect(yield* service.ask(assertion({ resources: ["Secrets/key.pem"] }))).toMatchObject({ effect: "deny" })
+    }),
+  )
+
   it.effect("resolves an asked permission once", () =>
     Effect.gen(function* () {
       yield* setup()

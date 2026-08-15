@@ -367,5 +367,10 @@ URL is recorded there in
 
 ## Status
 
-`PROVISIONAL`. This library informs a redesign that has no accepted ADR yet.
-Nothing here has been adopted into `packages/tui`.
+Historically `PROVISIONAL`: this library was assembled while the redesign had
+no accepted ADR. Status updated 2026-08-15 — per the root README, the redesign
+now runs under accepted ADR-018, "the board is the front door," on a separate
+track that neither consumes the durability program nor changes kernel
+authority. The pinned references and the "deliberately not adopted" record
+above remain the citation base, and AGENTS.md still requires reading this file
+before designing or changing anything in `packages/tui`.

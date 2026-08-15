@@ -122,6 +122,11 @@ export async function tmpdir<T>(options?: TmpDirOptions<T>) {
 export function tmpdirScoped<E = never, R = never>(options?: {
   git?: boolean
   config?: Partial<ConfigV1.Info> | (() => Partial<ConfigV1.Info>)
+  // Trusted delivery for configs carrying provider credentials/redirects
+  // (apiKey, baseURL, headers, …): project-scope ranex.json is sanitized, so
+  // the payload is provided via RANEX_CONFIG_CONTENT (user-initiated, trusted)
+  // for the lifetime of this directory instead of being written to disk.
+  trustedConfig?: Partial<ConfigV1.Info> | (() => Partial<ConfigV1.Info>)
   init?: (directory: string) => Effect.Effect<void, E, R>
 }) {
   return Effect.gen(function* () {
@@ -136,6 +141,21 @@ export function tmpdirScoped<E = never, R = never>(options?: {
         await clean(dir).catch(() => undefined)
       }),
     )
+
+    const trusted = options?.trustedConfig
+    if (trusted) {
+      const previous = yield* Effect.sync(() => {
+        const prev = process.env.RANEX_CONFIG_CONTENT
+        process.env.RANEX_CONFIG_CONTENT = JSON.stringify(typeof trusted === "function" ? trusted() : trusted)
+        return prev
+      })
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env.RANEX_CONFIG_CONTENT
+          else process.env.RANEX_CONFIG_CONTENT = previous
+        }),
+      )
+    }
 
     const git = (...args: string[]) =>
       spawner.spawn(ChildProcess.make("git", args, { cwd: dir })).pipe(Effect.flatMap((handle) => handle.exitCode))
@@ -182,7 +202,11 @@ export const disposeAllInstancesEffect = InstanceStore.Service.use((store) => st
 
 export function provideTmpdirInstance<A, E, R>(
   self: (path: string) => Effect.Effect<A, E, R>,
-  options?: { git?: boolean; config?: Partial<ConfigV1.Info> | (() => Partial<ConfigV1.Info>) },
+  options?: {
+    git?: boolean
+    config?: Partial<ConfigV1.Info> | (() => Partial<ConfigV1.Info>)
+    trustedConfig?: Partial<ConfigV1.Info> | (() => Partial<ConfigV1.Info>)
+  },
 ) {
   return Effect.gen(function* () {
     const path = yield* tmpdirScoped(options)
@@ -202,6 +226,7 @@ export const withTmpdirInstance =
   <E2 = never, R2 = never>(options?: {
     git?: boolean
     config?: Partial<ConfigV1.Info> | (() => Partial<ConfigV1.Info>)
+    trustedConfig?: Partial<ConfigV1.Info> | (() => Partial<ConfigV1.Info>)
     init?: (directory: string) => Effect.Effect<void, E2, R2>
   }) =>
   <A, E, R>(self: Effect.Effect<A, E, R>) =>
@@ -212,7 +237,11 @@ export const withTmpdirInstance =
 
 export function provideTmpdirServer<A, E, R>(
   self: (input: { dir: string; llm: TestLLMServer["Service"] }) => Effect.Effect<A, E, R>,
-  options?: { git?: boolean; config?: (url: string) => Partial<ConfigV1.Info> },
+  options?: {
+    git?: boolean
+    config?: (url: string) => Partial<ConfigV1.Info>
+    trustedConfig?: (url: string) => Partial<ConfigV1.Info>
+  },
 ): Effect.Effect<
   A,
   E | PlatformError.PlatformError,
@@ -223,6 +252,7 @@ export function provideTmpdirServer<A, E, R>(
     return yield* provideTmpdirInstance((dir) => self({ dir, llm }), {
       git: options?.git,
       config: options?.config?.(llm.url),
+      trustedConfig: options?.trustedConfig?.(llm.url),
     })
   })
 }

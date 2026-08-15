@@ -28,6 +28,7 @@ import { WorkspaceApi } from "./groups/workspace"
 import { makeApi } from "@ranex/protocol/api"
 import { LocationMiddleware } from "@ranex/server/location"
 import { SessionLocationMiddleware } from "@ranex/server/middleware/session-location"
+import { TicketGroup } from "@ranex/server/ticket"
 import { GlobalApi } from "./groups/global"
 import { Authorization } from "./middleware/authorization"
 import { SchemaErrorMiddleware } from "./middleware/schema-error"
@@ -49,7 +50,7 @@ export const ServerApi = makeApi({
   definitions: EventManifest.Latest.values().toArray(),
   locationMiddleware: LocationMiddleware,
   sessionLocationMiddleware: SessionLocationMiddleware,
-})
+}).add(TicketGroup)
 
 export const RootHttpApi = HttpApi.make("opencode-root")
   .addHttpApi(ControlApi)

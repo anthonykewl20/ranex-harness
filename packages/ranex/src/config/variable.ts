@@ -20,6 +20,8 @@ type SubstituteInput = ParseSource & {
   text: string
   missing?: "error" | "empty"
   env?: Record<string, string>
+  /** Untrusted (project-repo) config: leave {env:} and {file:} tokens literal. */
+  untrusted?: boolean
 }
 
 function source(input: ParseSource) {
@@ -32,6 +34,12 @@ function dir(input: ParseSource) {
 
 /** Apply {env:VAR} and {file:path} substitutions to config text. */
 export async function substitute(input: SubstituteInput) {
+  // Untrusted config comes from a possibly hostile repo: expanding {env:} or
+  // {file:} here would leak secrets and arbitrary files (readToken resolves
+  // ~/ and absolute paths). Return the text untouched so tokens stay visible
+  // and inert instead.
+  if (input.untrusted) return input.text
+
   const text = input.text.replace(/\{env:([^}]+)\}/g, (_, varName) => {
     return (input.env?.[varName] ?? process.env[varName]) || ""
   })

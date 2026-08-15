@@ -1,5 +1,5 @@
 import { NodeHttpServer } from "@effect/platform-node"
-import { describe, expect } from "bun:test"
+import { afterEach, beforeEach, describe, expect } from "bun:test"
 import { Effect, Layer, Option, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
 import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiError, HttpApiGroup } from "effect/unstable/httpapi"
@@ -16,6 +16,9 @@ const Api = HttpApi.make("test-authorization").add(
   HttpApiGroup.make("test")
     .add(
       HttpApiEndpoint.get("probe", "/probe", {
+        success: Schema.String,
+      }),
+      HttpApiEndpoint.get("event", "/event", {
         success: Schema.String,
       }),
       HttpApiEndpoint.get("missing", "/missing", {
@@ -39,6 +42,7 @@ const ServerApi = HttpApi.make("test-server-authorization").add(
 const handlers = HttpApiBuilder.group(Api, "test", (handlers) =>
   handlers
     .handle("probe", () => Effect.succeed("ok"))
+    .handle("event", () => Effect.succeed("ok"))
     .handle("missing", () => Effect.fail(new HttpApiError.NotFound({}))),
 )
 
@@ -67,7 +71,12 @@ const itV2Secret = testEffect(v2ApiLayer.pipe(Layer.provide(secretLayer)))
 
 const basic = (username: string, password: string) => ServerAuth.header({ username, password }) ?? ""
 
-const token = (username: string, password: string) => Buffer.from(`${username}:${password}`).toString("base64")
+// URL tickets are minted directly from the process-local secret; the endpoint
+// roundtrip lives in httpapi-ticket.test.ts. The api scope keeps the generic
+// channel tests path-independent; scope semantics get dedicated tests below.
+const ticket = (nowSeconds = Math.floor(Date.now() / 1000)) => ServerAuth.mintTicket(nowSeconds, "api").ticket
+
+const urlAuthTicket = () => ServerAuth.mintTicket().ticket
 
 const getProbe = (headers?: Record<string, string>) =>
   HttpClientRequest.get("/probe").pipe(
@@ -76,6 +85,13 @@ const getProbe = (headers?: Record<string, string>) =>
   )
 
 describe("HttpApi authorization middleware", () => {
+  beforeEach(() => {
+    ServerAuth.resetAuthFailures()
+  })
+
+  afterEach(() => {
+    ServerAuth.resetAuthFailures()
+  })
   it.live("allows requests when server password is not configured", () =>
     Effect.gen(function* () {
       const response = yield* getProbe()
@@ -116,21 +132,60 @@ describe("HttpApi authorization middleware", () => {
     }),
   )
 
-  itSecret.live("accepts auth token query credentials", () =>
+  itSecret.live("accepts ticket query credentials", () =>
     Effect.gen(function* () {
-      const response = yield* HttpClient.get(`/probe?auth_token=${encodeURIComponent(token("ranex", "secret"))}`)
+      const response = yield* HttpClient.get(`/probe?auth_token=${encodeURIComponent(ticket())}`)
 
       expect(response.status).toBe(200)
     }),
   )
 
-  itSecret.live("prefers auth token query credentials over basic auth", () =>
+  itSecret.live("accepts default url-auth tickets on the event stream route", () =>
     Effect.gen(function* () {
-      const response = yield* HttpClientRequest.get(
-        `/probe?auth_token=${encodeURIComponent(token("ranex", "secret"))}`,
-      ).pipe(HttpClientRequest.setHeader("authorization", basic("ranex", "wrong")), HttpClient.execute)
+      const response = yield* HttpClient.get(`/event?auth_token=${encodeURIComponent(urlAuthTicket())}`)
 
       expect(response.status).toBe(200)
+    }),
+  )
+
+  itSecret.live("rejects url-auth tickets on endpoints outside their scope", () =>
+    Effect.gen(function* () {
+      const response = yield* HttpClient.get(`/probe?auth_token=${encodeURIComponent(urlAuthTicket())}`)
+
+      expect(response.status).toBe(401)
+      expect(response.headers["www-authenticate"] ?? "").toContain('error="invalid_request"')
+    }),
+  )
+
+  itSecret.live("prefers valid Basic header credentials over garbage query tokens", () =>
+    Effect.gen(function* () {
+      // Repeated garbage tokens must never reject (or rate-charge) a client
+      // holding valid Basic header credentials.
+      const responses = yield* Effect.all(
+        Array.from({ length: 6 }, () =>
+          HttpClientRequest.get("/probe?auth_token=not-a-ticket").pipe(
+            HttpClientRequest.setHeader("authorization", basic("ranex", "secret")),
+            HttpClient.execute,
+          ),
+        ),
+        { concurrency: "unbounded" },
+      )
+
+      for (const response of responses) expect(response.status).toBe(200)
+    }),
+  )
+
+  itSecret.live("rejects invalid Basic header credentials even with a valid query ticket", () =>
+    Effect.gen(function* () {
+      // Header credentials take precedence: an invalid Basic header is the
+      // failed credential of record and the ticket fallback does not apply.
+      const response = yield* HttpClientRequest.get(`/probe?auth_token=${encodeURIComponent(ticket())}`).pipe(
+        HttpClientRequest.setHeader("authorization", basic("ranex", "wrong")),
+        HttpClient.execute,
+      )
+
+      expect(response.status).toBe(401)
+      expect(response.headers["www-authenticate"] ?? "").toContain("Basic")
     }),
   )
 
@@ -145,17 +200,36 @@ describe("HttpApi authorization middleware", () => {
     }),
   )
 
-  itSecret.live("preserves handler errors when auth token query succeeds", () =>
+  itSecret.live("preserves handler errors when ticket query succeeds", () =>
     Effect.gen(function* () {
-      const response = yield* HttpClient.get(`/missing?auth_token=${encodeURIComponent(token("ranex", "secret"))}`)
+      const response = yield* HttpClient.get(`/missing?auth_token=${encodeURIComponent(ticket())}`)
 
       expect(response.status).toBe(404)
     }),
   )
 
+  itSecret.live("rejects expired ticket query credentials", () =>
+    Effect.gen(function* () {
+      const expired = ticket(Math.floor(Date.now() / 1000) - ServerAuth.TICKET_TTL_SECONDS)
+      const response = yield* HttpClient.get(`/probe?auth_token=${encodeURIComponent(expired)}`)
+
+      expect(response.status).toBe(401)
+    }),
+  )
+
+  itSecret.live("rejects Basic credentials in the URL", () =>
+    Effect.gen(function* () {
+      const token = Buffer.from("ranex:secret").toString("base64")
+      const response = yield* HttpClient.get(`/probe?auth_token=${encodeURIComponent(token)}`)
+
+      expect(response.status).toBe(401)
+      expect(response.headers["www-authenticate"] ?? "").toContain('error="invalid_request"')
+    }),
+  )
+
   itSecret.live("rejects malformed auth token query credentials", () =>
     Effect.gen(function* () {
-      const response = yield* HttpClient.get("/probe?auth_token=not-base64")
+      const response = yield* HttpClient.get("/probe?auth_token=not-a-ticket")
 
       expect(response.status).toBe(401)
     }),

@@ -389,6 +389,8 @@ import type {
   V2SessionWaitResponses,
   V2SkillListErrors,
   V2SkillListResponses,
+  V2TicketMintErrors,
+  V2TicketMintResponses,
   VcsApplyErrors,
   VcsApplyResponses,
   VcsDiffErrors,
@@ -7071,6 +7073,27 @@ export class ProjectCopy2 extends HeyApiClient {
   }
 }
 
+export class Ticket extends HeyApiClient {
+  /**
+   * Mint URL auth ticket
+   *
+   * Mint a short-lived stateless ticket accepted by the auth_token query parameter. Requires Basic credentials in the Authorization header. The ticket is scoped: by default it only authorizes URL auth on the endpoints whose channel cannot carry headers (SSE event stream, PTY WebSocket connect, web UI); pass scope=api for a full-API ticket.
+   */
+  public mint<ThrowOnError extends boolean = false>(
+    parameters?: {
+      scope?: "url-auth" | "api"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "scope" }] }])
+    return (options?.client ?? this.client).post<V2TicketMintResponses, V2TicketMintErrors, ThrowOnError>({
+      url: "/api/ticket",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class V2 extends HeyApiClient {
   private _health?: Health
   get health(): Health {
@@ -7155,6 +7178,11 @@ export class V2 extends HeyApiClient {
   private _projectCopy?: ProjectCopy2
   get projectCopy(): ProjectCopy2 {
     return (this._projectCopy ??= new ProjectCopy2({ client: this.client }))
+  }
+
+  private _ticket?: Ticket
+  get ticket(): Ticket {
+    return (this._ticket ??= new Ticket({ client: this.client }))
   }
 }
 

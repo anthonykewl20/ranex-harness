@@ -227,6 +227,7 @@ function withProject<A, E, E2 = never>(
   options: {
     git?: boolean
     config?: Partial<ConfigV1.Info>
+    trustedConfig?: Partial<ConfigV1.Info>
     setup?: (dir: string) => Effect.Effect<void, E2, TestServices>
   },
   run: (input: ProjectFixture) => Effect.Effect<A, E, TestScope>,
@@ -235,6 +236,7 @@ function withProject<A, E, E2 = never>(
     const directory = yield* tmpdirScoped({
       git: options.git ?? false,
       config: { formatter: false, lsp: false, ...options.config },
+      trustedConfig: options.trustedConfig,
     })
     yield* options.setup?.(directory) ?? Effect.void
     return yield* run({ sdk: yield* client(serverPath, directory), directory })
@@ -265,7 +267,7 @@ function withFakeLlmProject<A, E>(
     return yield* withProject(
       serverPath,
       {
-        config: testProviderConfig(llm.url),
+        trustedConfig: testProviderConfig(llm.url),
         setup: options.setup,
       },
       (input) => run({ ...input, llm }),

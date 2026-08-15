@@ -119,6 +119,27 @@ teardown is generation-scoped, cold location acquisition is non-blocking, V2
 event streams are interest-scoped and byte-bounded with durable recovery, and
 every V2 permission/question wait path is durable.
 
+On 2026-08-15 a comprehensive security program closed: a four-surface audit
+(execution and permissions, project-config trust, the local API, and the
+supply chain — 37 findings, 4 P0 and 9 P1) with fixes shipped across all four
+surfaces. Tool path confinement for `grep`/`glob` and a DNS-pinned SSRF guard
+behind both `webfetch` tools harden execution; bash control-character guards,
+exact-resource saves, effect-aware rule casing, and a plan-mode bash policy
+harden permissions; provider credential/npm/model-header strips, inert
+`{env:}`/`{file:}` substitution, a `.npmrc` install skip, and
+`experimental.openTelemetry`/`experimental.policies` strips in both config
+loaders establish the project-config trust boundary; Host/origin enforcement
+against DNS rebinding, scope-bound HMAC URL tickets with authenticated mint,
+constant-time auth, realm-keyed escalating rate limiting, body caps including
+chunked uploads, proxy credential stripping, and a mandatory password for
+non-loopback binds (ranex and legacy CLI) harden the local API; and git argv
+validation with hooks/credential helpers disabled for discovered repos, 0600
+SQLite files, the MCP env allowlist, opt-in-only telemetry content recording
+and GitHub-agent sharing, and an optional signed install
+(`OPENCODE_INSTALL_PUBKEY`) harden the supply chain.
+[SECURITY.md](./SECURITY.md) states the trust model and the residual-risk
+list.
+
 The TUI is being redesigned on a **separate track** under ADR-018: "the board
 is the front door." It neither consumes the durability program nor changes
 kernel authority.

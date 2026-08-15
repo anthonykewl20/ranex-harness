@@ -447,6 +447,76 @@ test("evaluate - merges multiple rulesets", () => {
   expect(result.action).toBe("deny")
 })
 
+// Effect-aware casing, mirroring core's PermissionV2.evaluate: on POSIX,
+// allow rules match resource casing strictly so `allow Secrets/*` cannot
+// widen to `secrets/x`, while deny/ask rules stay case-insensitive so a
+// deny cannot be bypassed by recasing. win32 is case-insensitive throughout.
+
+test("evaluate - deny rule matches resource with different casing", () => {
+  const result = Permission.evaluate("edit", "secrets/x", [
+    { permission: "edit", pattern: "Secrets/*", action: "deny" },
+  ])
+  expect(result.action).toBe("deny")
+})
+
+test("evaluate - ask rule matches resource with different casing", () => {
+  const result = Permission.evaluate("edit", "secrets/x", [
+    { permission: "edit", pattern: "secrets/*", action: "allow" },
+    { permission: "edit", pattern: "Secrets/*", action: "ask" },
+  ])
+  // The ask rule matched (case-insensitively) and won as the last matching
+  // rule; the fallback ask rule would carry pattern "*".
+  expect(result.action).toBe("ask")
+  expect(result.pattern).toBe("Secrets/*")
+})
+
+test("evaluate - allow rule does not widen to differently-cased resource on POSIX", () => {
+  const ruleset: PermissionV1.Ruleset = [{ permission: "edit", pattern: "Secrets/*", action: "allow" }]
+  expect(Permission.evaluate("edit", "Secrets/x", ruleset).action).toBe("allow")
+  const lowered = Permission.evaluate("edit", "secrets/x", ruleset).action
+  expect(lowered).toBe(process.platform === "win32" ? "allow" : "ask")
+})
+
+test("evaluate - bash allow rule command matching stays case-sensitive on POSIX", () => {
+  const ruleset: PermissionV1.Ruleset = [{ permission: "bash", pattern: "git status", action: "allow" }]
+  expect(Permission.evaluate("bash", "git status", ruleset).action).toBe("allow")
+  const recased = Permission.evaluate("bash", "GIT STATUS", ruleset).action
+  expect(recased).toBe(process.platform === "win32" ? "allow" : "ask")
+})
+
+test("evaluate - bash deny rule command matching stays case-insensitive", () => {
+  const ruleset: PermissionV1.Ruleset = [{ permission: "bash", pattern: "rm -rf /*", action: "deny" }]
+  expect(Permission.evaluate("bash", "RM -RF /*", ruleset).action).toBe("deny")
+})
+
+// Action/permission-name matching is pinned case-sensitive (legacy v1
+// semantics): the wildcard default's case-insensitivity applies to resource
+// matching only, so an uppercase action rule never matches a lowercase
+// request and vice versa — unlike resources, where the effect-aware rules
+// above deliberately vary.
+
+test("evaluate - uppercase permission rule does not match lowercase permission", () => {
+  const ruleset: PermissionV1.Ruleset = [{ permission: "BASH", pattern: "*", action: "allow" }]
+  expect(Permission.evaluate("bash", "ls", ruleset).action).toBe("ask")
+})
+
+test("evaluate - lowercase permission rule does not match uppercase permission", () => {
+  const ruleset: PermissionV1.Ruleset = [{ permission: "bash", pattern: "*", action: "allow" }]
+  expect(Permission.evaluate("BASH", "ls", ruleset).action).toBe("ask")
+})
+
+test("evaluate - exact-case permission rule still matches", () => {
+  const ruleset: PermissionV1.Ruleset = [{ permission: "bash", pattern: "*", action: "allow" }]
+  expect(Permission.evaluate("bash", "ls", ruleset).action).toBe("allow")
+})
+
+test("disabled - permission-name matching stays case-sensitive", () => {
+  // An uppercase deny rule must not hide the lowercase tool from the roster.
+  const ruleset: PermissionV1.Ruleset = [{ permission: "BASH", pattern: "*", action: "deny" }]
+  expect(Permission.disabled(["bash"], ruleset).size).toBe(0)
+  expect(Permission.disabled(["bash"], [{ permission: "bash", pattern: "*", action: "deny" }]).has("bash")).toBe(true)
+})
+
 // disabled tests
 
 test("disabled - returns empty set when all tools allowed", () => {

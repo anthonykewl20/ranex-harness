@@ -2,9 +2,12 @@ import { describe, expect } from "bun:test"
 import { $ } from "bun"
 import fs from "fs/promises"
 import path from "path"
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
+import { ChildProcess } from "effect/unstable/process"
+import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { Git } from "@ranex/core/git"
+import { AppProcess } from "@ranex/core/process"
 import { AbsolutePath, RelativePath } from "@ranex/core/schema"
 import { branch, commit, gitRemote } from "./fixture/git"
 import { tmpdir } from "./fixture/tmpdir"
@@ -70,6 +73,23 @@ function read(file: string) {
   return Effect.promise(() => fs.readFile(file, "utf8")).pipe(Effect.map((content) => content.replace(/\r\n/g, "\n")))
 }
 
+function processSpy(seen: string[][]) {
+  return Layer.effect(
+    AppProcess.Service,
+    Effect.gen(function* () {
+      const inner = yield* AppProcess.Service
+      return AppProcess.Service.of({
+        ...inner,
+        run: (command, options) =>
+          Effect.suspend(() => {
+            if (ChildProcess.isStandardCommand(command)) seen.push([...command.args])
+            return inner.run(command, options)
+          }),
+      })
+    }),
+  ).pipe(Layer.provide(LayerNode.compile(AppProcess.node)))
+}
+
 async function initRepo(directory: string) {
   await $`git init`.cwd(directory).quiet()
   await $`git config core.fsmonitor false`.cwd(directory).quiet()
@@ -107,6 +127,124 @@ describe("Git worktrees", () => {
       yield* git.worktree.remove({ repository: linked, directory: worktree, force: false })
       expect((yield* git.worktree.list(repo)).some((entry) => entry.directory.endsWith("-git-worktree"))).toBe(false)
     }),
+  )
+})
+
+describe("Git hardening", () => {
+  const seen: string[][] = []
+  const it = testEffect(AppNodeBuilder.build(Git.node, [[AppProcess.node, processSpy(seen)]]))
+
+  it.live("prepends config hardening to discovered-repo invocations only", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() => initRepo(tmp.path))
+          const git = yield* Git.Service
+          const repo = yield* git.repo.discover(AbsolutePath.make(tmp.path))
+          if (!repo) throw new Error("Repository not found")
+
+          seen.length = 0
+          yield* git.history.head(repo)
+          expect(seen[0]).toEqual([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "credential.helper=",
+            "rev-parse",
+            "HEAD",
+          ])
+
+          // The snapshot-style repository (isolated gitdir) keeps its argv untouched.
+          seen.length = 0
+          const storage = AbsolutePath.make(path.join(tmp.path, ".snapshot"))
+          yield* git.repo.create({ worktree: repo.worktree, gitDirectory: storage, seed: repo })
+          expect(seen.length).toBeGreaterThan(0)
+          for (const args of seen) {
+            expect(args.slice(0, 4)).not.toEqual(["-c", "core.fsmonitor=false", "-c", "gc.auto=0"])
+            expect(args).not.toContain("core.hooksPath=/dev/null")
+            expect(args).not.toContain("credential.helper=")
+          }
+        }),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("rejects option-shaped tree IDs and refnames before spawning", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() => initRepo(tmp.path))
+          const git = yield* Git.Service
+          const repo = yield* git.repo.discover(AbsolutePath.make(tmp.path))
+          if (!repo) throw new Error("Repository not found")
+          const storage = AbsolutePath.make(path.join(tmp.path, ".snapshot"))
+          const repository = yield* git.repo.create({ worktree: repo.worktree, gitDirectory: storage, seed: repo })
+
+          seen.length = 0
+          // `TreeID.make` validates in effect v4, so cast to simulate a value
+          // that reached the boundary without construction-time validation.
+          const tree = yield* git.tree.checkout({ repository, tree: "--index-output=x" as Git.TreeID }).pipe(
+            Effect.flip,
+          )
+          expect(tree).toBeInstanceOf(Git.OperationError)
+          expect(tree).toMatchObject({ operation: "restore" })
+
+          const traversal = yield* git.sync.fetchBranch(repo, { branch: "--upload-pack=x" }).pipe(Effect.flip)
+          expect(traversal).toBeInstanceOf(Git.OperationError)
+          expect(traversal).toMatchObject({ operation: "fetch" })
+
+          const dotted = yield* git.sync.fetchBranch(repo, { branch: "main..next" }).pipe(Effect.flip)
+          expect(dotted).toBeInstanceOf(Git.OperationError)
+          expect(dotted).toMatchObject({ operation: "fetch" })
+
+          const revision = yield* git.sync.resetHard(repo, "--force").pipe(Effect.flip)
+          expect(revision).toBeInstanceOf(Git.OperationError)
+          expect(revision).toMatchObject({ operation: "reset" })
+
+          // Blocklist mirrors git check-ref-format: separators, traversal,
+          // ref-syntax metacharacters, and .lock-suffixed components.
+          for (const unsafe of [
+            "./main",
+            "/main",
+            "main/",
+            "main.",
+            "main//feature",
+            "main@{upstream}",
+            "main feature",
+            "main:feature",
+            "main?feature",
+            "main*",
+            "main[feature",
+            "main\\feature",
+            "main\x07feature",
+            "refs/heads/main.lock",
+            "feature/.hidden",
+          ]) {
+            const rejected = yield* git.sync.resetHard(repo, unsafe).pipe(Effect.flip)
+            expect(rejected).toBeInstanceOf(Git.OperationError)
+            expect(rejected).toMatchObject({ operation: "reset" })
+          }
+
+          expect(seen).toHaveLength(0)
+
+          // Valid refs the old allowlist rejected: `@` (not followed by `{`)
+          // and Unicode pass the guard and reach git itself, failing only as
+          // unknown revisions.
+          for (const valid of ["release@2026", "feature/ünïcode"]) {
+            const unknown = yield* git.sync.resetHard(repo, valid).pipe(Effect.flip)
+            expect(unknown).toBeInstanceOf(Git.OperationError)
+            expect(unknown.message).not.toContain("Rejected unsafe git refname")
+          }
+          expect(seen).toHaveLength(2)
+        }),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
   )
 })
 

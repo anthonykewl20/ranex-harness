@@ -281,7 +281,7 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
         expect(calls).toBe(1)
         expect(parts.some((part) => part.type === "text" && part.text === "hello")).toBe(true)
       }),
-    { config: (url) => providerCfg(url) },
+    { trustedConfig: (url) => providerCfg(url) },
   ),
 )
 
@@ -367,7 +367,7 @@ it.live("session.processor effect tests preserve text start time", () =>
         if (!text?.time?.start || !text.time.end) return
         expect(text.time.start).toBeLessThan(text.time.end)
       }),
-    { config: (url) => providerCfg(url) },
+    { trustedConfig: (url) => providerCfg(url) },
   ),
 )
 
@@ -414,7 +414,7 @@ it.live("session.processor effect tests stop after token overflow requests compa
         expect(parts.some((part) => part.type === "text" && part.text === "after")).toBe(true)
         expect(parts.some((part) => part.type === "step-finish")).toBe(true)
       }),
-    { config: (url) => providerCfg(url) },
+    { trustedConfig: (url) => providerCfg(url) },
   ),
 )
 
@@ -463,7 +463,7 @@ it.live("session.processor effect tests capture reasoning from http mock", () =>
         expect(reasoning?.text).toBe("think")
         expect(text?.text).toBe("done")
       }),
-    { config: (url) => providerCfg(url) },
+    { trustedConfig: (url) => providerCfg(url) },
   ),
 )
 
@@ -510,7 +510,7 @@ it.live("session.processor effect tests reset reasoning state across retries", (
         expect(reasoning.some((part) => part.text === "two")).toBe(true)
         expect(reasoning.some((part) => part.text === "onetwo")).toBe(false)
       }),
-    { config: (url) => providerCfg(url) },
+    { trustedConfig: (url) => providerCfg(url) },
   ),
 )
 
@@ -553,7 +553,7 @@ it.live("session.processor effect tests do not retry unknown json errors", () =>
         expect(yield* llm.calls).toBe(1)
         expect(handle.message.error?.name).toBe("APIError")
       }),
-    { config: (url) => providerCfg(url) },
+    { trustedConfig: (url) => providerCfg(url) },
   ),
 )
 
@@ -600,7 +600,7 @@ it.live("session.processor effect tests retry recognized structured json errors"
         expect(parts.some((part) => part.type === "text" && part.text === "after")).toBe(true)
         expect(handle.message.error).toBeUndefined()
       }),
-    { config: (url) => providerCfg(url) },
+    { trustedConfig: (url) => providerCfg(url) },
   ),
 )
 
@@ -654,7 +654,7 @@ it.live("session.processor effect tests publish retry status updates", () =>
         expect(yield* llm.calls).toBe(2)
         expect(states).toStrictEqual([1])
       }),
-    { config: (url) => providerCfg(url) },
+    { trustedConfig: (url) => providerCfg(url) },
   ),
 )
 
@@ -697,7 +697,7 @@ it.live("session.processor effect tests compact on structured context overflow",
         expect(yield* llm.calls).toBe(1)
         expect(handle.message.error).toBeUndefined()
       }),
-    { config: (url) => providerCfg(url) },
+    { trustedConfig: (url) => providerCfg(url) },
   ),
 )
 
@@ -762,7 +762,7 @@ it.live("session.processor effect tests complete AI SDK tool calls when native f
         expect(call.state.time.start).toBeDefined()
         expect(call.state.time.end).toBeDefined()
       }),
-    { config: (url) => providerCfg(url) },
+    { trustedConfig: (url) => providerCfg(url) },
   ),
 )
 
@@ -830,7 +830,7 @@ it.live("session.processor effect tests mark pending tools as aborted on cleanup
           expect(call.state.time.end).toBeDefined()
         }
       }),
-    { config: (url) => providerCfg(url) },
+    { trustedConfig: (url) => providerCfg(url) },
   ),
 )
 
@@ -904,7 +904,7 @@ it.live("session.processor effect tests record aborted errors and idle state", (
         expect(state).toMatchObject({ type: "idle" })
         expect(errs).toContain("MessageAbortedError")
       }),
-    { config: (url) => providerCfg(url) },
+    { trustedConfig: (url) => providerCfg(url) },
   ),
 )
 
@@ -961,7 +961,7 @@ it.live("session.processor effect tests mark interruptions aborted without manua
         }
         expect(state).toMatchObject({ type: "idle" })
       }),
-    { config: (url) => providerCfg(url) },
+    { trustedConfig: (url) => providerCfg(url) },
   ),
 )
 

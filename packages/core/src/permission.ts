@@ -84,7 +84,9 @@ export type Error = BlockedError | CorrectedError
 
 // Bash approval rules never match when either side carries shell control characters, so
 // compound or piped commands cannot inherit a prefix approval and fall through to ask.
-const bashControlChars = /[;|&`\n]/
+// Substitution ($ and parentheses) and redirection (< and >) are live execution
+// primitives in a real shell, so they join the rejected set.
+const bashControlChars = /[;|&`\n$()<>]/
 
 export function evaluate(action: string, resource: string, ...rulesets: Permission.Ruleset[]): Permission.Rule {
   return (
@@ -93,7 +95,12 @@ export function evaluate(action: string, resource: string, ...rulesets: Permissi
       .findLast(
         (rule) =>
           Wildcard.match(action, rule.action) &&
-          Wildcard.match(resource, rule.resource) &&
+          // POSIX allow rules match resource casing strictly so `allow
+          // Secrets/*` cannot widen to `secrets/x`; deny/ask rules stay broad
+          // to prevent casing bypass. win32 is case-insensitive throughout.
+          Wildcard.match(resource, rule.resource, {
+            caseInsensitive: process.platform === "win32" || rule.effect !== "allow",
+          }) &&
           !(action === "bash" && (bashControlChars.test(rule.resource) || bashControlChars.test(resource))),
       ) ?? {
         action,

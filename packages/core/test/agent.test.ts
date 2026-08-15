@@ -99,7 +99,7 @@ describe("AgentV2", () => {
     }),
   )
 
-  it.effect("does not ambiently opt built-in agents into bash", () =>
+  it.effect("keeps bash opt-in explicit: only plan mode carries a bash policy", () =>
     Effect.gen(function* () {
       const agent = yield* AgentV2.Service
       yield* AgentPlugin.Plugin.effect(
@@ -123,9 +123,12 @@ describe("AgentV2", () => {
         "summary",
         "title",
       ])
-      for (const item of agents) {
-        expect(item.permissions.some((rule) => rule.action === "bash" && rule.effect !== "deny")).toBe(false)
+      for (const item of agents.filter((item) => String(item.id) !== "plan")) {
+        expect(item.permissions.some((rule) => rule.action === "bash")).toBe(false)
       }
+      const plan = agents.find((item) => String(item.id) === "plan")!
+      expect(plan.permissions.some((rule) => rule.action === "bash" && rule.resource === "*" && rule.effect === "ask"))
+        .toBe(true)
     }),
   )
 })

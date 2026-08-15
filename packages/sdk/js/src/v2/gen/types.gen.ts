@@ -1856,6 +1856,7 @@ export type McpLocalConfig = {
   environment?: {
     [key: string]: string
   }
+  inheritEnv?: boolean
   enabled?: boolean
   timeout?: number
 }
@@ -2898,6 +2899,11 @@ export type ProjectCopyError = {
     message: string
     forceRequired?: boolean
   }
+}
+
+export type TicketUnavailableError = {
+  _tag: "TicketUnavailableError"
+  message: string
 }
 
 export type EffectHttpApiErrorForbidden = {
@@ -12553,6 +12559,40 @@ export type V2ProjectCopyRefreshResponses = {
 }
 
 export type V2ProjectCopyRefreshResponse = V2ProjectCopyRefreshResponses[keyof V2ProjectCopyRefreshResponses]
+
+export type V2TicketMintData = {
+  body?: never
+  path?: never
+  query?: {
+    scope?: "url-auth" | "api"
+  }
+  url: "/api/ticket"
+}
+
+export type V2TicketMintErrors = {
+  /**
+   * TicketUnavailableError
+   */
+  400: TicketUnavailableError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2TicketMintError = V2TicketMintErrors[keyof V2TicketMintErrors]
+
+export type V2TicketMintResponses = {
+  /**
+   * Success
+   */
+  200: {
+    ticket: string
+    expiresAt: string
+  }
+}
+
+export type V2TicketMintResponse = V2TicketMintResponses[keyof V2TicketMintResponses]
 
 export type PtyConnectData = {
   body?: never

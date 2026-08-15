@@ -1,6 +1,6 @@
 import { FSUtil } from "@ranex/core/fs-util"
 import { Effect, Stream } from "effect"
-import { HttpBody, HttpClient, HttpClientRequest, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { HttpClient, HttpClientRequest, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { createHash } from "node:crypto"
 import { ProxyUtil } from "../proxy-util"
 
@@ -19,12 +19,6 @@ export function themePreloadHash(body: string) {
 export function cspForHtml(body: string) {
   const match = themePreloadHash(body)
   return csp(match ? createHash("sha256").update(match[2]).digest("base64") : "")
-}
-
-function requestBody(request: HttpServerRequest.HttpServerRequest) {
-  if (request.method === "GET" || request.method === "HEAD") return HttpBody.empty
-  const len = request.headers["content-length"]
-  return HttpBody.stream(request.stream, request.headers["content-type"], len === undefined ? undefined : Number(len))
 }
 
 function proxyResponseHeaders(headers: Record<string, string>) {
@@ -80,15 +74,19 @@ export function serveUIEffect(
   services: { fs: FSUtil.Interface; client: HttpClient.HttpClient; disableEmbeddedWebUi: boolean },
 ) {
   return Effect.gen(function* () {
-    const embeddedWebUI = yield* Effect.promise(() => embeddedUI(services.disableEmbeddedWebUi))
     const path = new URL(request.url, "http://localhost").pathname
+    // The catch-all is a read-only static fallback: mutating requests and
+    // API-shaped paths must never be forwarded upstream.
+    if (request.method !== "GET" && request.method !== "HEAD") return notFound()
+    if (path === "/api" || path.startsWith("/api/")) return notFound()
+
+    const embeddedWebUI = yield* Effect.promise(() => embeddedUI(services.disableEmbeddedWebUi))
 
     if (embeddedWebUI) return yield* serveEmbeddedUIEffect(path, services.fs, embeddedWebUI)
 
     const response = yield* services.client.execute(
       HttpClientRequest.make(request.method)(upstreamURL(path), {
         headers: ProxyUtil.headers(request.headers, { host: UI_UPSTREAM.host }),
-        body: requestBody(request),
       }),
     )
     const headers = proxyResponseHeaders(response.headers)

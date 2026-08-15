@@ -1,13 +1,13 @@
 export * as WebFetchTool from "./webfetch"
 
 import { ToolFailure } from "@ranex/llm"
-import { Duration, Effect, Layer, Schema } from "effect"
+import { Context, Duration, Effect, Layer, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { Parser } from "htmlparser2"
 import TurndownService from "turndown"
-import { makeLocationNode } from "../effect/app-node"
-import { LayerNodePlatform } from "../effect/app-node-platform"
+import { makeGlobalNode, makeLocationNode } from "../effect/app-node"
 import { PermissionV2 } from "../permission"
+import { SecureHttp } from "../util/secure-http"
 import { collectBoundedResponseBody } from "./http-body"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
@@ -17,6 +17,7 @@ export const name = "webfetch"
 export const MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 export const DEFAULT_TIMEOUT_SECONDS = 30
 export const MAX_TIMEOUT_SECONDS = 120
+export const MAX_REDIRECTS = 5
 
 export const description = `Fetch content from an HTTP or HTTPS URL and return it as text, markdown, or HTML. Markdown is the default.
 
@@ -64,30 +65,66 @@ const headers = (format: Format, userAgent: string) => ({
 const browserUserAgent =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
 
-const isCloudflareChallenge = (error: unknown) => {
-  if (!error || typeof error !== "object" || !("reason" in error)) return false
-  const reason = error.reason
-  if (
-    !reason ||
-    typeof reason !== "object" ||
-    !("_tag" in reason) ||
-    reason._tag !== "StatusCodeError" ||
-    !("response" in reason)
-  )
-    return false
-  const response = reason.response as HttpClientResponse.HttpClientResponse
-  return response.status === 403 && response.headers["cf-mitigated"] === "challenge"
-}
-
 const request = (url: string, format: Format, userAgent = browserUserAgent) =>
   HttpClientRequest.get(url).pipe(HttpClientRequest.setHeaders(headers(format, userAgent)))
 
-const assertHttpUrl = (url: URL) => {
-  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("URL must use http:// or https://")
-}
+export type Lookup = SecureHttp.Lookup
 
-const execute = (http: HttpClient.HttpClient, url: string, format: Format, userAgent = browserUserAgent) =>
-  http.execute(request(url, format, userAgent)).pipe(Effect.flatMap(HttpClientResponse.filterStatusOk))
+export class DnsLookup extends Context.Service<DnsLookup, { readonly lookup: Lookup }>()(
+  "@ranex/core/webfetch/DnsLookup",
+) {}
+
+export const dnsLookupNode = makeGlobalNode({
+  service: DnsLookup,
+  layer: Layer.succeed(DnsLookup, DnsLookup.of({ lookup: SecureHttp.lookupDns })),
+  deps: [],
+})
+
+export const assertPublicHttpUrlResolved = SecureHttp.assertPublicHttpUrlResolved
+
+// Pinned transport: the HttpClient used for actual fetches resolves DNS through
+// DnsLookup with every answer validated, so validation and connection cannot diverge.
+export const httpClientNode = makeLocationNode({
+  name: "tool/webfetch/http",
+  layer: Layer.effect(
+    HttpClient.HttpClient,
+    Effect.gen(function* () {
+      const dns = yield* DnsLookup
+      return SecureHttp.secureHttpClient(dns.lookup)
+    }),
+  ),
+  deps: [dnsLookupNode],
+})
+
+const validateRedirect = (location: string, base: string, lookup: Lookup) =>
+  Effect.tryPromise({
+    try: () =>
+      SecureHttp.assertPublicHttpUrlResolved(new URL(location, base).toString(), lookup).then((url) => url.toString()),
+    catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+  })
+
+// node never follows redirects on its own, so every hop is a fresh request whose URL
+// re-passes the SSRF guard and whose connection re-runs the pinned resolver
+const fetchHop = (http: HttpClient.HttpClient, url: string, format: Format, userAgent: string) =>
+  http.execute(request(url, format, userAgent))
+
+const followRedirects = (http: HttpClient.HttpClient, url: string, format: Format, lookup: Lookup) =>
+  Effect.gen(function* () {
+    let current = url
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      let response = yield* fetchHop(http, current, format, browserUserAgent)
+      // Retry with honest UA if blocked by Cloudflare bot detection (TLS fingerprint mismatch)
+      if (response.status === 403 && response.headers["cf-mitigated"] === "challenge")
+        response = yield* fetchHop(http, current, format, "opencode")
+      const location = response.headers["location"]
+      if (![301, 302, 303, 307, 308].includes(response.status) || !location) {
+        return yield* HttpClientResponse.filterStatusOk(response)
+      }
+      if (hop === MAX_REDIRECTS) return yield* Effect.fail(new Error("Too many redirects"))
+      current = yield* validateRedirect(location, current, lookup)
+    }
+    return yield* Effect.fail(new Error("Too many redirects"))
+  })
 
 const collectBody = (response: HttpClientResponse.HttpClientResponse) =>
   collectBoundedResponseBody(
@@ -120,6 +157,7 @@ const layer = Layer.effectDiscard(
     const tools = yield* Tools.Service
     const http = yield* HttpClient.HttpClient
     const permission = yield* PermissionV2.Service
+    const dns = yield* DnsLookup
 
     yield* tools
       .register({
@@ -130,15 +168,15 @@ const layer = Layer.effectDiscard(
           toModelOutput: ({ output }) => [{ type: "text", text: output.output }],
           execute: (input, context) =>
             Effect.gen(function* () {
-              yield* Effect.try({
-                try: () => assertHttpUrl(new URL(input.url)),
+              yield* Effect.tryPromise({
+                try: () => assertPublicHttpUrlResolved(input.url, dns.lookup),
                 catch: (error) => error,
               })
 
               yield* permission.assert({
                 action: name,
                 resources: [input.url],
-                save: ["*"],
+                save: [input.url],
                 metadata: input,
                 sessionID: context.sessionID,
                 agent: context.agent,
@@ -146,9 +184,7 @@ const layer = Layer.effectDiscard(
               })
 
               const { body, contentType } = yield* Effect.gen(function* () {
-                const response = yield* execute(http, input.url, input.format).pipe(
-                  Effect.catchIf(isCloudflareChallenge, () => execute(http, input.url, input.format, "opencode")),
-                )
+                const response = yield* followRedirects(http, input.url, input.format, dns.lookup)
                 const contentType = response.headers["content-type"] || ""
                 const mime = mimeFrom(contentType)
                 if (isImageAttachment(mime))
@@ -183,7 +219,7 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/webfetch",
   layer,
-  deps: [ToolRegistry.node, PermissionV2.node, LayerNodePlatform.httpClient],
+  deps: [ToolRegistry.node, PermissionV2.node, httpClientNode, dnsLookupNode],
 })
 
 export function extractTextFromHTML(html: string) {

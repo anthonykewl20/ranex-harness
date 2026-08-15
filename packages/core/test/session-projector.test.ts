@@ -71,11 +71,11 @@ describe("SessionProjector", () => {
       yield* events.publish(SessionEvent.RevertEvent.Staged, {
         sessionID,
         timestamp: DateTime.makeUnsafe(1),
-        revert: { messageID: boundary, snapshot: Snapshot.ID.make("tree"), diff: "patch", files: [] },
+        revert: { messageID: boundary, snapshot: Snapshot.ID.make("feed"), diff: "patch", files: [] },
       })
       expect((yield* db.select({ revert: SessionTable.revert }).from(SessionTable).get())?.revert).toMatchObject({
         messageID: boundary,
-        snapshot: "tree",
+        snapshot: "feed",
         files: [],
       })
       yield* events.publish(SessionEvent.RevertEvent.Cleared, { sessionID, timestamp: DateTime.makeUnsafe(2) })

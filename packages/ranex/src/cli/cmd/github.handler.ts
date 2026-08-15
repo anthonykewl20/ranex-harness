@@ -154,6 +154,12 @@ const SUPPORTED_EVENTS = [...USER_EVENTS, ...REPO_EVENTS] as const
 type UserEvent = (typeof USER_EVENTS)[number]
 type RepoEvent = (typeof REPO_EVENTS)[number]
 
+// Sharing publishes the session transcript to a public URL, so it stays
+// opt-in: only an explicit SHARE=true enables it, regardless of repo visibility.
+export function shouldShareSession(share: boolean | undefined) {
+  return share === true
+}
+
 export const githubInstall = Effect.fn("Cli.github.install")(function* () {
   const maybeCtx = yield* InstanceRef
   if (!maybeCtx) return yield* Effect.die("InstanceRef not provided")
@@ -510,8 +516,10 @@ export const githubRun = Effect.fn("Cli.github.run")(function* (args: { event?: 
       )
       await subscribeSessionEvents()
       shareId = await (async () => {
-        if (share === false) return
-        if (!share && repoData.data.private) return
+        if (!shouldShareSession(share)) {
+          console.log("session share skipped (enable with SHARE=true or the share config)")
+          return
+        }
         await runLocalEffect(sessionShare.share(session.id))
         return session.id.slice(-8)
       })()

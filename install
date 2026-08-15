@@ -23,6 +23,26 @@ Examples:
     curl -fsSL https://opencode.ai/install | bash
     curl -fsSL https://opencode.ai/install | bash -s -- --version 1.0.180
     ./install --binary /path/to/opencode
+
+Environment:
+    OPENCODE_INSTALL_PUBKEY
+        Optional public key (file path or literal). When set, the downloaded
+        archive must carry a detached signature verifying against this key
+        before anything is extracted. The signature is fetched from the
+        release as <archive>.minisig or <archive>.sig.
+
+        Two conventions are supported; the format actually used is selected
+        from what the release publishes and the verifier you have installed:
+        - minisign: minisign-format signature, verified with the minisign
+          tool against a minisign public key.
+        - openssl (>= 1.1.1): raw Ed25519 signature over the exact archive
+          bytes. Publish it with:
+              openssl pkeyutl -sign -rawin -inkey ed25519.key -in <archive> > <archive>.sig
+          The key may be PEM, base64 raw 32-byte, or base64 DER.
+
+        A missing signature, a bad signature, or no verifiable pair
+        (published formats no installed verifier can check) aborts the
+        install.
 EOF
 }
 
@@ -338,6 +358,300 @@ download_with_progress() {
     return $ret
 }
 
+# Fail-closed checksum verification: the downloaded archive must match the
+# SHA256SUMS manifest from the same release channel before anything is
+# extracted, moved, or executed. A missing manifest, a missing per-file entry,
+# or a hash mismatch aborts the install.
+#
+# Trust note: SHA256SUMS and the archive ship from the same release, so this
+# protects against CDN corruption and MITM tampering with the download — NOT
+# against a fully compromised release account, which could rewrite the
+# checksums too. Setting OPENCODE_INSTALL_PUBKEY (see verify_signature below)
+# closes that gap: the archive must then also carry a detached signature from
+# a key pinned outside the release channel before anything is extracted.
+verify_checksum() {
+    local archive="$1"
+    local sums_url="$2"
+    local sums_file="${archive}.SHA256SUMS"
+
+    if ! curl -sfL "${gh_config_arg[@]+"${gh_config_arg[@]}"}" -o "$sums_file" "$sums_url"; then
+        print_message error "Failed to download checksum manifest: $sums_url"
+        print_message error "Refusing to install: archive integrity cannot be verified"
+        exit 1
+    fi
+
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+        print_message error "Neither sha256sum nor shasum is available; cannot verify the archive"
+        print_message error "Refusing to install: archive integrity cannot be verified"
+        exit 1
+    fi
+
+    local actual
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$archive" | awk '{print $1}')
+    else
+        actual=$(shasum -a 256 "$archive" | awk '{print $1}')
+    fi
+    actual=$(printf '%s' "$actual" | tr '[:upper:]' '[:lower:]')
+
+    # Match the exact archive filename's entry (sha256sum format: "<hash>  <file>",
+    # with a "*" prefix on the filename in binary mode).
+    local expected
+    expected=$(awk -v file="$filename" \
+        'length($1) == 64 && $1 ~ /^[0-9a-fA-F]+$/ && ($2 == file || $2 == "*" file) { print tolower($1); exit }' \
+        "$sums_file")
+
+    if [ -z "$expected" ]; then
+        print_message error "No SHA256SUMS entry for $filename in $sums_url"
+        print_message error "Expected: (no entry for this file)  Actual: $actual"
+        print_message error "Refusing to install: archive integrity cannot be verified"
+        exit 1
+    fi
+
+    if [ "$actual" != "$expected" ]; then
+        print_message error "Checksum mismatch for $filename"
+        print_message error "Expected: $expected"
+        print_message error "Actual:   $actual"
+        print_message error "Refusing to install: archive integrity cannot be verified"
+        exit 1
+    fi
+
+    print_message info "${MUTED}Checksum verified: ${NC}$actual"
+}
+
+# Optional, opt-in signature verification: OPENCODE_INSTALL_PUBKEY pins a
+# public key that lives OUTSIDE the release channel. Unlike SHA256SUMS, a
+# pinned key survives a fully compromised release account: the attacker can
+# republish the archive and its checksums, but cannot forge a signature that
+# the pinned key would produce.
+#
+# The signature is fetched from the same release directory as the archive:
+# both <archive>.minisig and <archive>.sig are probed — one of them is
+# REQUIRED when the pubkey is set. Selection is capability-driven (see
+# verify_signature): a published format whose verifier is not installed is
+# skipped, never guessed at.
+#
+#   minisign  Signature in minisign format (leading "untrusted comment:"
+#             line), verified with the minisign binary:
+#                 minisign -V -m <archive> -x <sig> -P <pubkey>
+#             minisign-format files are never parsed by hand here; without
+#             the minisign binary they are a hard error, not a guess.
+#
+#   openssl   Raw detached Ed25519 signature over the exact archive bytes,
+#             verified with: openssl pkeyutl -verify -pubin -rawin.
+#             Produced at release time by:
+#                 openssl pkeyutl -sign -rawin -inkey ed25519.key \
+#                     -in <archive> > <archive>.sig
+#             Requires OpenSSL >= 1.1.1 (Ed25519 support).
+#
+# OPENCODE_INSTALL_PUBKEY holds a key file path or the literal key: a
+# minisign pubkey (file, or bare base64 line: base64("Ed" + 8-byte key id +
+# raw key)), a raw 32-byte Ed25519 key as base64, a base64 DER
+# SubjectPublicKeyInfo, or a PEM public key (openssl paths only).
+verify_signature() {
+    local archive="$1"
+    local sig_base_url="$2"
+
+    # Capability probe first: which verifiers can actually run here? A raw
+    # Ed25519 .sig needs openssl >= 1.1.1 (-rawin); a .minisig needs the
+    # minisign binary. Older openssl builds cannot verify .sig files at all.
+    local have_minisign=false
+    if command -v minisign >/dev/null 2>&1; then have_minisign=true; fi
+    local have_openssl_raw=false
+    if command -v openssl >/dev/null 2>&1 && openssl pkeyutl -help 2>&1 | grep -q -- '-rawin'; then
+        have_openssl_raw=true
+    fi
+    if [ "$have_minisign" = false ] && [ "$have_openssl_raw" = false ]; then
+        print_message error "OPENCODE_INSTALL_PUBKEY set but no verifier available (install minisign or openssl >= 1.1.1)"
+        print_message error "Refusing to install: signature verification required"
+        exit 1
+    fi
+
+    # Probe both published formats up front so the error path can name what
+    # the release publishes versus what is installed.
+    local minisig_file=""
+    if curl -sfL "${gh_config_arg[@]+"${gh_config_arg[@]}"}" -o "${archive}.minisig" "${sig_base_url}/${filename}.minisig" && [ -s "${archive}.minisig" ]; then
+        minisig_file="${archive}.minisig"
+    else
+        rm -f "${archive}.minisig"
+    fi
+    local rawsig_file=""
+    if curl -sfL "${gh_config_arg[@]+"${gh_config_arg[@]}"}" -o "${archive}.sig" "${sig_base_url}/${filename}.sig" && [ -s "${archive}.sig" ]; then
+        rawsig_file="${archive}.sig"
+    else
+        rm -f "${archive}.sig"
+    fi
+
+    # Select the signature format by verifier capability, not publication
+    # order: a pair is workable only when the format is published AND its
+    # verifier is installed. Preference selects (.sig + openssl) first —
+    # openssl is near-universal — then (.minisig + minisign). With the
+    # pubkey pinned, no workable pair is a hard error, never a guess.
+    local sig_file=""
+    if [ -n "$rawsig_file" ] && [ "$have_openssl_raw" = true ]; then
+        sig_file="$rawsig_file"
+    elif [ -n "$minisig_file" ] && [ "$have_minisign" = true ]; then
+        sig_file="$minisig_file"
+    fi
+    if [ -z "$sig_file" ]; then
+        local published=""
+        if [ -n "$minisig_file" ]; then published="${filename}.minisig"; fi
+        if [ -n "$rawsig_file" ]; then published="${published:+$published }${filename}.sig"; fi
+        if [ -z "$published" ]; then published="(none)"; fi
+        local verifiers=""
+        if [ "$have_minisign" = true ]; then verifiers="minisign"; fi
+        if [ "$have_openssl_raw" = true ]; then verifiers="${verifiers:+$verifiers, }openssl (raw Ed25519)"; fi
+        print_message error "Signature required but none verifiable (OPENCODE_INSTALL_PUBKEY is set)"
+        print_message error "Published by this release: $published"
+        print_message error "Verifiers installed: $verifiers"
+        print_message error "Refusing to install: release signature cannot be verified"
+        exit 1
+    fi
+
+    # Resolve the pinned public key: an existing file path, or literal key
+    # material.
+    local key_text="${OPENCODE_INSTALL_PUBKEY:-}"
+    if [ -f "$key_text" ]; then
+        key_text=$(cat "$key_text")
+    fi
+
+    local key_b64=""
+    local ms_pubkey=""
+    local pem_key=""
+    case "$key_text" in
+        "untrusted comment:"*)
+            key_b64=$(printf '%s\n' "$key_text" | sed -n '2p' | tr -d '[:space:]')
+            ms_pubkey="$key_b64"
+            ;;
+        -----BEGIN*)
+            pem_key="$key_text"
+            ;;
+        *)
+            key_b64=$(printf '%s' "$key_text" | tr -d '[:space:]')
+            # minisign pubkey is 56 chars (42 bytes); raw key 43/44 chars
+            # (32 bytes); DER SubjectPublicKeyInfo 60 chars (44 bytes).
+            case "$(printf '%s' "$key_b64" | wc -c)" in
+                56) ms_pubkey="$key_b64" ;;
+                43|44|60) ;;
+                *)
+                    print_message error "Unsupported OPENCODE_INSTALL_PUBKEY value: expected a key file path, minisign key, base64 raw/DER Ed25519 key, or PEM"
+                    print_message error "Refusing to install: signature verification required"
+                    exit 1
+                    ;;
+            esac
+            ;;
+    esac
+
+    # Dispatch on the signature file's actual format.
+    local sig_kind
+    if [ "$(head -c 18 "$sig_file")" = "untrusted comment:" ]; then
+        sig_kind=minisign
+    else
+        sig_kind=raw
+    fi
+
+    if [ "$sig_kind" = minisign ]; then
+        if ! command -v minisign >/dev/null 2>&1; then
+            print_message error "Signature $sig_file is in minisign format, but minisign is not installed"
+            print_message error "Install minisign, or publish a raw Ed25519 .sig instead (see --help)"
+            print_message error "Refusing to install: signature verification required"
+            exit 1
+        fi
+        if [ -z "$ms_pubkey" ]; then
+            print_message error "A minisign-format signature requires a minisign public key; OPENCODE_INSTALL_PUBKEY does not contain one"
+            print_message error "Refusing to install: signature verification required"
+            exit 1
+        fi
+        local ms_out
+        if ! ms_out=$(minisign -V -m "$archive" -x "$sig_file" -P "$ms_pubkey" 2>&1); then
+            print_message error "Signature verification failed (minisign)"
+            print_message error "$ms_out"
+            print_message error "Refusing to install: archive signature does not match the pinned public key"
+            exit 1
+        fi
+        print_message info "${MUTED}Signature verified (minisign Ed25519) against OPENCODE_INSTALL_PUBKEY${NC}"
+        return 0
+    fi
+
+    # Raw detached Ed25519 via OpenSSL (>= 1.1.1 for Ed25519 and -rawin).
+    if ! command -v openssl >/dev/null 2>&1; then
+        print_message error "Raw Ed25519 signature found but openssl is not installed (install openssl, or minisign plus a .minisig)"
+        print_message error "Refusing to install: signature verification required"
+        exit 1
+    fi
+    if ! openssl pkeyutl -help 2>&1 | grep -q -- '-rawin'; then
+        print_message error "openssl lacks raw Ed25519 verification (-rawin); OpenSSL >= 1.1.1 is required"
+        print_message error "Refusing to install: signature verification required"
+        exit 1
+    fi
+
+    # Materialize the public key as a file: PEM as-is, or base64 decoded and
+    # wrapped into a 44-byte Ed25519 SubjectPublicKeyInfo (DER).
+    local key_file="${archive}.pubkey.pem"
+    local key_form=PEM
+    if [ -z "$pem_key" ]; then
+        key_file="${archive}.pubkey.der"
+        key_form=DER
+        local blob_file="${archive}.pubkey.blob"
+        if ! printf '%s' "$key_b64" | openssl base64 -d -A > "$blob_file" 2>/dev/null || [ ! -s "$blob_file" ]; then
+            print_message error "OPENCODE_INSTALL_PUBKEY is not valid base64"
+            print_message error "Refusing to install: signature verification required"
+            exit 1
+        fi
+        local blob_len
+        blob_len=$(wc -c < "$blob_file")
+        # Ed25519 SubjectPublicKeyInfo prefix: SEQUENCE(26) { SEQUENCE(5)
+        # { OID 1.3.101.112 }, BIT STRING(33) { 00, raw key } }
+        case "$blob_len" in
+            42)
+                # minisign pubkey: "Ed" + 8-byte key id + raw key
+                if [ "$(head -c 2 "$blob_file")" != "Ed" ]; then
+                    print_message error "Malformed minisign public key (missing Ed prefix)"
+                    print_message error "Refusing to install: signature verification required"
+                    rm -f "$blob_file"
+                    exit 1
+                fi
+                printf '\060\052\060\005\006\003\053\145\160\003\041\000' > "$key_file"
+                tail -c 32 "$blob_file" >> "$key_file"
+                ;;
+            32)
+                printf '\060\052\060\005\006\003\053\145\160\003\041\000' > "$key_file"
+                cat "$blob_file" >> "$key_file"
+                ;;
+            44)
+                # already a DER SubjectPublicKeyInfo
+                if [ "$(head -c 2 "$blob_file" | od -An -tx1 | tr -d '[:space:]')" != "302a" ]; then
+                    print_message error "Decoded key is 44 bytes but not an Ed25519 SubjectPublicKeyInfo"
+                    print_message error "Refusing to install: signature verification required"
+                    rm -f "$blob_file"
+                    exit 1
+                fi
+                cp "$blob_file" "$key_file"
+                ;;
+            *)
+                print_message error "Decoded OPENCODE_INSTALL_PUBKEY key is $blob_len bytes; expected 32 (raw), 42 (minisign), or 44 (DER)"
+                print_message error "Refusing to install: signature verification required"
+                rm -f "$blob_file"
+                exit 1
+                ;;
+        esac
+        rm -f "$blob_file"
+    else
+        printf '%s\n' "$pem_key" > "$key_file"
+    fi
+
+    local ssl_out
+    if ! ssl_out=$(openssl pkeyutl -verify -pubin -keyform "$key_form" -inkey "$key_file" -rawin -in "$archive" -sigfile "$sig_file" 2>&1); then
+        print_message error "Signature verification failed (openssl raw Ed25519)"
+        print_message error "$ssl_out"
+        print_message error "Refusing to install: archive signature does not match the pinned public key"
+        rm -f "$key_file"
+        exit 1
+    fi
+    rm -f "$key_file"
+    print_message info "${MUTED}Signature verified (Ed25519 via openssl) against OPENCODE_INSTALL_PUBKEY${NC}"
+}
+
 download_and_install() {
     print_message info "\n${MUTED}Installing ${NC}opencode ${MUTED}version: ${NC}$specific_version"
     local tmp_dir="${TMPDIR:-/tmp}/opencode_install_$$"
@@ -346,6 +660,18 @@ download_and_install() {
     if [[ "$os" == "windows" ]] || ! [ -t 2 ] || ! download_with_progress "$url" "$tmp_dir/$filename"; then
         # Fallback to standard curl on Windows, non-TTY environments, or if custom progress fails
         curl -# -L "${gh_config_arg[@]+"${gh_config_arg[@]}"}" -o "$tmp_dir/$filename" "$url"
+    fi
+
+    # Verify integrity before extraction; the manifest lives next to the archive
+    # on the same release channel.
+    verify_checksum "$tmp_dir/$filename" "${url%/*}/SHA256SUMS"
+
+    # Optional signature check against a pinned out-of-band public key; when
+    # unset, same-channel checksums are the whole protection — say so.
+    if [ -n "${OPENCODE_INSTALL_PUBKEY:-}" ]; then
+        verify_signature "$tmp_dir/$filename" "${url%/*}"
+    else
+        print_message info "${MUTED}Note: checksums ship with the release and cannot detect a compromised release account; set OPENCODE_INSTALL_PUBKEY to require a signature (see --help)${NC}"
     fi
 
     if [ "$os" = "linux" ]; then

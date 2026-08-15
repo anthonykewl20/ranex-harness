@@ -4,7 +4,6 @@ import * as TestClock from "effect/testing/TestClock"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNode } from "@ranex/core/effect/layer-node"
-import { LayerNodePlatform } from "@ranex/core/effect/app-node-platform"
 import { PermissionV2 } from "@ranex/core/permission"
 import { SessionV2 } from "@ranex/core/session"
 import { ToolRegistry } from "@ranex/core/tool/registry"
@@ -28,6 +27,13 @@ const http = Layer.succeed(
     ),
   ),
 )
+// Fake resolver so domain-name validation never touches the network in tests
+let resolve: (host: string) => Promise<Array<{ address: string }>> = () =>
+  Promise.resolve([{ address: "93.184.216.34" }])
+const dns = Layer.succeed(
+  WebFetchTool.DnsLookup,
+  WebFetchTool.DnsLookup.of({ lookup: (host) => resolve(host) }),
+)
 const permission = Layer.succeed(
   PermissionV2.Service,
   PermissionV2.Service.of({
@@ -43,15 +49,19 @@ const toolLayer = (replacements: LayerNode.Replacements = []) =>
   AppNodeBuilder.build(LayerNode.group([ToolRegistry.node, ToolRegistry.toolsNode, WebFetchTool.node]), [
     [PermissionV2.node, permission],
     [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
+    [WebFetchTool.dnsLookupNode, dns],
     ...replacements,
   ])
-const it = testEffect(toolLayer([[LayerNodePlatform.httpClient, http]]))
-const live = testEffect(toolLayer())
+const it = testEffect(toolLayer([[WebFetchTool.httpClientNode, http]]))
+// No httpClientNode replacement: execution goes through the real node transport,
+// whose DNS resolution is the pinned validated resolver.
+const itPinned = testEffect(toolLayer())
 
 const reset = () => {
   requests.length = 0
   assertions.length = 0
   respond = () => Effect.succeed(new Response("hello", { headers: { "content-type": "text/plain" } }))
+  resolve = () => Promise.resolve([{ address: "93.184.216.34" }])
 }
 
 const call = (input: typeof WebFetchTool.Input.Type, id = "call-webfetch") => ({
@@ -91,56 +101,212 @@ describe("WebFetchTool registration", () => {
         },
       })
       expect(assertions).toMatchObject([
-        { sessionID, action: "webfetch", resources: [url], save: ["*"], metadata: { url, format: "text", timeout: 4 } },
+        { sessionID, action: "webfetch", resources: [url], save: [url], metadata: { url, format: "text", timeout: 4 } },
       ])
       expect(requests).toMatchObject([{ url, headers: { accept: expect.stringContaining("text/plain;q=1.0") } }])
     }),
   )
 
-  it.effect("accepts localhost URLs with the same requested-URL permission check", () =>
+  it.effect("rejects loopback, private, and reserved hosts before permission or transport", () =>
     Effect.gen(function* () {
       reset()
       const registry = yield* ToolRegistry.Service
-      const url = "http://localhost/private"
+      const urls = [
+        "http://localhost/private",
+        "http://api.localhost/private",
+        "http://intranet.local/private",
+        "http://127.0.0.1:8080/admin",
+        "http://0x7f.000.000.001/admin",
+        "http://[::ffff:127.0.0.1]/",
+        "http://[::127.0.0.1]/",
+        "http://[::169.254.169.254]/",
+        "http://169.254.169.254./",
+        "http://127.0.0.1./admin",
+        "http://169.254.169.254/latest/meta-data",
+        "http://10.1.2.3/",
+        "http://172.16.9.9/",
+        "http://192.168.1.1/",
+        "http://100.64.0.1/",
+        "http://0.0.0.0/",
+        "http://[::1]/",
+        "http://[::]/",
+        "http://[fc00::1]/",
+        "http://[fe80::1]/",
+        "http://[::ffff:10.0.0.1]/",
+        // IANA special-use ranges: benchmarking, TEST-NETs, multicast,
+        // reserved, IPv6 documentation and site-local
+        "http://198.18.5.5/",
+        "http://192.0.2.1/",
+        "http://203.0.113.9/",
+        "http://224.0.0.1/",
+        "http://240.1.2.3/",
+        "http://[2001:db8::1]/",
+        "http://[fec0::1]/",
+      ]
+
+      for (const url of urls) {
+        expect(yield* executeTool(registry, call({ url, format: "text" }))).toEqual({
+          type: "error",
+          value: `Unable to fetch ${url}`,
+        })
+      }
+      expect(assertions).toEqual([])
+      expect(requests).toEqual([])
+    }),
+  )
+
+  it.effect("refuses redirects that target private hosts", () =>
+    Effect.gen(function* () {
+      reset()
+      respond = (request) =>
+        Effect.succeed(
+          new URL(request.url).pathname === "/redirect"
+            ? new Response("", { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data" } })
+            : new Response("ok", { headers: { "content-type": "text/plain" } }),
+        )
+      const registry = yield* ToolRegistry.Service
+      const url = "https://example.com/redirect"
 
       expect(yield* executeTool(registry, call({ url, format: "text" }))).toEqual({
-        type: "text",
-        value: "hello",
+        type: "error",
+        value: `Unable to fetch ${url}`,
       })
-      expect(assertions).toMatchObject([
-        { sessionID, action: "webfetch", resources: [url], save: ["*"], metadata: { url, format: "text" } },
-      ])
       expect(requests.map((request) => request.url)).toEqual([url])
     }),
   )
 
-  live.effect("follows redirects while approving only the requested URL", () =>
-    Effect.acquireUseRelease(
-      Effect.sync(() =>
-        Bun.serve({
-          port: 0,
-          fetch: (request) =>
-            new URL(request.url).pathname === "/redirect"
-              ? new Response("", { status: 302, headers: { location: "/target" } })
-              : new Response("redirected", { headers: { "content-type": "text/plain" } }),
-        }),
-      ),
-      (server) =>
-        Effect.gen(function* () {
-          reset()
-          const registry = yield* ToolRegistry.Service
-          const url = new URL("/redirect", server.url).toString()
+  it.effect("rejects domains whose resolution reaches private or reserved space", () =>
+    Effect.gen(function* () {
+      reset()
+      const registry = yield* ToolRegistry.Service
 
-          expect(yield* executeTool(registry, call({ url, format: "text" }))).toEqual({
-            type: "text",
-            value: "redirected",
-          })
-          expect(assertions).toMatchObject([
-            { sessionID, action: "webfetch", resources: [url], save: ["*"], metadata: { url, format: "text" } },
-          ])
-        }),
-      (server) => Effect.promise(() => server.stop(true)),
-    ),
+      resolve = () => Promise.resolve([{ address: "127.0.0.1" }])
+      expect(yield* executeTool(registry, call({ url: "http://rebind.example.com/", format: "text" }))).toEqual({
+        type: "error",
+        value: "Unable to fetch http://rebind.example.com/",
+      })
+      resolve = () => Promise.resolve([{ address: "93.184.216.34" }, { address: "10.0.0.1" }])
+      expect(yield* executeTool(registry, call({ url: "http://mixed.example.com/", format: "text" }))).toEqual({
+        type: "error",
+        value: "Unable to fetch http://mixed.example.com/",
+      })
+      resolve = () => Promise.resolve([{ address: "::ffff:169.254.169.254" }])
+      expect(yield* executeTool(registry, call({ url: "http://v6.example.com/", format: "text" }))).toEqual({
+        type: "error",
+        value: "Unable to fetch http://v6.example.com/",
+      })
+      expect(assertions).toEqual([])
+      expect(requests).toEqual([])
+    }),
+  )
+
+  it.effect("rejects domains when resolution fails or returns nothing (fail-closed)", () =>
+    Effect.gen(function* () {
+      reset()
+      const registry = yield* ToolRegistry.Service
+
+      resolve = () => Promise.reject(new Error("ENOTFOUND"))
+      expect(yield* executeTool(registry, call({ url: "http://missing.example.com/", format: "text" }))).toEqual({
+        type: "error",
+        value: "Unable to fetch http://missing.example.com/",
+      })
+      resolve = () => Promise.resolve([])
+      expect(yield* executeTool(registry, call({ url: "http://empty.example.com/", format: "text" }))).toEqual({
+        type: "error",
+        value: "Unable to fetch http://empty.example.com/",
+      })
+      expect(assertions).toEqual([])
+      expect(requests).toEqual([])
+    }),
+  )
+
+  it.effect("allows domains that resolve to public addresses", () =>
+    Effect.gen(function* () {
+      reset()
+      resolve = () => Promise.resolve([{ address: "93.184.216.34" }, { address: "2606:2800:220:1:248:1893:25c8:1946" }])
+      const registry = yield* ToolRegistry.Service
+
+      expect(yield* settleTool(registry, call({ url: "http://public.example.com/", format: "text" }))).toEqual({
+        result: { type: "text", value: "hello" },
+        output: {
+          structured: {
+            url: "http://public.example.com/",
+            contentType: "text/plain",
+            format: "text",
+            output: "hello",
+          },
+          content: [{ type: "text", text: "hello" }],
+        },
+      })
+    }),
+  )
+
+  it.effect("re-validates DNS resolution on every redirect hop", () =>
+    Effect.gen(function* () {
+      reset()
+      respond = (request) =>
+        Effect.succeed(
+          new URL(request.url).pathname === "/redirect"
+            ? new Response("", { status: 302, headers: { location: "http://rebind.example.com/target" } })
+            : new Response("ok", { headers: { "content-type": "text/plain" } }),
+        )
+      const resolvedHosts: string[] = []
+      resolve = (host) => {
+        resolvedHosts.push(host)
+        return Promise.resolve([{ address: host.startsWith("rebind.") ? "127.0.0.1" : "93.184.216.34" }])
+      }
+      const registry = yield* ToolRegistry.Service
+      const url = "https://example.com/redirect"
+
+      expect(yield* executeTool(registry, call({ url, format: "text" }))).toEqual({
+        type: "error",
+        value: `Unable to fetch ${url}`,
+      })
+      expect(requests.map((request) => request.url)).toEqual([url])
+      // The resolver was consulted for the redirect target before the second hop
+      expect(resolvedHosts).toEqual(["example.com", "rebind.example.com"])
+    }),
+  )
+
+  it.effect("follows redirects between public hosts", () =>
+    Effect.gen(function* () {
+      reset()
+      respond = (request) =>
+        Effect.succeed(
+          new URL(request.url).pathname === "/redirect"
+            ? new Response("", { status: 302, headers: { location: "https://other.example.com/target" } })
+            : new Response("redirected", { headers: { "content-type": "text/plain" } }),
+        )
+      const registry = yield* ToolRegistry.Service
+
+      expect(yield* executeTool(registry, call({ url: "https://example.com/redirect", format: "text" }))).toEqual({
+        type: "text",
+        value: "redirected",
+      })
+      expect(requests.map((request) => request.url)).toEqual([
+        "https://example.com/redirect",
+        "https://other.example.com/target",
+      ])
+    }),
+  )
+
+  it.effect("caps redirect hops", () =>
+    Effect.gen(function* () {
+      reset()
+      respond = (request) =>
+        Effect.succeed(
+          new URL(request.url).pathname === "/final"
+            ? new Response("done", { headers: { "content-type": "text/plain" } })
+            : new Response("", { status: 302, headers: { location: "/hop" } }),
+        )
+      const registry = yield* ToolRegistry.Service
+
+      expect(yield* executeTool(registry, call({ url: "https://example.com/start", format: "text" }))).toEqual({
+        type: "error",
+        value: "Unable to fetch https://example.com/start",
+      })
+      expect(requests).toHaveLength(6)
+    }),
   )
 
   it.effect("rejects non-HTTP schemes before permission or transport", () =>
@@ -276,6 +442,82 @@ describe("WebFetchTool registration", () => {
       yield* TestClock.adjust(Duration.seconds(1))
 
       expect(yield* Fiber.join(fiber)).toEqual({ type: "error", value: "Unable to fetch https://1.1.1.1/slow" })
+    }),
+  )
+})
+
+describe("WebFetchTool connection-pinned DNS validation", () => {
+  itPinned.live("invokes the injected resolver when the request executes (pinning proof)", () =>
+    Effect.gen(function* () {
+      reset()
+      const calls: string[] = []
+      resolve = (host) => {
+        calls.push(host)
+        // A genuinely public address (the RFC 5737 TEST-NETs are refused by
+        // the guard): the connection itself need not succeed — what matters is
+        // that validation passed and the fetch resolved DNS through the pinned
+        // resolver.
+        return Promise.resolve([{ address: "93.184.216.34" }])
+      }
+      const registry = yield* ToolRegistry.Service
+      const url = "http://pinned.example.com/"
+
+      yield* executeTool(registry, call({ url, format: "text", timeout: 1 }))
+      // Pre-flight is the only other caller: a second invocation means the actual
+      // fetch resolved DNS through the injected (validated) resolver.
+      expect(calls.length).toBeGreaterThanOrEqual(2)
+      expect(calls.every((host) => host === "pinned.example.com")).toBe(true)
+    }),
+  )
+
+  itPinned.live("refuses a rebound hostname that only turns private at connect time", () =>
+    Effect.gen(function* () {
+      reset()
+      const answers = [["93.184.216.34"], ["169.254.169.254"]]
+      let n = 0
+      resolve = () => Promise.resolve(answers[Math.min(n++, 1)].map((address) => ({ address })))
+      const registry = yield* ToolRegistry.Service
+      const url = "http://rebind.example.com/"
+
+      expect(yield* executeTool(registry, call({ url, format: "text", timeout: 2 }))).toEqual({
+        type: "error",
+        value: `Unable to fetch ${url}`,
+      })
+      expect(n).toBeGreaterThanOrEqual(2)
+    }),
+  )
+
+  itPinned.live("refuses a mixed public and private answer set at connect time", () =>
+    Effect.gen(function* () {
+      reset()
+      const answers = [["93.184.216.34"], ["93.184.216.34", "10.0.0.1"]]
+      let n = 0
+      resolve = () => Promise.resolve(answers[Math.min(n++, 1)].map((address) => ({ address })))
+      const registry = yield* ToolRegistry.Service
+      const url = "http://mixed.example.com/"
+
+      expect(yield* executeTool(registry, call({ url, format: "text", timeout: 2 }))).toEqual({
+        type: "error",
+        value: `Unable to fetch ${url}`,
+      })
+      expect(n).toBeGreaterThanOrEqual(2)
+    }),
+  )
+
+  itPinned.live("fails closed when connect-time resolution returns nothing", () =>
+    Effect.gen(function* () {
+      reset()
+      const answers = [["93.184.216.34"], []]
+      let n = 0
+      resolve = () => Promise.resolve(answers[Math.min(n++, 1)].map((address) => ({ address })))
+      const registry = yield* ToolRegistry.Service
+      const url = "http://empty.example.com/"
+
+      expect(yield* executeTool(registry, call({ url, format: "text", timeout: 2 }))).toEqual({
+        type: "error",
+        value: `Unable to fetch ${url}`,
+      })
+      expect(n).toBeGreaterThanOrEqual(2)
     }),
   )
 })

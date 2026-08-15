@@ -41,7 +41,7 @@ it.live("headerTimeout does not abort delayed SSE body after headers arrive", ()
 
           expect(yield* Effect.promise(() => result.text)).toBe("late")
         }),
-      { config: providerConfig(server.url, { headerTimeout: 500 }) },
+      { trustedConfig: providerConfig(server.url, { headerTimeout: 500 }) },
     )
   }),
 )
@@ -75,7 +75,7 @@ it.live("chunkTimeout raises a response stream error when SSE body stalls", () =
           })
           expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
         }),
-      { config: providerConfig(server.url, { chunkTimeout: 50 }) },
+      { trustedConfig: providerConfig(server.url, { chunkTimeout: 50 }) },
     )
   }),
 )
@@ -107,7 +107,7 @@ it.live("headerTimeout aborts when response headers do not arrive", () =>
           })
           expect(errors.join("\n")).toContain("response headers timed out")
         }),
-      { config: providerConfig(server.url, { headerTimeout: 50 }) },
+      { trustedConfig: providerConfig(server.url, { headerTimeout: 50 }) },
     )
   }),
 )
@@ -131,7 +131,7 @@ it.live("headerTimeout is opt-in for non-OpenAI providers", () =>
 
           expect(yield* Effect.promise(() => result.text)).toBe("ok")
         }),
-      { config: providerConfig(server.url) },
+      { trustedConfig: providerConfig(server.url) },
     )
   }),
 )

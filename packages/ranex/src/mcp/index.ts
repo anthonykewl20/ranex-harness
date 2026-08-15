@@ -36,6 +36,41 @@ import { McpEvent } from "@ranex/schema/mcp-event"
 import { McpBrowser } from "./browser"
 
 const DEFAULT_TIMEOUT = 30_000
+
+// Minimal environment passed to spawned MCP servers unless a server opts into
+// inheritEnv, so provider API keys and other parent credentials never leak to
+// servers that only need a working process environment.
+const INHERITED_ENV_KEYS = new Set([
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "LANG",
+  "TERM",
+  "SHELL",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+])
+
+export function localServerEnv(
+  parent: Record<string, string | undefined>,
+  mcp: Pick<ConfigMCPV1.Local, "environment" | "inheritEnv">,
+) {
+  const base: Record<string, string> = {}
+  for (const [key, value] of Object.entries(parent)) {
+    if (value === undefined) continue
+    if (mcp.inheritEnv || INHERITED_ENV_KEYS.has(key) || key.startsWith("LC_")) base[key] = value
+  }
+  return { ...base, ...mcp.environment }
+}
 const CLIENT_OPTIONS = {
   capabilities: {
     // https://github.com/anomalyco/opencode/issues/11948
@@ -120,8 +155,11 @@ function isMcpConfigured(entry: McpEntry): entry is ConfigMCPV1.Info {
   return typeof entry === "object" && entry !== null && "type" in entry
 }
 
-function remoteURL(value: string) {
-  if (URL.canParse(value)) return new URL(value)
+export function remoteURL(value: string) {
+  if (!URL.canParse(value)) return
+  const url = new URL(value)
+  if (url.protocol !== "http:" && url.protocol !== "https:") return
+  return url
 }
 
 interface CreateResult {
@@ -350,9 +388,8 @@ const layer = Layer.effect(
         args,
         cwd,
         env: {
-          ...process.env,
+          ...localServerEnv(process.env, mcp),
           ...(cmd === "opencode" ? { BUN_BE_BUN: "1" } : {}),
-          ...mcp.environment,
         },
       })
 

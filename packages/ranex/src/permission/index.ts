@@ -29,11 +29,26 @@ export function evaluate(permission: string, pattern: string, ...rulesets: Permi
   return (
     rulesets
       .flat()
-      .findLast((rule) => Wildcard.match(permission, rule.permission) && Wildcard.match(pattern, rule.pattern)) ?? {
-      action: "ask",
-      permission,
-      pattern: "*",
-    }
+      .findLast(
+        (rule) =>
+          // Action/permission-name matching is pinned case-sensitive: the
+          // action vocabulary is lowercase by convention, and a widened
+          // (case-insensitive) default here let an uppercase rule like
+          // "BASH" silently match a lowercase "bash" request. Only resource
+          // matching below is effect-aware.
+          Wildcard.match(permission, rule.permission, { caseInsensitive: false }) &&
+          // POSIX allow rules match resource casing strictly so `allow
+          // Secrets/*` cannot widen to `secrets/x`; deny/ask rules stay broad
+          // to prevent casing bypass. win32 is case-insensitive throughout.
+          // Mirrors core's PermissionV2.evaluate.
+          Wildcard.match(pattern, rule.pattern, {
+            caseInsensitive: process.platform === "win32" || rule.action !== "allow",
+          }),
+      ) ?? {
+        action: "ask",
+        permission,
+        pattern: "*",
+      }
   )
 }
 
@@ -207,7 +222,9 @@ export function disabled(tools: string[], ruleset: PermissionV1.Ruleset): Set<st
   return new Set(
     tools.filter((tool) => {
       const permission = edits.includes(tool) ? "edit" : reads.includes(tool) ? "read" : tool
-      const rule = ruleset.findLast((rule) => Wildcard.match(permission, rule.permission))
+      const rule = ruleset.findLast((rule) =>
+        Wildcard.match(permission, rule.permission, { caseInsensitive: false }),
+      )
       return rule?.pattern === "*" && rule.action === "deny"
     }),
   )

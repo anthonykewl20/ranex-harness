@@ -42,7 +42,14 @@ const layer = Layer.effect(
         yield* Deferred.await(ready)
         return (
           statements.findLast(
-            (statement) => Wildcard.match(action, statement.action) && Wildcard.match(resource, statement.resource),
+            (statement) =>
+              Wildcard.match(action, statement.action) &&
+              // POSIX allow statements match resource casing strictly;
+              // deny statements stay broad to prevent casing bypass. win32 is
+              // case-insensitive throughout.
+              Wildcard.match(resource, statement.resource, {
+                caseInsensitive: process.platform === "win32" || statement.effect !== "allow",
+              }),
           )?.effect ?? fallback
         )
       }),

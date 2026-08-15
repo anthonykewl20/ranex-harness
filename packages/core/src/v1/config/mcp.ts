@@ -14,6 +14,10 @@ export const Local = Schema.Struct({
   environment: Schema.optional(Schema.Record(Schema.String, Schema.String)).annotate({
     description: "Environment variables to set when running the MCP server",
   }),
+  inheritEnv: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Pass the full parent environment to this MCP server — only for servers you trust. Defaults to false, which passes only a minimal allowlist (PATH, HOME, locale, proxy, and XDG variables).",
+  }),
   enabled: Schema.optional(Schema.Boolean).annotate({
     description: "Enable or disable the MCP server on startup",
   }),

@@ -121,7 +121,9 @@ describe("WriteTool", () => {
             expect(yield* Effect.promise(() => fs.readFile(path.join(tmp.path, "src", "new.txt"), "utf8"))).toBe(
               "created",
             )
-            expect(assertions).toMatchObject([{ sessionID, action: "edit", resources: ["src/new.txt"], save: ["*"] }])
+            expect(assertions).toMatchObject([
+              { sessionID, action: "edit", resources: ["src/new.txt"], save: ["src/new.txt"] },
+            ])
             expect(writes).toEqual([path.join(yield* Effect.promise(() => fs.realpath(tmp.path)), "src", "new.txt")])
           }),
         )
@@ -223,7 +225,10 @@ describe("WriteTool", () => {
                   path.join(yield* Effect.promise(() => fs.realpath(outside.path)), "*").replaceAll("\\", "/"),
                 ],
               })
-              expect(assertions[1]).toMatchObject({ resources: [canonicalTarget.replaceAll("\\", "/")], save: ["*"] })
+              expect(assertions[1]).toMatchObject({
+                resources: [canonicalTarget.replaceAll("\\", "/")],
+                save: [canonicalTarget.replaceAll("\\", "/")],
+              })
               expect(settled.output?.structured).toMatchObject({
                 target: canonicalTarget,
                 resource: canonicalTarget.replaceAll("\\", "/"),

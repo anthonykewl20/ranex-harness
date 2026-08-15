@@ -83,4 +83,31 @@ describe("Policy", () => {
       expect(yield* policy.evaluate("provider.use", "openai", "allow")).toBe("deny")
     }),
   )
+
+  it.effect("keeps POSIX allow statements casing-strict while deny statements match broadly", () =>
+    Effect.gen(function* () {
+      const policy = yield* Policy.Service
+      yield* policy.load([
+        new Policy.Info({
+          effect: "allow",
+          action: "provider.use",
+          resource: "Secrets/*",
+        }),
+      ])
+
+      expect(yield* policy.evaluate("provider.use", "Secrets/x", "deny")).toBe("allow")
+      expect(yield* policy.evaluate("provider.use", "secrets/x", "deny")).toBe("deny")
+
+      yield* policy.load([
+        new Policy.Info({
+          effect: "deny",
+          action: "provider.use",
+          resource: "Secrets/*",
+        }),
+      ])
+
+      expect(yield* policy.evaluate("provider.use", "secrets/x", "allow")).toBe("deny")
+      expect(yield* policy.evaluate("provider.use", "Secrets/x", "allow")).toBe("deny")
+    }),
+  )
 })

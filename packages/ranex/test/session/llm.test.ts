@@ -821,7 +821,7 @@ describe("session.llm.stream", () => {
         expect(reasoning).toBe("high")
       }),
     {
-      config: () => ({
+      trustedConfig: () => ({
         enabled_providers: [vivgridFixture.providerID],
         provider: {
           [vivgridFixture.providerID]: {
@@ -895,7 +895,7 @@ describe("session.llm.stream", () => {
         expect(assistant && "reasoning_content" in assistant).toBe(false)
       }),
     {
-      config: () => ({
+      trustedConfig: () => ({
         enabled_providers: [cerebrasFixture.providerID],
         provider: {
           [cerebrasFixture.providerID]: {
@@ -1006,7 +1006,7 @@ describe("session.llm.stream", () => {
         })
       }),
     {
-      config: () => ({
+      trustedConfig: () => ({
         enabled_providers: [mistralFixture.providerID],
         provider: {
           [mistralFixture.providerID]: {
@@ -1069,7 +1069,7 @@ describe("session.llm.stream", () => {
         yield* Effect.promise(() => Promise.race([pending.requestAborted, timeout(500)]).catch(() => undefined))
       }),
     {
-      config: () => ({
+      trustedConfig: () => ({
         enabled_providers: [alibabaQwenFixture.providerID],
         provider: {
           [alibabaQwenFixture.providerID]: {
@@ -1137,7 +1137,7 @@ describe("session.llm.stream", () => {
         expect(tools?.some((item) => item.function?.name === "question")).toBe(true)
       }),
     {
-      config: () => ({
+      trustedConfig: () => ({
         enabled_providers: [alibabaQwenFixture.providerID],
         provider: {
           [alibabaQwenFixture.providerID]: {
@@ -1239,7 +1239,7 @@ describe("session.llm.stream", () => {
         const maxTokens = body.max_output_tokens as number | undefined
         expect(maxTokens).toBe(undefined) // match codex cli behavior
       }),
-    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
+    { trustedConfig: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
   )
 
   it.instance(
@@ -1340,7 +1340,7 @@ describe("session.llm.stream", () => {
         expect(capture.url.pathname.endsWith("/responses")).toBe(true)
         expect(capture.body.model).toBe(resolved.api.id)
       }),
-    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
+    { trustedConfig: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
   )
 
   it.instance(
@@ -1407,7 +1407,7 @@ describe("session.llm.stream", () => {
         expect(JSON.stringify(capture.body.input)).toContain("You are a helpful assistant.")
         expect(capture.body.input).toContainEqual({ role: "user", content: [{ type: "input_text", text: "Hello" }] })
       }),
-    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
+    { trustedConfig: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
   )
 
   it.instance(
@@ -1507,7 +1507,7 @@ describe("session.llm.stream", () => {
         ])
         expect(executed).toEqual({ args: { query: "weather" }, toolCallId: "call-injected-tool" })
       }),
-    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, "https://injected-openai.test/v1") },
+    { trustedConfig: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, "https://injected-openai.test/v1") },
   )
 
   it.instance(
@@ -1597,7 +1597,7 @@ describe("session.llm.stream", () => {
         expect(executed).toEqual({ args: { query: "weather" }, toolCallId: "call-native-tool" })
       }),
     {
-      config: () => {
+      trustedConfig: () => {
         const model = loadFixture("openai", "gpt-5.2").model
         return {
           enabled_providers: ["openai"],
@@ -1709,7 +1709,7 @@ describe("session.llm.stream", () => {
         const capture = yield* Effect.promise(() => request)
         expect(capture.url.pathname.endsWith("/responses")).toBe(true)
       }),
-    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
+    { trustedConfig: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
   )
 
   const minimaxFixture = { providerID: "minimax", modelID: "MiniMax-M2.5" }
@@ -1800,7 +1800,7 @@ describe("session.llm.stream", () => {
         expect(body.top_p).toBe(0.9)
       }),
     {
-      config: () => ({
+      trustedConfig: () => ({
         enabled_providers: [minimaxFixture.providerID],
         provider: {
           [minimaxFixture.providerID]: {
@@ -2018,7 +2018,7 @@ describe("session.llm.stream", () => {
         })
       }),
     {
-      config: () => {
+      trustedConfig: () => {
         const model = loadFixture("anthropic", "claude-opus-4-6").model
         return {
           enabled_providers: ["anthropic"],
@@ -2102,7 +2102,7 @@ describe("session.llm.stream", () => {
         expect(config?.maxOutputTokens).toBe(ProviderTransform.maxOutputTokens(resolved))
       }),
     {
-      config: () => ({
+      trustedConfig: () => ({
         enabled_providers: [geminiFixture.providerID],
         provider: {
           [geminiFixture.providerID]: {

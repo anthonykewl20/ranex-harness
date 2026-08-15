@@ -378,17 +378,30 @@ describe("HttpApi UI fallback", () => {
     }),
   )
 
-  it.live("accepts auth token for the web UI", () =>
+  it.live("accepts auth tickets for the web UI", () =>
     Effect.gen(function* () {
       const response = yield* uiApp({
         password: "secret",
         username: "ranex",
         disableEmbeddedWebUi: true,
         client: httpClient(new Response("<html>opencode</html>", { headers: { "content-type": "text/html" } })),
-      }).request(`/?auth_token=${btoa("ranex:secret")}`)
+      }).request(`/?auth_token=${encodeURIComponent(ServerAuth.mintTicket("secret").ticket)}`)
 
       expect(response.status).toBe(200)
       expect(yield* responseText(response)).toBe("<html>opencode</html>")
+    }),
+  )
+
+  it.live("rejects Basic credentials in the URL for the web UI", () =>
+    Effect.gen(function* () {
+      const response = yield* uiApp({
+        password: "secret",
+        username: "ranex",
+        disableEmbeddedWebUi: true,
+      }).request(`/?auth_token=${btoa("ranex:secret")}`)
+
+      expect(response.status).toBe(401)
+      expect(response.headers.get("www-authenticate")).toContain('error="invalid_request"')
     }),
   )
 
@@ -451,6 +464,75 @@ describe("HttpApi UI fallback", () => {
 
       expect(response.status).toBe(204)
       expect(response.headers.get("access-control-allow-origin")).toBe("http://localhost:3000")
+    }),
+  )
+
+  it.live("returns 404 instead of proxying POST requests to the UI catch-all", () =>
+    Effect.gen(function* () {
+      let proxiedUrl: string | undefined
+
+      const response = yield* uiApp({
+        password: "secret",
+        username: "ranex",
+        disableEmbeddedWebUi: true,
+        client: httpClient(new Response("should not be served"), (request) => {
+          proxiedUrl = request.url
+        }),
+      }).request("/", {
+        method: "POST",
+        headers: { authorization: `Basic ${btoa("ranex:secret")}` },
+      })
+
+      expect(response.status).toBe(404)
+      expect(proxiedUrl).toBeUndefined()
+    }),
+  )
+
+  it.live("returns 404 instead of proxying /api paths", () =>
+    Effect.gen(function* () {
+      let proxiedUrl: string | undefined
+
+      const response = yield* uiApp({
+        password: "secret",
+        username: "ranex",
+        disableEmbeddedWebUi: true,
+        client: httpClient(new Response("should not be served"), (request) => {
+          proxiedUrl = request.url
+        }),
+      }).request("/api/unknown-endpoint", {
+        headers: { authorization: `Basic ${btoa("ranex:secret")}` },
+      })
+
+      expect(response.status).toBe(404)
+      expect(proxiedUrl).toBeUndefined()
+    }),
+  )
+
+  it.live("strips client credentials from proxied upstream requests", () =>
+    Effect.gen(function* () {
+      let proxiedHeaders: Record<string, unknown> | undefined
+
+      const response = yield* uiApp({
+        password: "secret",
+        username: "ranex",
+        disableEmbeddedWebUi: true,
+        client: httpClient(new Response("<html>opencode</html>", { headers: { "content-type": "text/html" } }), (request) => {
+          proxiedHeaders = request.headers
+        }),
+      }).request("/", {
+        headers: {
+          authorization: `Basic ${btoa("ranex:secret")}`,
+          cookie: "session=abc",
+          "x-api-key": "key",
+          "x-auth-token": "token",
+        },
+      })
+
+      expect(response.status).toBe(200)
+      expect(proxiedHeaders?.authorization).toBeUndefined()
+      expect(proxiedHeaders?.cookie).toBeUndefined()
+      expect(proxiedHeaders?.["x-api-key"]).toBeUndefined()
+      expect(proxiedHeaders?.["x-auth-token"]).toBeUndefined()
     }),
   )
 })

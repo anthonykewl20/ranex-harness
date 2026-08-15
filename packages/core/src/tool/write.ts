@@ -79,7 +79,7 @@ const layer = Layer.effectDiscard(
                 yield* permission.assert({
                   action: "edit",
                   resources: [target.resource],
-                  save: ["*"],
+                  save: [target.resource],
                   sessionID: context.sessionID,
                   agent: context.agent,
                   source,

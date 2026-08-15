@@ -11,8 +11,12 @@ const hop = new Set([
   "host",
 ])
 
+// End-client credentials must never ride along to upstream origins.
+const credentials = new Set(["authorization", "cookie", "x-api-key", "x-auth-token"])
+
 function sanitize(out: Headers) {
   for (const key of hop) out.delete(key)
+  for (const key of credentials) out.delete(key)
   out.delete("accept-encoding")
   out.delete("x-opencode-directory")
   out.delete("x-opencode-workspace")
