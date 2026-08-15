@@ -40,8 +40,7 @@ import { SessionDurable } from "@ranex/schema/durable-event-manifest"
 import { EventTable } from "./event/sql"
 import { ManagedOutput } from "@ranex/schema/managed-output"
 import { ProjectedEvent } from "./projected-event"
-import { Global } from "./global"
-import { MANAGED_DIRECTORY } from "./tool-output-store"
+import { ToolOutputStore } from "./tool-output-store"
 
 export const RevertState = Revert.State
 export type RevertState = Revert.State
@@ -397,7 +396,7 @@ const layer = Layer.effect(
         return event && isDurableSessionEvent(event) ? event : undefined
       }),
       toolOutput: Effect.fn("V2Session.toolOutput")(function* (input) {
-        yield* result.get(input.sessionID)
+        const session = yield* result.get(input.sessionID)
         const rows = yield* db
           .select({ data: EventTable.data })
           .from(EventTable)
@@ -430,24 +429,16 @@ const layer = Layer.effect(
           events.outputFetch?.("not-found")
           return undefined
         }
-        const outputDirectory = path.resolve(path.join(Global.Path.data, MANAGED_DIRECTORY))
-        const resolvedOutputPath = path.resolve(outputPath)
-        if (!resolvedOutputPath.startsWith(outputDirectory + path.sep)) {
-          events.outputFetch?.("expired")
-          return yield* new ManagedOutputExpiredError({ outputID: input.outputID })
-        }
-        const timestamp = typeof match.timestamp === "string" ? Date.parse(match.timestamp) : Number(match.timestamp)
-        if (!Number.isFinite(timestamp) || timestamp < Date.now() - 7 * 24 * 60 * 60 * 1_000) {
-          events.outputFetch?.("expired")
-          return yield* new ManagedOutputExpiredError({ outputID: input.outputID })
-        }
-        const file = Bun.file(resolvedOutputPath)
-        if (!(yield* Effect.promise(() => file.exists()))) {
+        const output = yield* ToolOutputStore.Service.pipe(
+          Effect.flatMap((store) => store.readManaged({ path: outputPath, createdAt: match.timestamp })),
+          Effect.provide(locations.get(session.location)),
+        )
+        if (output._tag === "Expired") {
           events.outputFetch?.("expired")
           return yield* new ManagedOutputExpiredError({ outputID: input.outputID })
         }
         events.outputFetch?.("hit")
-        return new Uint8Array(yield* Effect.promise(() => file.arrayBuffer()))
+        return output.bytes
       }),
       prompt: Effect.fn("V2Session.prompt")((input) =>
         Effect.uninterruptible(
