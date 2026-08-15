@@ -42,14 +42,17 @@ export const WorktreeAdapter: WorkspaceAdapter = {
       ),
     )
     const base = await AppRuntime.runPromise(
-      provideContext(Git.Service.use((svc) => svc.run(["rev-parse", "HEAD"], { cwd: requireInstance(context).worktree })), context),
+      provideContext(
+        Git.Service.use((svc) => svc.run(["rev-parse", "HEAD"], { cwd: requireInstance(context).worktree })),
+        context,
+      ),
     )
     if (base.exitCode !== 0 || !base.text().trim()) throw new Error("Worktree adapter failed to resolve base SHA")
     return {
       ...info,
-        name: next.name,
-        directory: next.directory,
-        baseSha: base.text().trim(),
+      name: next.name,
+      directory: next.directory,
+      baseSha: base.text().trim(),
     }
   },
   async create(info, _env, _from, context) {

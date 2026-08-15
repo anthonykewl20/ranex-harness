@@ -21,10 +21,9 @@ import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
  */
 type PinnedInfo = Worktree.Info & { readonly baseSha: string }
 
-const layer = LayerNode.compile(
-  LayerNode.group([Worktree.node, FSUtil.node, Git.node, EventV2Bridge.node]),
-  [[InstanceStore.bootstrapNode, InstanceBootstrap.node]],
-)
+const layer = LayerNode.compile(LayerNode.group([Worktree.node, FSUtil.node, Git.node, EventV2Bridge.node]), [
+  [InstanceStore.bootstrapNode, InstanceBootstrap.node],
+])
 const it = testEffect(layer)
 
 const failingStoreLayer = LayerNode.compile(LayerNode.group([Worktree.node, FSUtil.node, Git.node]), [
@@ -90,7 +89,10 @@ describe("Worktree.createFromInfo provisioning (SLICE-020)", () => {
         const info = yield* pinnedInfo("failed-provisioning")
         const missing = { ...info, baseSha: "f".repeat(40) } as PinnedInfo
 
-        yield* expectCreateFailure(Worktree.Service.use((svc) => svc.createFromInfo(missing)), missing.directory)
+        yield* expectCreateFailure(
+          Worktree.Service.use((svc) => svc.createFromInfo(missing)),
+          missing.directory,
+        )
         const worktrees = yield* git(test.directory, ["worktree", "list", "--porcelain"])
         expect(worktrees).not.toContain(missing.directory)
       }),
@@ -109,12 +111,9 @@ describe("Worktree.createFromInfo provisioning (SLICE-020)", () => {
         const svc = yield* Worktree.Service
         yield* svc.createFromInfo(info)
         const events = yield* EventV2Bridge.Service
-        const ready = yield* events.durable({ aggregateID: info.name }).pipe(
-          Stream.take(1),
-          Stream.runCollect,
-          Effect.timeout("2 seconds"),
-          Effect.exit,
-        )
+        const ready = yield* events
+          .durable({ aggregateID: info.name })
+          .pipe(Stream.take(1), Stream.runCollect, Effect.timeout("2 seconds"), Effect.exit)
         if (!Exit.isSuccess(ready)) yield* discardWorktree(info.directory)
         expect(Exit.isSuccess(ready)).toBe(true)
         const branch = yield* git(info.directory, ["symbolic-ref", "--short", "HEAD"])
@@ -147,7 +146,11 @@ describe("Worktree.createFromInfo provisioning (SLICE-020)", () => {
 
         yield* expectCreateFailure(
           Worktree.Service.use((svc) =>
-            awaitWithTimeout(svc.createFromInfo(missingObject), "createFromInfo hung while resetting the pinned base", "10 seconds"),
+            awaitWithTimeout(
+              svc.createFromInfo(missingObject),
+              "createFromInfo hung while resetting the pinned base",
+              "10 seconds",
+            ),
           ),
           missingObject.directory,
         )
@@ -160,7 +163,10 @@ describe("Worktree.createFromInfo provisioning (SLICE-020)", () => {
     () =>
       Effect.gen(function* () {
         const info = yield* pinnedInfo("store-load-failure")
-        yield* expectCreateFailure(Worktree.Service.use((svc) => svc.createFromInfo(info)), info.directory)
+        yield* expectCreateFailure(
+          Worktree.Service.use((svc) => svc.createFromInfo(info)),
+          info.directory,
+        )
       }),
     { git: true },
   )
@@ -174,14 +180,14 @@ describe("Worktree.createFromInfo provisioning (SLICE-020)", () => {
         if (!info.branch) throw new Error("test requires a branch worktree")
         yield* git(test.directory, ["branch", "opencode"])
 
-        yield* expectCreateFailure(Worktree.Service.use((svc) => svc.createFromInfo(info)), info.directory)
-        const events = yield* EventV2Bridge.Service
-        const failed = yield* events.durable({ aggregateID: info.name }).pipe(
-          Stream.take(1),
-          Stream.runCollect,
-          Effect.timeout("2 seconds"),
-          Effect.exit,
+        yield* expectCreateFailure(
+          Worktree.Service.use((svc) => svc.createFromInfo(info)),
+          info.directory,
         )
+        const events = yield* EventV2Bridge.Service
+        const failed = yield* events
+          .durable({ aggregateID: info.name })
+          .pipe(Stream.take(1), Stream.runCollect, Effect.timeout("2 seconds"), Effect.exit)
         expect(Exit.isSuccess(failed)).toBe(true)
       }),
     { git: true },
@@ -245,12 +251,9 @@ describe("Worktree.createFromInfo provisioning (SLICE-020)", () => {
         const events = yield* EventV2Bridge.Service
         const readyInfo = yield* pinnedInfo("durable-ready")
         yield* Worktree.Service.use((svc) => svc.createFromInfo(readyInfo))
-        const ready = yield* events.durable({ aggregateID: readyInfo.name }).pipe(
-          Stream.take(1),
-          Stream.runCollect,
-          Effect.timeout("2 seconds"),
-          Effect.exit,
-        )
+        const ready = yield* events
+          .durable({ aggregateID: readyInfo.name })
+          .pipe(Stream.take(1), Stream.runCollect, Effect.timeout("2 seconds"), Effect.exit)
         if (!Exit.isSuccess(ready)) yield* discardWorktree(readyInfo.directory)
         expect(Exit.isSuccess(ready)).toBe(true)
         if (Exit.isSuccess(ready)) {
@@ -262,12 +265,9 @@ describe("Worktree.createFromInfo provisioning (SLICE-020)", () => {
 
         const failedInfo = { ...(yield* pinnedInfo("durable-failed")), baseSha: "0".repeat(40) } as PinnedInfo
         yield* Effect.exit(Worktree.Service.use((svc) => svc.createFromInfo(failedInfo)))
-        const failed = yield* events.durable({ aggregateID: failedInfo.name }).pipe(
-          Stream.take(1),
-          Stream.runCollect,
-          Effect.timeout("2 seconds"),
-          Effect.exit,
-        )
+        const failed = yield* events
+          .durable({ aggregateID: failedInfo.name })
+          .pipe(Stream.take(1), Stream.runCollect, Effect.timeout("2 seconds"), Effect.exit)
         expect(Exit.isSuccess(failed)).toBe(true)
         if (Exit.isSuccess(failed)) {
           const event = Array.from(failed.value)[0]
@@ -294,12 +294,9 @@ describe("Worktree.createFromInfo provisioning (SLICE-020)", () => {
         expect(successes.length).toBeGreaterThanOrEqual(1)
         expect(successes.length).toBeLessThanOrEqual(2)
         const events = yield* EventV2Bridge.Service
-        const ready = yield* events.durable({ aggregateID: info.name }).pipe(
-          Stream.take(1),
-          Stream.runCollect,
-          Effect.timeout("2 seconds"),
-          Effect.exit,
-        )
+        const ready = yield* events
+          .durable({ aggregateID: info.name })
+          .pipe(Stream.take(1), Stream.runCollect, Effect.timeout("2 seconds"), Effect.exit)
         if (!Exit.isSuccess(ready)) yield* discardWorktree(info.directory)
         expect(Exit.isSuccess(ready)).toBe(true)
         const head = yield* git(info.directory, ["rev-parse", "HEAD"])
@@ -343,7 +340,9 @@ describe("Worktree.createFromInfo provisioning (SLICE-020)", () => {
           extra: null,
           projectID: instance.project.id,
         } satisfies WorkspaceInfo
-        const configured = yield* Effect.tryPromise(() => Promise.resolve(WorktreeAdapter.configure(input, { instance })))
+        const configured = yield* Effect.tryPromise(() =>
+          Promise.resolve(WorktreeAdapter.configure(input, { instance })),
+        )
 
         expect((configured as WorkspaceInfo & { baseSha?: unknown }).baseSha).toMatch(/^[0-9a-f]{40}$/)
         const baseSha = (configured as WorkspaceInfo & { baseSha: string }).baseSha
@@ -358,7 +357,9 @@ describe("Worktree.createFromInfo provisioning (SLICE-020)", () => {
   it.live("never changes the process working directory from src/worktree", () =>
     Effect.promise(async () => {
       const files = new Array<string>()
-      for await (const file of new Bun.Glob("src/worktree/**/*.ts").scan({ cwd: path.resolve(import.meta.dir, "../..") })) {
+      for await (const file of new Bun.Glob("src/worktree/**/*.ts").scan({
+        cwd: path.resolve(import.meta.dir, "../.."),
+      })) {
         files.push(file)
       }
       expect(files.length).toBeGreaterThan(0)

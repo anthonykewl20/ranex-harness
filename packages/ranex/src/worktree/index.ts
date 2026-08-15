@@ -236,7 +236,9 @@ const layer: Layer.Layer<
       const pruned = yield* git(["worktree", "prune"], { cwd: ctx.worktree })
       yield* logProvisioning(info, "worktree_prune", pruned.code, startedAt)
       if (pruned.code !== 0) {
-        return yield* new CreateFailedError({ message: pruned.stderr || pruned.text || "Failed to prune git worktrees" })
+        return yield* new CreateFailedError({
+          message: pruned.stderr || pruned.text || "Failed to prune git worktrees",
+        })
       }
 
       const root = yield* canonical(pathSvc.join(Global.Path.data, "worktree", ctx.project.id))
@@ -289,7 +291,9 @@ const layer: Layer.Layer<
       const head = yield* git(["rev-parse", "HEAD"], { cwd: info.directory })
       yield* logProvisioning(info, "verify_head", head.code, startedAt)
       if (head.code !== 0 || head.text.trim() !== baseSha) {
-        return yield* new CreateFailedError({ message: head.stderr || head.text || "Worktree HEAD did not match pinned base" })
+        return yield* new CreateFailedError({
+          message: head.stderr || head.text || "Worktree HEAD did not match pinned base",
+        })
       }
     })
 
@@ -298,7 +302,9 @@ const layer: Layer.Layer<
       const populated = yield* git(["reset", "--hard", baseSha], { cwd: info.directory })
       yield* logProvisioning(info, "reset", populated.code, startedAt)
       if (populated.code !== 0) {
-        return yield* new CreateFailedError({ message: populated.stderr || populated.text || "Failed to populate worktree" })
+        return yield* new CreateFailedError({
+          message: populated.stderr || populated.text || "Failed to populate worktree",
+        })
       }
 
       yield* verifyHead(info, baseSha, startedAt)
@@ -309,9 +315,13 @@ const layer: Layer.Layer<
         return yield* new CreateFailedError({ message: status.stderr || status.text || "Worktree was not clean" })
       }
 
-      yield* store.load({ directory: info.directory, worktree: info.directory, project: ctx.project }).pipe(
-        Effect.mapError((error) => new CreateFailedError({ message: errorMessage(error) || "Failed to load worktree instance" })),
-      )
+      yield* store
+        .load({ directory: info.directory, worktree: info.directory, project: ctx.project })
+        .pipe(
+          Effect.mapError(
+            (error) => new CreateFailedError({ message: errorMessage(error) || "Failed to load worktree instance" }),
+          ),
+        )
       yield* logProvisioning(info, "instance_load", 0, startedAt)
     })
 
@@ -357,7 +367,9 @@ const layer: Layer.Layer<
       const ctx = yield* InstanceState.context
       const base = yield* git(["rev-parse", "HEAD"], { cwd: ctx.worktree })
       if (base.code !== 0 || !base.text.trim()) {
-        return yield* new CreateFailedError({ message: base.stderr || base.text || "Failed to resolve worktree base SHA" })
+        return yield* new CreateFailedError({
+          message: base.stderr || base.text || "Failed to resolve worktree base SHA",
+        })
       }
       const pinned = { ...info, baseSha: base.text.trim() }
       yield* createFromInfo(pinned, input?.startCommand)
@@ -702,7 +714,16 @@ const layer: Layer.Layer<
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [FSUtil.node, path, AppProcess.node, Git.node, Project.node, InstanceStore.node, Database.node, EventV2Bridge.node],
+  deps: [
+    FSUtil.node,
+    path,
+    AppProcess.node,
+    Git.node,
+    Project.node,
+    InstanceStore.node,
+    Database.node,
+    EventV2Bridge.node,
+  ],
 })
 
 export * as Worktree from "."
