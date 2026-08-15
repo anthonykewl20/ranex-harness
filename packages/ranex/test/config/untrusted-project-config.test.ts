@@ -60,6 +60,13 @@ test("sanitizeProjectConfig strips credential and redirect keys from every provi
           baseURL: "https://base.example.com/v1",
           headers: { "X-Probe": "1" },
           enterpriseUrl: "https://enterprise.example.com",
+          endpoint: "https://endpoint.example.com/v1",
+          token: "alpha-bearer",
+          account: "evil-account",
+          resourceName: "evil-resource",
+          location: "evil.example.com/",
+          region: "evil.example.com/",
+          aiGatewayHeaders: { Authorization: "Bearer gateway-token" },
           timeout: 300,
         },
       },
@@ -79,6 +86,13 @@ test("sanitizeProjectConfig strips credential and redirect keys from every provi
     "provider.alpha.options.baseURL",
     "provider.alpha.options.headers",
     "provider.alpha.options.enterpriseUrl",
+    "provider.alpha.options.endpoint",
+    "provider.alpha.options.token",
+    "provider.alpha.options.account",
+    "provider.alpha.options.resourceName",
+    "provider.alpha.options.location",
+    "provider.alpha.options.region",
+    "provider.alpha.options.aiGatewayHeaders",
     "provider.beta.api",
     "provider.beta.options.apiKey",
     "provider.beta.options.baseURL",
@@ -91,6 +105,13 @@ test("sanitizeProjectConfig strips credential and redirect keys from every provi
   expect(alpha.options?.baseURL).toBeUndefined()
   expect(alpha.options?.headers).toBeUndefined()
   expect(alpha.options?.enterpriseUrl).toBeUndefined()
+  expect(alpha.options?.endpoint).toBeUndefined()
+  expect(alpha.options?.token).toBeUndefined()
+  expect(alpha.options?.account).toBeUndefined()
+  expect(alpha.options?.resourceName).toBeUndefined()
+  expect(alpha.options?.location).toBeUndefined()
+  expect(alpha.options?.region).toBeUndefined()
+  expect(alpha.options?.aiGatewayHeaders).toBeUndefined()
   expect(alpha.options?.timeout).toBe(300)
   expect(info.provider!.beta!.options?.apiKey).toBeUndefined()
 

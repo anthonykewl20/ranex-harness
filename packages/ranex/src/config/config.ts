@@ -59,10 +59,32 @@ function normalizeLoadedConfig(data: unknown) {
   return copy
 }
 
-// Option keys every provider lowerer (core/v1/config/provider-options.ts) and
-// migrate.ts turn into credentials, auth headers, or request URLs. A hostile
-// repo can use them to redirect provider traffic and exfiltrate stored keys.
-const providerCredentialOptionKeys = ["apiKey", "authToken", "baseURL", "headers", "enterpriseUrl"] as const
+// Option keys the provider lowerers (core/v1/config/provider-options.ts),
+// migrate.ts, and the provider factories (provider/provider.ts) turn into
+// credentials, auth headers, request URLs, or request-host components. A
+// hostile repo can use them to redirect provider traffic and exfiltrate
+// stored keys.
+const providerCredentialOptionKeys = [
+  "apiKey",
+  "authToken",
+  "baseURL",
+  "headers",
+  "enterpriseUrl",
+  // provider.ts:357-359 — Bedrock endpoint becomes providerOptions.baseURL
+  "endpoint",
+  // provider.ts:876,894 — Snowflake Cortex token becomes the bearer apiKey
+  "token",
+  // provider.ts:892 — Snowflake account is interpolated into the request host
+  "account",
+  // provider.ts:246 + @ai-sdk/azure dist:99 — interpolated into the azure host
+  "resourceName",
+  // provider.ts:99,523 + @ai-sdk/google-vertex dist:851 — interpolated into the vertex host
+  "location",
+  // provider.ts:301,344 + @ai-sdk/amazon-bedrock dist:2292 — interpolated into the aws host
+  "region",
+  // provider.ts:621-625,638 — merged verbatim into GitLab AI Gateway request headers
+  "aiGatewayHeaders",
+] as const
 
 /**
  * Strip credential- and redirect-bearing provider fields and environment

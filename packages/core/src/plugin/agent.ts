@@ -138,7 +138,6 @@ export const Plugin = define({
       { action: "bash", resource: "cat *", effect: "allow" },
       { action: "bash", resource: "grep *", effect: "allow" },
       { action: "bash", resource: "rg *", effect: "allow" },
-      { action: "bash", resource: "find *", effect: "allow" },
       { action: "bash", resource: "head *", effect: "allow" },
       { action: "bash", resource: "tail *", effect: "allow" },
       { action: "bash", resource: "pwd", effect: "allow" },
@@ -175,6 +174,17 @@ export const Plugin = define({
       { action: "bash", resource: "git rebase *", effect: "deny" },
       { action: "bash", resource: "git reset *", effect: "deny" },
       { action: "bash", resource: "git cherry-pick *", effect: "deny" },
+      // git log/diff/show accept --output=<file> (or the spaced --output <file>),
+      // which writes command output to an arbitrary path — a mutation the
+      // read-only allow above would otherwise cover. Each command gets a
+      // front-position rule and an any-prefix rule; `*` spans spaces, so both
+      // `--output=x` and `--output x` are denied in every position.
+      { action: "bash", resource: "git log --output*", effect: "deny" },
+      { action: "bash", resource: "git log * --output*", effect: "deny" },
+      { action: "bash", resource: "git diff --output*", effect: "deny" },
+      { action: "bash", resource: "git diff * --output*", effect: "deny" },
+      { action: "bash", resource: "git show --output*", effect: "deny" },
+      { action: "bash", resource: "git show * --output*", effect: "deny" },
     ]
 
     yield* ctx.agent.transform((draft) => {

@@ -26,7 +26,7 @@ const ipv4Octets = (host: string) => {
 const BLOCKED_IPV4: Array<[number, number]> = [
   [0x00000000, 0x00ffffff], // 0.0.0.0/8 "this network"
   [0x0a000000, 0x0affffff], // 10.0.0.0/8 private use
-  [0x64400000, 0x67ffffff], // 100.64.0.0/10 shared (CGNAT)
+  [0x64400000, 0x647fffff], // 100.64.0.0/10 shared (CGNAT)
   [0x7f000000, 0x7fffffff], // 127.0.0.0/8 loopback
   [0xa9fe0000, 0xa9feffff], // 169.254.0.0/16 link-local
   [0xac100000, 0xac1fffff], // 172.16.0.0/12 private use

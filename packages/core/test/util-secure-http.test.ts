@@ -62,6 +62,9 @@ describe("SecureHttp syntax guard", () => {
       "http://[64:ff9b::127.0.0.1]/",
       "http://[64:ff9b::169.254.169.254]/",
       "http://[2002:0a00:0001::]/",
+      // 100.64.0.0/10 CGNAT including the upper boundary 100.127.255.255
+      "http://100.64.0.1/",
+      "http://100.127.255.254/",
     ]) {
       expect(() => SecureHttp.assertPublicHttpUrl(url)).toThrow("Refusing to fetch private host")
     }
@@ -76,6 +79,10 @@ describe("SecureHttp syntax guard", () => {
       // Well-known NAT64 and 6to4 prefixes carrying a genuinely public IPv4
       "http://[64:ff9b::93.184.216.34]/",
       "http://[2002:5db8:d822::]/",
+      // Public unicast above the CGNAT block (100.128.0.0 and up) that the
+      // old over-broad 100.64.0.0/10 upper bound used to reject
+      "http://100.200.1.2/",
+      "http://103.1.2.3/",
     ]) {
       expect(SecureHttp.assertPublicHttpUrl(url).protocol.length).toBeGreaterThan(0)
     }

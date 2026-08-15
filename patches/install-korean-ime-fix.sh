@@ -81,6 +81,15 @@ if ! git -C "$RANEX_SRC" cat-file -e "$FORK_REF^{commit}" 2>/dev/null; then
   git -C "$RANEX_SRC" fetch origin "$FORK_REF"
 fi
 git -C "$RANEX_SRC" checkout --detach "$FORK_REF"
+# This is the script's dedicated scratch build checkout, not a user worktree:
+# discard any surviving local modifications and untracked files so the build
+# can only ever compile the pristine pinned source. Destructive on purpose.
+git -C "$RANEX_SRC" reset --hard "$FORK_REF"
+git -C "$RANEX_SRC" clean -fd
+if [ -n "$(git -C "$RANEX_SRC" status --porcelain)" ]; then
+  err "Error: source tree is not clean after reset (local state survived). Aborting before build."
+  exit 1
+fi
 if [ "$(git -C "$RANEX_SRC" rev-parse HEAD)" != "$FORK_REF" ]; then
   err "Error: checked-out commit does not match pinned FORK_REF ($FORK_REF)."
   exit 1

@@ -37,6 +37,23 @@ describe("plan agent bash policy", () => {
       expect(bash("git status")).toBe("allow")
       expect(bash("git log --oneline -5")).toBe("allow")
       expect(bash("gh issue list --limit 10")).toBe("allow")
+      // git log/diff/show --output writes to an arbitrary path: denied even
+      // though the plain read-only forms are allowed.
+      expect(bash("git log --output=/tmp/evil")).toBe("deny")
+      expect(bash("git diff --output=/tmp/evil")).toBe("deny")
+      expect(bash("git show --output=/tmp/evil")).toBe("deny")
+      // spaced form and any prefix position must deny too, not just the
+      // compact `--output=` form at the front.
+      expect(bash("git log --output /tmp/evil")).toBe("deny")
+      expect(bash("git log -1 --output /tmp/evil")).toBe("deny")
+      expect(bash("git log -1 --output=/tmp/evil")).toBe("deny")
+      expect(bash("git diff HEAD~1 --output=/tmp/evil")).toBe("deny")
+      expect(bash("git show HEAD --output=/tmp/evil")).toBe("deny")
+      expect(bash("git log -1")).toBe("allow")
+      // `find` is not on the allow list: -delete/-exec mutate without shell
+      // control characters, so every find invocation falls through to ask.
+      expect(bash("find . -type f -delete")).toBe("ask")
+      expect(bash("find . -name package.json")).toBe("ask")
       expect(bash("rm -rf /")).toBe("ask")
       expect(bash("ls -la")).toBe("allow")
     }),
