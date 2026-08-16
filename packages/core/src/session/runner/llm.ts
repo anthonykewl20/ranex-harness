@@ -372,6 +372,8 @@ const layer = Layer.effect(
             return yield* Effect.die(continueAfterOverflowCompaction(currentStep))
           if (overflowFailure) yield* publish(overflowFailure)
           const llmFailure = failure instanceof LLMError ? failure : undefined
+          const assistantStarted = publisher.hasAssistantStarted()
+          const interrupted = stream._tag === "Failure" && Cause.hasInterrupts(stream.cause)
           const invalidToolArguments =
             llmFailure?.reason._tag === "InvalidProviderOutput" &&
             llmFailure.reason.kind === "invalid-tool-arguments" &&
@@ -413,10 +415,13 @@ const layer = Layer.effect(
           }
           if (
             llmFailure &&
-            !publisher.hasAssistantStarted() &&
+            !assistantStarted &&
             stream._tag === "Failure" &&
-            !Cause.hasInterrupts(stream.cause)
+            !interrupted
           ) {
+            // EventV2 commits the durable Retried event and this projection in the
+            // same transaction, so a committed retry event always has its budget
+            // columns available to a later drain.
             const persisted = yield* db
               .select({
                 cumulative_delay_ms: SessionTable.retry_cumulative_delay_ms,
@@ -430,8 +435,8 @@ const layer = Layer.effect(
             const decision = yield* providerRetry.decide({
               error: llmFailure,
               completed_attempt: attempt + 1,
-              assistant_started: false,
-              interrupted: false,
+              assistant_started: assistantStarted,
+              interrupted,
               cumulative_delay_ms: persisted?.cumulative_delay_ms ?? 0,
               window_started_at: persisted?.window_started_at ?? now,
             })

@@ -122,7 +122,10 @@ export const defaultLayer = Layer.effect(
           Math.round(base * (1 + (yield* Random.next) * 2 * values.jitter_ratio - values.jitter_ratio)),
           values.max_delay_ms,
         )
-        const delay = Math.max(jittered, input.retry_after_ms ?? input.error.retryAfterMs ?? 0)
+        const delay = Math.min(
+          Math.max(jittered, input.retry_after_ms ?? input.error.retryAfterMs ?? 0),
+          values.max_delay_ms,
+        )
         if (input.cumulative_delay_ms + delay > values.max_cumulative_delay_ms)
           return { _tag: "Stop", reason: "cumulative-delay-ceiling" }
         if (elapsed + delay > values.max_elapsed_ms) return { _tag: "Stop", reason: "elapsed-ceiling" }

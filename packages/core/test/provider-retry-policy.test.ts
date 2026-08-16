@@ -145,6 +145,24 @@ describe("provider retry policy", () => {
     Effect.gen(function* () {
       const rateLimit = new RateLimitReason({ message: "limited", retryAfterMs: 750 })
       expect(yield* decision(rateLimit)).toMatchObject({ _tag: "Retry", delay_ms: 750 })
+      expect(
+        yield* decision(rateLimit, {
+          retry_after_ms: 20_000,
+          cumulative_delay_ms: 19_999,
+        }),
+      ).toMatchObject({ _tag: "Retry", delay_ms: 10_000 })
+      expect(
+        yield* decision(rateLimit, {
+          retry_after_ms: 20_000,
+          cumulative_delay_ms: 20_001,
+        }),
+      ).toEqual({ _tag: "Stop", reason: "cumulative-delay-ceiling" })
+      expect(
+        yield* decision(rateLimit, {
+          retry_after_ms: 20_000,
+          window_started_at: -110_001,
+        }),
+      ).toEqual({ _tag: "Stop", reason: "elapsed-ceiling" })
       expect(yield* decision(rateLimit, { completed_attempt: 2, cumulative_delay_ms: 29_100 })).toEqual({
         _tag: "Stop",
         reason: "cumulative-delay-ceiling",
@@ -163,9 +181,10 @@ describe("provider retry policy", () => {
   )
 
   testEffect(policy(new ConfigProviderRetry.Info({ jitter_ratio: 1, base_delay_ms: 100, max_delay_ms: 100 }))).effect(
-    "keeps jitter inside the bounded delay range",
+    "uses seeded Random to keep jitter deterministic and inside the bounded delay range",
     () =>
       Effect.gen(function* () {
+        // Random.withSeed, not TestClock, makes the jitter repeatable.
         const result = yield* decision(new RateLimitReason({ message: "limited" })).pipe(Random.withSeed(1))
         const repeated = yield* decision(new RateLimitReason({ message: "limited" })).pipe(Random.withSeed(1))
         expect(result._tag).toBe("Retry")

@@ -46,7 +46,7 @@ import {
 } from "@ranex/llm"
 import { RequestExecutor } from "@ranex/llm/route"
 import { route } from "@ranex/llm/protocols/openai-chat"
-import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Stream } from "effect"
+import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Schema, Stream } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { asc, count, eq } from "drizzle-orm"
@@ -112,6 +112,18 @@ it.effect("RED: executor retry attempts reset after interruption", () =>
   }),
 )
 
+it.effect("decodes base-shaped retried payloads without the optional retry metadata", () =>
+  Effect.sync(() => {
+    const decoded = Schema.decodeUnknownSync(SessionEvent.Retried.data)({
+      sessionID,
+      timestamp: 0,
+      attempt: 0,
+      error: { message: "unavailable", statusCode: 503, isRetryable: true },
+    })
+    expect(decoded.error).toEqual({ message: "unavailable", statusCode: 503, isRetryable: true })
+  }),
+)
+
 it.effect("projects a durable retry attempt and next-attempt delay", () =>
   Effect.gen(function* () {
     yield* seed
@@ -120,6 +132,10 @@ it.effect("projects a durable retry attempt and next-attempt delay", () =>
       sessionID,
       timestamp: DateTime.makeUnsafe(0),
       attempt: 0,
+      delay_ms: 500,
+      cumulative_delay_ms: 500,
+      window_started_at: 0,
+      remaining_delay_ms: 29_500,
       error: { message: "unavailable", statusCode: 503, isRetryable: true },
     })
     const db = (yield* Database.Service).db
@@ -141,6 +157,10 @@ it.effect("projects exponential retry delay without jitter", () =>
       sessionID,
       timestamp: DateTime.makeUnsafe(1_000),
       attempt: 1,
+      delay_ms: 1_000,
+      cumulative_delay_ms: 1_500,
+      window_started_at: 0,
+      remaining_delay_ms: 28_500,
       error: { message: "unavailable", statusCode: 503, isRetryable: true },
     })
     const db = (yield* Database.Service).db
@@ -156,7 +176,7 @@ it.effect("projects exponential retry delay without jitter", () =>
   }),
 )
 
-it.effect("replaying one retried event is idempotent in the durable log", () =>
+it.effect("replays base-shaped retried events without scheduling a guessed retry", () =>
   Effect.gen(function* () {
     yield* seed
     const events = yield* EventV2.Service
@@ -194,7 +214,7 @@ it.effect("replaying one retried event is idempotent in the durable log", () =>
         .from(SessionTable)
         .where(eq(SessionTable.id, sessionID))
         .get(),
-    ).toEqual({ attempt: 1, next: 2_000 })
+    ).toEqual({ attempt: null, next: null })
     expect(
       (
         yield* db
@@ -283,6 +303,12 @@ const complete = (id: string, text: string) =>
     LLMEvent.stepFinish({ index: 0, reason: "stop" }),
     LLMEvent.finish({ reason: "stop" }),
   ])
+
+const startedThenUnavailable = () =>
+  Stream.concat(
+    Stream.fromIterable([LLMEvent.stepStart({ index: 0 }), LLMEvent.textStart({ id: "partial" })]),
+    Stream.fail(unavailable()),
+  )
 
 const summaryResponse = (text = "## Objective\n- Recover overflow") =>
   new Response(
@@ -614,6 +640,35 @@ drivingIt.effect("keeps non-retryable in-band provider errors terminal", () =>
       { type: "user", text: "Do not retry" },
       { type: "assistant", finish: "error", error: { message: "Invalid provider response" } },
     ])
+  }),
+)
+
+drivingIt.effect("does not retry after the assistant has started", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_after_assistant_started")
+    yield* insertDrivingSession(id)
+    const session = yield* SessionV2.Service
+    const sessionExecution = yield* SessionExecution.Service
+    turnStreams = [startedThenUnavailable()]
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Do not retry partial output" }), resume: false })
+    yield* sessionExecution.resume(id).pipe(Effect.exit)
+    expect(turnCalls).toBe(1)
+    expect(yield* retriedAttempts(id)).toEqual([])
+  }),
+)
+
+drivingIt.effect("does not retry an interrupted provider turn", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_interrupted_provider_turn")
+    yield* insertDrivingSession(id)
+    const session = yield* SessionV2.Service
+    const sessionExecution = yield* SessionExecution.Service
+    turnStreams = [Stream.fromEffect(Effect.interrupt)]
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Do not retry interruption" }), resume: false })
+    const exit = yield* sessionExecution.resume(id).pipe(Effect.exit)
+    expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBeTrue()
+    expect(turnCalls).toBe(1)
+    expect(yield* retriedAttempts(id)).toEqual([])
   }),
 )
 
