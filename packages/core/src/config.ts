@@ -144,6 +144,16 @@ export class Directory extends Schema.Class<Directory>("Config.Directory")({
 
 export type Entry = Document | Directory
 
+/** Returns defined document values in config priority order. */
+export function documentSlots<K extends keyof Info>(entries: readonly Entry[], key: K): Exclude<Info[K], undefined>[] {
+  return entries
+    .filter((entry): entry is Document => entry.type === "document")
+    .flatMap((entry) => {
+      const value = entry.info[key]
+      return value === undefined ? [] : [value]
+    }) as Exclude<Info[K], undefined>[]
+}
+
 export function latest<K extends keyof Info>(entries: readonly Entry[], key: K): Info[K] | undefined {
   return entries
     .filter((entry): entry is Document => entry.type === "document")

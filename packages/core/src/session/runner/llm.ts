@@ -184,7 +184,11 @@ const layer = Layer.effect(
     }
 
     class FailoverTurnError extends Error {
-      constructor(readonly error: LLMError, readonly from: ModelV2.Ref) {
+      constructor(
+        readonly error: LLMError,
+        readonly from: ModelV2.Ref,
+        readonly failAssistant: () => Effect.Effect<void>,
+      ) {
         super()
       }
     }
@@ -206,9 +210,7 @@ const layer = Layer.effect(
       }).pipe(Effect.map((contexts) => SystemContext.combine([...contexts, ActiveModel.activeModel(model)])))
 
     const failoverSettings = Effect.fn("SessionRunner.failoverSettings")(function* () {
-      return (yield* config.entries())
-        .filter((entry): entry is Config.Document => entry.type === "document")
-        .flatMap((entry) => (entry.info.provider_failover ? [entry.info.provider_failover] : []))
+      return Config.documentSlots(yield* config.entries(), "provider_failover")
         .reduce<{ readonly chain: readonly string[]; readonly on_watchdog: boolean }>(
           (result, current) => ({
             chain: current.chain ?? result.chain,
@@ -228,12 +230,6 @@ const layer = Layer.effect(
     const isWatchdogFailure = (error: LLMError) =>
       error.reason._tag === "Transport" &&
       (error.reason.kind === WATCHDOG_IDLE_KIND || error.reason.kind === WATCHDOG_ABSOLUTE_KIND)
-    const exhaustedRetry = (decision: ProviderRetryPolicy.Decision) =>
-      decision._tag === "Stop" &&
-      (decision.reason === "attempt-ceiling" ||
-        decision.reason === "cumulative-delay-ceiling" ||
-        decision.reason === "elapsed-ceiling")
-
     const runTurnAttempt = Effect.fn("SessionRunner.runTurn")(function* (
       sessionID: SessionSchema.ID,
       promotion: SessionInput.Delivery | undefined,
@@ -242,6 +238,7 @@ const layer = Layer.effect(
       recoveryAttempts: number,
       allowOverflowRecovery: boolean,
       failover: FailoverState,
+      resolvedModel?: Model,
     ) {
       const session = yield* getSession(sessionID)
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
@@ -260,7 +257,7 @@ const layer = Layer.effect(
       const watchdog = yield* providerWatchdog.settings()
       const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
       const agent = yield* agents.select(session.agent)
-      const model = yield* models.resolve(session, failover.model)
+      const model = resolvedModel ?? (yield* models.resolve(session, failover.model))
       const turnSystemContext = loadSystemContext(agent, model)
       const initialized = yield* SessionContextEpoch.initialize(db, turnSystemContext, session.id)
       const toolFibers = yield* FiberSet.make<void, ToolOutputStore.Error>()
@@ -484,9 +481,17 @@ const layer = Layer.effect(
               cumulative_delay_ms: persisted?.cumulative_delay_ms ?? 0,
               window_started_at: persisted?.window_started_at ?? now,
             })
-            const failover = yield* failoverSettings()
-            if (failover.chain.length > 0 && isWatchdogFailure(llmFailure) && failover.on_watchdog)
-              return yield* Effect.die(new FailoverTurnError(llmFailure, modelRef(model, session)))
+            const failoverConfig = yield* failoverSettings()
+            const failAssistant = () =>
+              Effect.gen(function* () {
+                yield* withPublication(publisher.failUnsettledTools("Provider did not return a tool result", true))
+                yield* withPublication(publisher.failAssistant(llmFailure.reason.message))
+              })
+            // Failover can amplify a provider incident with a fresh retry budget
+            // for every configured model, so enter only after this attempt is safe
+            // to abandon without duplicating output or tool work.
+            if (failoverConfig.chain.length > 0 && isWatchdogFailure(llmFailure) && failoverConfig.on_watchdog)
+              return yield* Effect.die(new FailoverTurnError(llmFailure, modelRef(model, session), failAssistant))
             if (decision._tag === "Retry")
               return yield* Effect.die(
                 new RetryTurnError(
@@ -498,12 +503,12 @@ const layer = Layer.effect(
                 ),
               )
             if (
-              failover.chain.length > 0 &&
+              failoverConfig.chain.length > 0 &&
               !isWatchdogFailure(llmFailure) &&
               ProviderRetryPolicy.classify(llmFailure) !== undefined &&
-              exhaustedRetry(decision)
+              decision._tag === "Stop"
             )
-              return yield* Effect.die(new FailoverTurnError(llmFailure, modelRef(model, session)))
+              return yield* Effect.die(new FailoverTurnError(llmFailure, modelRef(model, session), failAssistant))
           }
           if (llmFailure && !recoveredInvalidToolArguments && !publisher.hasProviderError()) {
             yield* withPublication(publisher.failUnsettledTools("Provider did not return a tool result", true))
@@ -612,6 +617,7 @@ const layer = Layer.effect(
       attempt: number,
       recoveryAttempts: number,
       failover: FailoverState,
+      resolvedModel?: Model,
     ) => Effect.Effect<
       { readonly needsContinuation: boolean; readonly step: number; readonly recoveryAttempts: number },
       RunError
@@ -668,7 +674,6 @@ const layer = Layer.effect(
           const to: ModelV2.Ref = {
             id: parsed.modelID,
             providerID: parsed.providerID,
-            ...(session.model?.variant === undefined ? {} : { variant: session.model.variant }),
           }
           const key = modelKey(to)
           if (key === modelKey(defect.from) || failover.used.has(key)) continue
@@ -676,13 +681,16 @@ const layer = Layer.effect(
           const resolution = yield* models.resolve(session, to).pipe(
             Effect.match({
               onFailure: (error) => ({ error }),
-              onSuccess: () => ({}),
+              onSuccess: (model) => ({ model }),
             }),
           )
           if ("error" in resolution) {
             yield* Effect.logWarning(`Skipping unavailable provider failover model ${entry}: ${resolution.error.message}`)
             continue
           }
+          // A crash after this record but before fallback completion stays
+          // provider_in_flight during recovery; do not replay a potentially
+          // dispatched fallback provider turn automatically.
           yield* events.publish(SessionEvent.ModelFailedOver, {
             sessionID,
             timestamp: yield* DateTime.now,
@@ -692,15 +700,25 @@ const layer = Layer.effect(
           })
           const next = { ...failover, model: to }
           if (allowOverflowRecovery)
-            return yield* runTurn(sessionID, undefined, step, 0, recoveryAttempts, next)
-          return yield* runAfterOverflowCompaction(sessionID, undefined, step, 0, recoveryAttempts, next)
+            return yield* runTurn(sessionID, undefined, step, 0, recoveryAttempts, next, resolution.model)
+          return yield* runAfterOverflowCompaction(sessionID, undefined, step, 0, recoveryAttempts, next, resolution.model)
         }
+        yield* defect.failAssistant()
         return yield* Effect.fail(defect.error)
       })
 
     const runAfterOverflowCompaction: RunTurn = Effect.fnUntraced(
-      function* (sessionID, promotion, step, attempt, recoveryAttempts, failover) {
-        return yield* runTurnAttempt(sessionID, promotion, step, attempt, recoveryAttempts, false, failover).pipe(
+      function* (sessionID, promotion, step, attempt, recoveryAttempts, failover, resolvedModel) {
+        return yield* runTurnAttempt(
+          sessionID,
+          promotion,
+          step,
+          attempt,
+          recoveryAttempts,
+          false,
+          failover,
+          resolvedModel,
+        ).pipe(
           Effect.catchDefect(
             Effect.fnUntraced(function* (defect) {
               if (defect instanceof RetryTurnError)
@@ -728,6 +746,7 @@ const layer = Layer.effect(
                 attempt,
                 recoveryAttempts,
                 failover,
+                resolvedModel,
               )
             }),
           ),
@@ -735,8 +754,25 @@ const layer = Layer.effect(
       },
     )
 
-    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, attempt, recoveryAttempts, failover) {
-      return yield* runTurnAttempt(sessionID, promotion, step, attempt, recoveryAttempts, true, failover).pipe(
+    const runTurn: RunTurn = Effect.fnUntraced(function* (
+      sessionID,
+      promotion,
+      step,
+      attempt,
+      recoveryAttempts,
+      failover,
+      resolvedModel,
+    ) {
+      return yield* runTurnAttempt(
+        sessionID,
+        promotion,
+        step,
+        attempt,
+        recoveryAttempts,
+        true,
+        failover,
+        resolvedModel,
+      ).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {
             if (defect instanceof RetryTurnError)
@@ -764,7 +800,15 @@ const layer = Layer.effect(
                 recoveryAttempts,
                 failover,
               )
-            return yield* runTurn(sessionID, undefined, defect.transition.step, attempt, recoveryAttempts, failover)
+            return yield* runTurn(
+              sessionID,
+              undefined,
+              defect.transition.step,
+              attempt,
+              recoveryAttempts,
+              failover,
+              resolvedModel,
+            )
           }),
         ),
       )

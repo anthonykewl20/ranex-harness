@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Config } from "@ranex/core/config"
-import { ConfigProviderFailover } from "@ranex/core/config/provider-failover"
+import { ConfigProviderFailover, MAX_CHAIN_LENGTH } from "@ranex/core/config/provider-failover"
 import { Effect, Layer, Option, Schema } from "effect"
 import { testEffect } from "./lib/effect"
 
@@ -15,7 +15,12 @@ describe("provider failover config", () => {
         expect(valid.value.provider_failover).toEqual(
           new ConfigProviderFailover.Info({ chain: ["primary/model", "backup/model/name"], on_watchdog: true }),
         )
-      for (const chain of [["model"], ["/model"], ["provider/"]])
+      for (const chain of [
+        ["model"],
+        ["/model"],
+        ["provider/"],
+        Array.from({ length: MAX_CHAIN_LENGTH + 1 }, () => "backup/model"),
+      ])
         expect(Option.isNone(decode({ provider_failover: { chain } }))).toBe(true)
     }),
   )

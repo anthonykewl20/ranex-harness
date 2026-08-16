@@ -75,9 +75,7 @@ export const defaultLayer = Layer.effect(
   Effect.gen(function* () {
     const config = yield* Config.Service
     const settings = Effect.fn("ProviderRetryPolicy.settings")(function* () {
-      const values = (yield* config.entries())
-        .filter((entry): entry is Config.Document => entry.type === "document")
-        .flatMap((entry) => (entry.info.provider_retry ? [entry.info.provider_retry] : []))
+      const values = Config.documentSlots(yield* config.entries(), "provider_retry")
         .reduce<Settings>(
           (result, current) => ({
             max_attempts: current.max_attempts ?? result.max_attempts,
