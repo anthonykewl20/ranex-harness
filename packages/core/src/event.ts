@@ -198,8 +198,10 @@ export interface Interface {
   ) => Effect.Effect<string | undefined>
   readonly remove: (aggregateID: string) => Effect.Effect<void>
   readonly owner: (aggregateID: string) => Effect.Effect<string | undefined>
-  /** Conditionally replaces exactly the owner observed by the caller. */
-  readonly claim: (aggregateID: string, ownerID: string, expectedOwner?: string) => Effect.Effect<boolean>
+  /** Replaces the aggregate owner, preserving the long-standing transfer contract. */
+  readonly claim: (aggregateID: string, ownerID: string) => Effect.Effect<boolean>
+  /** Conditionally replaces exactly the owner observed by the caller. Recovery only. */
+  readonly claimConditional: (aggregateID: string, ownerID: string, expectedOwner?: string) => Effect.Effect<boolean>
   /** Releases a recovery writer claim only when it is still owned by the caller. */
   readonly release: (aggregateID: string, ownerID: string) => Effect.Effect<void>
 }
@@ -668,7 +670,18 @@ export const layerWith = (options?: LayerOptions) =>
           .get()
           .pipe(Effect.orDie, Effect.map((row) => row?.ownerID ?? undefined))
 
-      function claim(aggregateID: string, ownerID: string, expectedOwner?: string) {
+      function claim(aggregateID: string, ownerID: string) {
+        return db
+          .update(EventSequenceTable)
+          .set({ owner_id: ownerID })
+          .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+          .returning({ aggregateID: EventSequenceTable.aggregate_id })
+          .get()
+          .pipe(Effect.orDie)
+        .pipe(Effect.map((row) => row !== undefined))
+      }
+
+      function claimConditional(aggregateID: string, ownerID: string, expectedOwner?: string) {
         return db
           .update(EventSequenceTable)
           .set({ owner_id: ownerID })
@@ -680,8 +693,7 @@ export const layerWith = (options?: LayerOptions) =>
           )
           .returning({ aggregateID: EventSequenceTable.aggregate_id })
           .get()
-          .pipe(Effect.orDie)
-        .pipe(Effect.map((row) => row !== undefined))
+          .pipe(Effect.orDie, Effect.map((row) => row !== undefined))
       }
 
       const release = (aggregateID: string, ownerID: string) =>
@@ -815,6 +827,7 @@ export const layerWith = (options?: LayerOptions) =>
         remove,
         owner,
         claim,
+        claimConditional,
         release,
       })
       subscriberDiagnostics.set(service, diagnostics)

@@ -279,6 +279,7 @@ describe("SLICE-013 reconciler reorder (empty-inbox crash)", () => {
           // The whole point: run with an empty inbox must still reconcile.
           yield* runner.run({ sessionID, force: false })
           expect(assistantTool(yield* store.context(sessionID)).state.status).toBe("error")
+          expect(assistantTool(yield* store.context(sessionID)).provider?.executed).toBe(false)
         }),
       )
     } finally {

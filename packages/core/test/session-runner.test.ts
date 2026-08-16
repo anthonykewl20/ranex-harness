@@ -6,6 +6,7 @@ import {
   Model,
   ContentPolicyReason,
   InvalidProviderOutputReason,
+  ProviderInternalReason,
   TransportReason,
   InvalidRequestReason,
   type LLMClientShape,
@@ -3485,6 +3486,57 @@ describe("SessionRunnerLLM", () => {
 
       expect(requests).toHaveLength(1)
       expect(executions.slice(executionCount)).toEqual(["settled"])
+    }),
+  )
+
+  it.effect("does not retry a direct local tool call followed by a retryable stream failure", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      requests.length = 0
+      const executionCount = executions.length
+      const failure = new LLMError({
+        module: "test",
+        method: "stream",
+        reason: new ProviderInternalReason({ message: "Provider unavailable", status: 503 }),
+      })
+      responseStream = Stream.concat(
+        Stream.fromIterable([LLMEvent.toolCall({ id: "call-direct-local-retry", name: "echo", input: { text: "once" } })]),
+        Stream.fail(failure),
+      )
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Do not retry a direct tool" }), resume: false })
+
+      expect(yield* session.resume(sessionID).pipe(Effect.flip)).toBe(failure)
+      expect(requests).toHaveLength(1)
+      expect(executions.slice(executionCount)).toEqual(["once"])
+    }),
+  )
+
+  it.effect("does not retry a direct hosted tool call followed by a retryable stream failure", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      requests.length = 0
+      const failure = new LLMError({
+        module: "test",
+        method: "stream",
+        reason: new ProviderInternalReason({ message: "Provider unavailable", status: 503 }),
+      })
+      responseStream = Stream.concat(
+        Stream.fromIterable([
+          LLMEvent.toolCall({
+            id: "call-direct-hosted-retry",
+            name: "web_search",
+            input: { query: "once" },
+            providerExecuted: true,
+          }),
+        ]),
+        Stream.fail(failure),
+      )
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Do not retry a hosted tool" }), resume: false })
+
+      expect(yield* session.resume(sessionID).pipe(Effect.flip)).toBe(failure)
+      expect(requests).toHaveLength(1)
     }),
   )
 

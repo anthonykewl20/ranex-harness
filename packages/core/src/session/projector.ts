@@ -412,16 +412,20 @@ const layer = Layer.effectDiscard(
     yield* events.project(SessionEvent.Reasoning.Started, (event) => run(db, event))
     yield* events.project(SessionEvent.Reasoning.Ended, (event) => run(db, event))
     yield* events.project(SessionEvent.Retried, (event) =>
-      db
-        .update(SessionTable)
-        .set({
-          retry_attempt: event.data.attempt,
-          retry_next_attempt_at:
-            DateTime.toEpochMillis(event.data.timestamp) + Math.min(500 * 2 ** event.data.attempt, 10_000),
-        })
-        .where(eq(SessionTable.id, event.data.sessionID))
-        .run()
-        .pipe(Effect.orDie, Effect.asVoid),
+      run(db, event).pipe(
+        Effect.andThen(
+          db
+            .update(SessionTable)
+            .set({
+              retry_attempt: event.data.attempt,
+              retry_next_attempt_at:
+                DateTime.toEpochMillis(event.data.timestamp) + Math.min(500 * 2 ** event.data.attempt, 10_000),
+            })
+            .where(eq(SessionTable.id, event.data.sessionID))
+            .run()
+            .pipe(Effect.orDie, Effect.asVoid),
+        ),
+      ),
     )
     yield* events.project(SessionEvent.Compaction.Ended, (event) => run(db, event))
     yield* events.project(SessionEvent.RevertEvent.Staged, (event) =>

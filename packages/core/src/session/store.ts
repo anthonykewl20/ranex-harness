@@ -30,10 +30,11 @@ export interface Interface {
   readonly blockers: (sessionID: SessionSchema.ID) => Effect.Effect<ReadonlyArray<Blocker>>
   readonly block: (input: BlockInput) => Effect.Effect<void>
   readonly resolveBlocker: (input: {
+    readonly sessionID: SessionSchema.ID
     readonly id: string
     readonly actor: string
     readonly choice: SessionRecovery.Resolution
-  }) => Effect.Effect<void>
+  }) => Effect.Effect<boolean>
 }
 
 export type Blocker = {
@@ -169,12 +170,20 @@ const layer = Layer.effect(
           .pipe(Effect.orDie)
       }),
       resolveBlocker: Effect.fn("SessionStore.resolveBlocker")(function* (input) {
-        yield* db
+        const resolved = yield* db
           .update(SessionBlockerTable)
           .set({ actor: input.actor, resolution: input.choice, time_resolved: Date.now() })
-          .where(and(eq(SessionBlockerTable.id, input.id), isNull(SessionBlockerTable.time_resolved)))
-          .run()
+          .where(
+            and(
+              eq(SessionBlockerTable.id, input.id),
+              eq(SessionBlockerTable.session_id, input.sessionID),
+              isNull(SessionBlockerTable.time_resolved),
+            ),
+          )
+          .returning({ id: SessionBlockerTable.id })
+          .get()
           .pipe(Effect.orDie)
+        return resolved !== undefined
       }),
     })
   }),

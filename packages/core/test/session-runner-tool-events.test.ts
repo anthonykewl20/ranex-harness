@@ -38,6 +38,7 @@ const capture = () => {
     remove: () => Effect.void,
     owner: () => Effect.succeed(undefined),
     claim: () => Effect.succeed(true),
+    claimConditional: () => Effect.succeed(true),
     release: () => Effect.void,
   })
   return {

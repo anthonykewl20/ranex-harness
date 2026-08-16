@@ -368,10 +368,14 @@ const layer = Layer.effect(
           .from(SessionMessageTable)
           .where(where)
           .orderBy(order === "asc" ? asc(SessionMessageTable.seq) : desc(SessionMessageTable.seq))
-        const rows = yield* (input.limit === undefined ? query.all() : query.limit(input.limit).all()).pipe(
-          Effect.orDie,
+        // Empty completed dispatch markers are hidden conversation implementation
+        // details. Decode and filter before applying the public page size so one
+        // newest marker cannot consume an otherwise visible page.
+        const rows = yield* query.all().pipe(Effect.orDie)
+        const messages = (yield* Effect.forEach(direction === "previous" ? rows.toReversed() : rows, decode)).filter(
+          visibleMessage,
         )
-        return (yield* Effect.forEach(direction === "previous" ? rows.toReversed() : rows, decode)).filter(visibleMessage)
+        return input.limit === undefined ? messages : messages.slice(0, input.limit)
       }),
       message: Effect.fn("V2Session.message")(function* (input) {
         const stored = yield* store.message(input.messageID)
@@ -533,7 +537,13 @@ const layer = Layer.effect(
       ),
       resolveBlocker: Effect.fn("V2Session.resolveBlocker")(function* (input) {
         yield* result.get(input.sessionID)
-        yield* store.resolveBlocker({ id: input.blockerID, actor: input.actor, choice: input.choice })
+        const resolved = yield* store.resolveBlocker({
+          sessionID: input.sessionID,
+          id: input.blockerID,
+          actor: input.actor,
+          choice: input.choice,
+        })
+        if (!resolved) return yield* new NotFoundError({ sessionID: input.sessionID })
       }),
       revert: {
         stage: Effect.fn("V2Session.revert.stage")(function* (input) {

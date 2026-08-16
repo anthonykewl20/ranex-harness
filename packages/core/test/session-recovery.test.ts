@@ -37,7 +37,12 @@ describe("SessionRecovery.classify", () => {
         state: SessionMessage.ToolStateRunning.make({ status: "running", input: {}, structured: {}, content: [] }),
       })])],
       blockers: [],
-    })).toEqual({ _tag: "InterruptAmbiguousTool", assistantMessageID: assistantID, callID: "call_recovery" })
+    })).toEqual({
+      _tag: "InterruptAmbiguousTool",
+      assistantMessageID: assistantID,
+      callID: "call_recovery",
+      provider: { executed: false },
+    })
   })
 
   test("a pending tool input blocks provider recovery without inventing a tool execution", () => {
@@ -78,5 +83,13 @@ describe("SessionRecovery.classify", () => {
       retry: { attempt: 2, nextAttemptAt: 100 },
       blockers: [],
     })).toEqual({ _tag: "WaitForRetry", retry: { attempt: 2, nextAttemptAt: 100 } })
+  })
+
+  test("a committed retry settles its dispatch marker before recovery", () => {
+    expect(SessionRecovery.classify({
+      messages: [assistant([], true)],
+      retry: { attempt: 0, nextAttemptAt: 500 },
+      blockers: [],
+    })).toEqual({ _tag: "WaitForRetry", retry: { attempt: 0, nextAttemptAt: 500 } })
   })
 })

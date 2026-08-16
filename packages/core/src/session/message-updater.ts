@@ -373,7 +373,20 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
           }
         })
       },
-      "session.next.retried": () => Effect.void,
+      "session.next.retried": (event) => {
+        // Retried is committed only after a pre-output provider attempt has
+        // failed. Settle that attempt's eager dispatch marker so recovery can
+        // distinguish its scheduled retry from a crash in the dispatch window.
+        return Effect.gen(function* () {
+          const currentAssistant = yield* adapter.getCurrentAssistant()
+          if (!currentAssistant) return
+          yield* adapter.updateAssistant(
+            produce(currentAssistant, (draft) => {
+              draft.time.completed = event.data.timestamp
+            }),
+          )
+        })
+      },
       "session.next.compaction.started": () => Effect.void,
       "session.next.compaction.delta": () => Effect.void,
       "session.next.compaction.ended": (event) => {

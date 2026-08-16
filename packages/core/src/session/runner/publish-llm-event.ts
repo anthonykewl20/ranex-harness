@@ -336,6 +336,10 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
         yield* endToolInput(event)
         return
       case "tool-call": {
+        // Some providers emit a complete call without streaming tool input first.
+        // A durable call can start a side effect, so it closes every retry and
+        // overflow-compaction window before the call is recorded.
+        assistantProducedOutput = true
         if (!tools.has(event.id)) yield* startToolInput(event)
         const tool = tools.get(event.id)!
         if (!tool.inputEnded) yield* endToolInput(event)

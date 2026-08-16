@@ -10,6 +10,7 @@ import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNodePlatform } from "@ranex/core/effect/app-node-platform"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { EventV2 } from "@ranex/core/event"
+import { EventTable } from "@ranex/core/event/sql"
 import { Location } from "@ranex/core/location"
 import { ModelV2 } from "@ranex/core/model"
 import { PermissionV2 } from "@ranex/core/permission"
@@ -20,6 +21,7 @@ import { QuestionV2 } from "@ranex/core/question"
 import { AbsolutePath } from "@ranex/core/schema"
 import { ReferenceGuidance } from "@ranex/core/reference/guidance"
 import { SessionV2 } from "@ranex/core/session"
+import { SessionEvent } from "@ranex/core/session/event"
 import { ExecutionOwner } from "@ranex/core/session/execution-owner"
 import { SessionMessage } from "@ranex/core/session/message"
 import { SessionProjector } from "@ranex/core/session/projector"
@@ -31,15 +33,17 @@ import { SessionTurnLLM } from "@ranex/core/session/runner/turn-llm"
 import { createLLMEventPublisher } from "@ranex/core/session/runner/publish-llm-event"
 import { SessionStore } from "@ranex/core/session/store"
 import { SessionTable } from "@ranex/core/session/sql"
+import { EffectFlock } from "@ranex/core/util/effect-flock"
 import { SkillGuidance } from "@ranex/core/skill/guidance"
 import { Snapshot } from "@ranex/core/snapshot"
 import { SystemContext } from "@ranex/core/system-context"
 import { SystemContextRegistry } from "@ranex/core/system-context/registry"
 import { ApplicationTools } from "@ranex/core/tool/application-tools"
 import { ToolRegistry } from "@ranex/core/tool/registry"
-import { Effect, Layer, Schema, Scope, Stream } from "effect"
+import { DateTime, Effect, Layer, Schema, Scope, Stream } from "effect"
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
+import { eq } from "drizzle-orm"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -113,7 +117,7 @@ const runInGraph = <A, E, E2, R>(layer: Layer.Layer<R, E2>, program: Effect.Effe
 
 function buildSeedLayer(dbFile: string) {
   return AppNodeBuilder.build(
-    LayerNode.group([Database.node, EventV2.node, SessionProjector.node, SessionStore.node]),
+    LayerNode.group([Database.node, EventV2.node, SessionProjector.node, SessionStore.node, EffectFlock.node]),
     [[Database.node, Database.layerFromPath(dbFile)]],
   )
 }
@@ -369,6 +373,132 @@ test("runner leaves execution ownership unchanged", async () => {
         yield* store.releaseExecution(sessionID, ExecutionOwner.ownerID)
       }),
     )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("file-backed recovery blocks a dispatch-window marker without waking a provider", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ranex-recovery-dispatch-"))
+  const dbFile = join(dir, "recovery.db")
+  const sessionID = SessionV2.ID.make("ses_recovery_dispatch_window")
+  const layer = buildSeedLayer(dbFile)
+  try {
+    await runInGraph(
+      layer,
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        yield* db
+          .insert(ProjectTable)
+          .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+          .run()
+          .pipe(Effect.orDie)
+        yield* db
+          .insert(SessionTable)
+          .values({
+            id: sessionID,
+            project_id: Project.ID.global,
+            slug: sessionID,
+            directory: "/project",
+            title: "dispatch window",
+            version: "test",
+          })
+          .run()
+          .pipe(Effect.orDie)
+        const events = yield* EventV2.Service
+        yield* events.publish(SessionEvent.Step.Started, {
+          sessionID,
+          assistantMessageID: SessionMessage.ID.make("msg_recovery_dispatch"),
+          timestamp: DateTime.makeUnsafe(Date.now()),
+          agent: "build",
+          model: { id: ModelV2.ID.make("model"), providerID: ProviderV2.ID.make("provider") },
+        })
+      }),
+    )
+    let wakes = 0
+    await runInGraph(
+      layer,
+      Effect.gen(function* () {
+        yield* SessionReconcile.recover({
+          events: yield* EventV2.Service,
+          store: yield* SessionStore.Service,
+          sessionID,
+          wake: () => Effect.sync(() => wakes++),
+        })
+        const store = yield* SessionStore.Service
+        expect((yield* store.blockers(sessionID)).map((blocker) => blocker.kind)).toEqual(["provider_in_flight"])
+      }),
+    )
+    expect(wakes).toBe(0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("file-backed recovery wakes one persisted retry without republishing it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ranex-recovery-retry-"))
+  const dbFile = join(dir, "recovery.db")
+  const sessionID = SessionV2.ID.make("ses_recovery_retry_window")
+  const layer = buildSeedLayer(dbFile)
+  try {
+    await runInGraph(
+      layer,
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        yield* db
+          .insert(ProjectTable)
+          .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+          .run()
+          .pipe(Effect.orDie)
+        yield* db
+          .insert(SessionTable)
+          .values({
+            id: sessionID,
+            project_id: Project.ID.global,
+            slug: sessionID,
+            directory: "/project",
+            title: "retry window",
+            version: "test",
+          })
+          .run()
+          .pipe(Effect.orDie)
+        const events = yield* EventV2.Service
+        yield* events.publish(SessionEvent.Step.Started, {
+          sessionID,
+          assistantMessageID: SessionMessage.ID.make("msg_recovery_retry"),
+          timestamp: DateTime.makeUnsafe(0),
+          agent: "build",
+          model: { id: ModelV2.ID.make("model"), providerID: ProviderV2.ID.make("provider") },
+        })
+        yield* events.publish(SessionEvent.Retried, {
+          sessionID,
+          timestamp: DateTime.makeUnsafe(0),
+          attempt: 0,
+          error: { message: "unavailable", isRetryable: true },
+        })
+      }),
+    )
+    let wakes = 0
+    await runInGraph(
+      layer,
+      Effect.gen(function* () {
+        yield* SessionReconcile.recover({
+          events: yield* EventV2.Service,
+          store: yield* SessionStore.Service,
+          sessionID,
+          wake: () => Effect.sync(() => wakes++),
+        })
+        const { db } = yield* Database.Service
+        const retried = yield* db
+          .select()
+          .from(EventTable)
+          .where(eq(EventTable.type, EventV2.versionedType(SessionEvent.Retried.type, 1)))
+          .all()
+          .pipe(Effect.orDie)
+        expect(retried).toHaveLength(1)
+      }),
+    )
+    expect(wakes).toBe(1)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

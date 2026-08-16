@@ -165,6 +165,55 @@ describe("SessionProjector", () => {
     }).pipe(Effect.provide(sessionsLayer)),
   )
 
+  it.effect("fills a message page past a newest completed dispatch marker", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: Project.ID.global,
+          slug: "test",
+          directory: "/project",
+          title: "test",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+      const events = yield* EventV2.Service
+      const sessions = yield* SessionV2.Service
+      const visibleID = SessionMessage.ID.make("msg_visible")
+      const markerID = SessionMessage.ID.make("msg_marker")
+      yield* events.publish(SessionEvent.Prompted, {
+        sessionID,
+        messageID: visibleID,
+        timestamp: created,
+        prompt: Prompt.make({ text: "visible" }),
+        delivery: "steer",
+      })
+      yield* events.publish(SessionEvent.Step.Started, {
+        sessionID,
+        assistantMessageID: markerID,
+        timestamp: DateTime.makeUnsafe(1),
+        agent: "build",
+        model,
+      })
+      yield* events.publish(SessionEvent.Retried, {
+        sessionID,
+        timestamp: DateTime.makeUnsafe(2),
+        attempt: 0,
+        error: { message: "unavailable", isRetryable: true },
+      })
+
+      expect(yield* sessions.messages({ sessionID, limit: 1 })).toMatchObject([{ id: visibleID, type: "user" }])
+    }).pipe(Effect.provide(sessionsLayer)),
+  )
+
   it.effect("marks an inbox row promoted with the Prompted event sequence", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service

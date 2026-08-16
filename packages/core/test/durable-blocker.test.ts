@@ -135,7 +135,7 @@ describe("durable permission and question blockers", () => {
         aggregateSeq: 1,
       })
       expect((yield* store.blockers(sessionID)).map((blocker) => blocker.id)).toEqual([blockerID])
-      yield* store.resolveBlocker({ id: blockerID, actor: "operator:test", choice: "continue" })
+      yield* store.resolveBlocker({ sessionID, id: blockerID, actor: "operator:test", choice: "continue" })
       expect(yield* store.blockers(sessionID)).toEqual([])
       const { db } = yield* Database.Service
       expect(yield* db
@@ -144,6 +144,35 @@ describe("durable permission and question blockers", () => {
         .where(eq(SessionBlockerTable.id, blockerID))
         .get()
         .pipe(Effect.orDie)).toEqual({ actor: "operator:test", resolution: "continue" })
+    }))
+  })
+
+  test("does not resolve a blocker owned by another session", async () => {
+    await using tmp = await tmpdir()
+    const filename = path.join(tmp.path, "blockers.sqlite")
+    const otherSessionID = SessionV2.ID.make("ses_durable_blocker_other")
+    const blockerID = "recovery:shared:blocker"
+    await graph(filename, Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: otherSessionID,
+          project_id: Project.ID.global,
+          slug: "other",
+          directory: "/project",
+          title: "other",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+      const store = yield* SessionStore.Service
+      yield* store.block({ id: blockerID, sessionID: otherSessionID, kind: "provider_in_flight", aggregateSeq: 1 })
+      expect(
+        yield* store.resolveBlocker({ sessionID, id: blockerID, actor: "operator:test", choice: "continue" }),
+      ).toBe(false)
+      expect((yield* store.blockers(otherSessionID)).map((blocker) => blocker.id)).toEqual([blockerID])
     }))
   })
 
@@ -518,6 +547,7 @@ describe("durable permission and question blockers", () => {
       remove: () => Effect.void,
       owner: () => Effect.succeed(undefined),
       claim: () => Effect.succeed(true),
+      claimConditional: () => Effect.succeed(true),
       release: () => Effect.void,
     }))
     const republished = await Effect.runPromise(Effect.gen(function* () {

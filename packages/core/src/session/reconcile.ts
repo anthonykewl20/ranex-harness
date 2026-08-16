@@ -47,7 +47,11 @@ export const recover = Effect.fn("Session.recover")(function* (input: {
           )
           return
         }
-        const eventClaimed = yield* input.events.claim(input.sessionID, ExecutionOwner.ownerID, previousEventOwner)
+        const eventClaimed = yield* input.events.claimConditional(
+          input.sessionID,
+          ExecutionOwner.ownerID,
+          previousEventOwner,
+        )
         if (!eventClaimed) {
           yield* Effect.logWarning("Session recovery skipped: durable event writer claim was not acquired").pipe(
             Effect.annotateLogs({ sessionID: input.sessionID }),
@@ -83,7 +87,7 @@ export const recover = Effect.fn("Session.recover")(function* (input: {
             sessionID: input.sessionID,
             assistantMessageID: decision.assistantMessageID,
             callID: decision.callID,
-            provider: { executed: true },
+            provider: decision.provider,
             options: {
               ownerID: ExecutionOwner.ownerID,
               requireOwner: true,
@@ -104,7 +108,9 @@ export const recover = Effect.fn("Session.recover")(function* (input: {
           return
         }
         if (decision._tag === "WaitForRetry") {
-          if (decision.retry.nextAttemptAt <= Date.now() && input.wake) yield* input.wake(input.sessionID)
+          // Wake the coordinator now; SessionRunner owns the durable backoff and
+          // sleeps until nextAttemptAt before it constructs another provider turn.
+          if (input.wake) yield* input.wake(input.sessionID)
           return
         }
         if (input.wake) yield* input.wake(input.sessionID, true)
