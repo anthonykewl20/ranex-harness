@@ -11,6 +11,7 @@ import { SessionProjector } from "@ranex/core/session/projector"
 import { SessionReconcile } from "@ranex/core/session/reconcile"
 import { createLLMEventPublisher } from "@ranex/core/session/runner/publish-llm-event"
 import { SessionStore } from "@ranex/core/session/store"
+import { SessionExecution } from "@ranex/core/session/execution"
 import { Effect } from "effect"
 
 function input() {
@@ -65,8 +66,15 @@ async function main() {
   }
 
   const layer = AppNodeBuilder.build(
-    LayerNode.group([Database.node, EventV2.node, SessionProjector.node, SessionStore.node, SessionReconcile.sweepNode]),
-    [[Database.node, Database.layerFromPath(msg.dbFile)]],
+    LayerNode.group([
+      Database.node,
+      EventV2.node,
+      SessionProjector.node,
+      SessionStore.node,
+      SessionExecution.node,
+      SessionReconcile.sweepNode,
+    ]),
+    [[Database.node, Database.layerFromPath(msg.dbFile)], [SessionExecution.node, SessionExecution.noopLayer]],
   )
   await Effect.runPromise(
     Effect.gen(function* () {

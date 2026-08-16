@@ -490,7 +490,8 @@ describe("durable permission and question blockers", () => {
       replay: () => Effect.void,
       replayAll: () => Effect.succeed(undefined),
       remove: () => Effect.void,
-      claim: () => Effect.void,
+      owner: () => Effect.succeed(undefined),
+      claim: () => Effect.succeed(true),
     }))
     const republished = await Effect.runPromise(Effect.gen(function* () {
       const permissions = yield* PermissionV2.Service

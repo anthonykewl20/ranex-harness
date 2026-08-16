@@ -2,28 +2,118 @@ export * as SessionReconcile from "./reconcile"
 
 import { DateTime, Effect, Exit, Layer } from "effect"
 import { makeGlobalNode } from "../effect/app-node"
+import { Database } from "../database/database"
 import { EventV2 } from "../event"
+import { EffectFlock } from "../util/effect-flock"
 import { SessionEvent } from "./event"
 import { ExecutionOwner } from "./execution-owner"
+import { SessionExecution } from "./execution"
 import { SessionProjector } from "./projector"
+import { SessionRecovery } from "./recovery"
 import { SessionSchema } from "./schema"
 import { SessionStore } from "./store"
-import { EffectFlock } from "../util/effect-flock"
+import { SessionTable } from "./sql"
+import { eq } from "drizzle-orm"
 
 /**
- * Reconciles tools stranded `running` by a prior crash: publishes one durable
- * `Tool.Failed` for each still-pending/running tool in the session's projected
- * history. The projector commits the failure inside the publish transaction, so
- * once this returns the projected tool state already reflects the interruption.
- *
- * This is the single read-then-act critical section that both `SessionRunner.run`
- * (hoisted above the eligible-input guard) and the startup sweep call. The
- * `Effect.yieldNow` between read and publish marks the boundary the per-session
- * mutex in the runner exists to serialize: without it the synchronous SQLite
- * driver makes the section accidentally atomic and the mutex untestable. Services
- * are passed in (not yielded) so the runner can bind them from its own scope and
- * keep the capability's requirement type closed.
+ * The recovery critical section owns both fences. The Session owner excludes a
+ * live process; EventV2's CAS claim is the durable writer fence for its one
+ * possible recovery event. Any uncertainty stops recovery rather than replaying
+ * a provider request or a side-effecting tool.
  */
+export const recover = Effect.fn("Session.recover")(function* (input: {
+  readonly events: EventV2.Interface
+  readonly store: SessionStore.Interface
+  readonly sessionID: SessionSchema.ID
+  readonly wake?: (sessionID: SessionSchema.ID, force?: boolean) => Effect.Effect<void>
+}) {
+  const flock = yield* EffectFlock.Service
+  const { db } = yield* Database.Service
+  yield* flock.withLock(input.sessionID)(
+    Effect.gen(function* () {
+      const claimed = yield* input.store.claimExecution(input.sessionID, ExecutionOwner.ownerID)
+      if (!claimed) return
+      yield* Effect.gen(function* () {
+        const previousEventOwner = yield* input.events.owner(input.sessionID)
+        if (previousEventOwner && (yield* Effect.promise(() => ExecutionOwner.isLive(previousEventOwner)))) {
+          yield* Effect.logWarning("Session recovery skipped: durable event owner may still be live").pipe(
+            Effect.annotateLogs({ sessionID: input.sessionID }),
+          )
+          return
+        }
+        const eventClaimed = yield* input.events.claim(input.sessionID, ExecutionOwner.ownerID, previousEventOwner)
+        if (!eventClaimed) {
+          yield* Effect.logWarning("Session recovery skipped: durable event owner is already claimed").pipe(
+            Effect.annotateLogs({ sessionID: input.sessionID }),
+          )
+          return
+        }
+        const row = yield* db
+          .select({ retryAttempt: SessionTable.retry_attempt, retryNextAttemptAt: SessionTable.retry_next_attempt_at })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, input.sessionID))
+          .get()
+          .pipe(Effect.orDie)
+        if (!row) return yield* Effect.die(`Session not found: ${input.sessionID}`)
+        const decision = SessionRecovery.classify({
+          messages: yield* input.store.context(input.sessionID),
+          latestSeq: yield* EventV2.latestSequence(db, input.sessionID),
+          retry:
+            row.retryAttempt === null || row.retryNextAttemptAt === null
+              ? undefined
+              : { attempt: row.retryAttempt, nextAttemptAt: row.retryNextAttemptAt },
+          blockers: yield* input.store.blockers(input.sessionID),
+        })
+        if (decision._tag === "Idle") return
+        if (decision._tag === "InterruptAmbiguousTool") {
+          const blocker = {
+            id: `recovery:${input.sessionID}:tool_side_effect_ambiguous:${decision.assistantMessageID}:${decision.callID}`,
+            sessionID: input.sessionID,
+            kind: "tool_side_effect_ambiguous" as const,
+            assistantMessageID: decision.assistantMessageID,
+            callID: decision.callID,
+            aggregateSeq: yield* EventV2.latestSequence(db, input.sessionID),
+          }
+          yield* input.events.publish(
+            SessionEvent.Tool.Failed,
+            {
+              sessionID: input.sessionID,
+              timestamp: yield* DateTime.now,
+              assistantMessageID: decision.assistantMessageID,
+              callID: decision.callID,
+              error: { type: "unknown", message: "Tool execution interrupted" },
+              provider: { executed: true },
+            },
+            {
+              ownerID: ExecutionOwner.ownerID,
+              requireOwner: true,
+              // Event publication and its ambiguity marker must commit together.
+              commit: () => input.store.block(blocker),
+            },
+          )
+          return
+        }
+        if (decision._tag === "BlockAmbiguousProvider") {
+          yield* input.store.block({
+            id: `recovery:${input.sessionID}:provider_in_flight:${decision.assistantMessageID}`,
+            sessionID: input.sessionID,
+            kind: "provider_in_flight",
+            assistantMessageID: decision.assistantMessageID,
+            aggregateSeq: yield* EventV2.latestSequence(db, input.sessionID),
+          })
+          return
+        }
+        if (decision._tag === "WaitForRetry") {
+          if (decision.retry.nextAttemptAt <= Date.now() && input.wake) yield* input.wake(input.sessionID)
+          return
+        }
+        if (input.wake) yield* input.wake(input.sessionID, true)
+      }).pipe(Effect.ensuring(input.store.releaseExecution(input.sessionID, ExecutionOwner.ownerID)))
+    }),
+  )
+})
+
+/** Compatibility entry point for the existing in-process runner reconciler. */
 export const reconcileInterruptedTools = Effect.fn("Session.reconcileInterruptedTools")(function* (input: {
   readonly events: EventV2.Interface
   readonly store: SessionStore.Interface
@@ -34,11 +124,6 @@ export const reconcileInterruptedTools = Effect.fn("Session.reconcileInterrupted
     if (message.type !== "assistant") continue
     for (const tool of message.content) {
       if (tool.type !== "tool" || (tool.state.status !== "pending" && tool.state.status !== "running")) continue
-      // The yield marks the read-then-act boundary the per-session mutex
-      // serializes: it fires only when a stranded tool is about to be failed, so
-      // a run() over a clean session is unaffected. Without it the synchronous
-      // SQLite driver makes the section accidentally atomic and the mutex
-      // untestable.
       yield* Effect.yieldNow
       yield* input.events.publish(SessionEvent.Tool.Failed, {
         sessionID: input.sessionID,
@@ -55,61 +140,29 @@ export const reconcileInterruptedTools = Effect.fn("Session.reconcileInterrupted
   }
 })
 
-/**
- * Startup sweep: reconcile interrupted tools across every session at process
- * boot. This is the half the prototype left unwired — a `reconcile` capability
- * nobody called. A crash with an empty inbox never re-enters `run()` through the
- * inbox, so without this sweep those tools stay projected `running` forever.
- *
- * Each session sweep takes its durable flock, serializing it against another
- * process's drain for the same session. In this process, the runner's per-session
- * semaphore joins same-session work. One bad session never aborts the sweep.
- *
- * Because `store.list()` is DB-global, each session is fenced by its durable
- * `session.execution_owner` claim and its boot/process identity. An absent owner,
- * this process's owner, or a definitively dead other process is reconciled. A
- * session owned by a different live or undecidable process is skipped so its
- * running tools are not falsely marked interrupted.
- */
 const sweepLayer = Layer.effectDiscard(
   Effect.gen(function* () {
     const store = yield* SessionStore.Service
     const events = yield* EventV2.Service
-    const flock = yield* EffectFlock.Service
-    // List-level isolation: a malformed legacy row throws inside fromRow and must
-    // not abort server boot. Per-session isolation then keeps one bad session
-    // from aborting the rest.
+    const execution = yield* SessionExecution.Service
     const listExit = yield* store.list().pipe(Effect.exit)
     if (Exit.isFailure(listExit)) {
-      yield* Effect.logError("Session reconcile sweep: failed to list sessions", listExit.cause)
+      yield* Effect.logError("Session recovery sweep: failed to list sessions", listExit.cause)
       return
     }
-    yield* Effect.forEach(listExit.value, (session) =>
-      flock.withLock(session.id)(
-        Effect.gen(function* () {
-          const owner = yield* store.executionOwner(session.id)
-          if (
-            owner !== undefined &&
-            owner !== ExecutionOwner.ownerID &&
-            (yield* Effect.promise(() => ExecutionOwner.isLive(owner)))
-          ) {
-            yield* Effect.logInfo("Session reconcile sweep: skipping session owned by a live process").pipe(
-              Effect.annotateLogs({ sessionID: session.id }),
-            )
-            return
-          }
-          yield* reconcileInterruptedTools({ events, store, sessionID: session.id })
-        }),
-      ).pipe(
-        Effect.exit,
-        Effect.flatMap(Effect.fnUntraced(function* (exit) {
-          if (Exit.isFailure(exit)) {
-            yield* Effect.logError("Session reconcile sweep failed", exit.cause).pipe(
-              Effect.annotateLogs({ sessionID: session.id }),
-            )
-          }
-        })),
-      ),
+    yield* Effect.forEach(
+      listExit.value,
+      (session) =>
+        recover({ events, store, sessionID: session.id, wake: execution.wake }).pipe(
+          Effect.exit,
+          Effect.flatMap((exit) =>
+            Exit.isFailure(exit)
+              ? Effect.logError("Session recovery sweep failed", exit.cause).pipe(
+                  Effect.annotateLogs({ sessionID: session.id }),
+                )
+              : Effect.void,
+          ),
+        ),
       { discard: true },
     )
   }),
@@ -118,5 +171,5 @@ const sweepLayer = Layer.effectDiscard(
 export const sweepNode = makeGlobalNode({
   name: "session-reconcile-sweep",
   layer: sweepLayer,
-  deps: [EventV2.node, SessionStore.node, SessionProjector.node, EffectFlock.node],
+  deps: [Database.node, EventV2.node, SessionStore.node, SessionProjector.node, SessionExecution.node, EffectFlock.node],
 })

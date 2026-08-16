@@ -1232,8 +1232,8 @@ describe("EventV2", () => {
       const aggregateID = EventV2.ID.create()
 
       yield* events.publish(SyncMessage, { id: aggregateID, text: "claimed" })
-      yield* events.claim(aggregateID, "owner-1")
-      yield* events.claim(aggregateID, "owner-2")
+      expect(yield* events.claim(aggregateID, "owner-1")).toBe(true)
+      expect(yield* events.claim(aggregateID, "owner-2")).toBe(false)
       const row = yield* db
         .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
         .from(EventSequenceTable)
@@ -1241,7 +1241,7 @@ describe("EventV2", () => {
         .get()
         .pipe(Effect.orDie)
 
-      expect(row).toEqual({ seq: 0, ownerID: "owner-2" })
+      expect(row).toEqual({ seq: 0, ownerID: "owner-1" })
     }),
   )
 

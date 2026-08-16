@@ -3,7 +3,7 @@ export * as EventV2 from "./event"
 import { Cause, Context, Effect, Layer, Option, PubSub, Queue, Schema, Stream } from "effect"
 import { Event } from "@ranex/schema/event"
 import type { Data, Definition, Payload } from "@ranex/schema/event"
-import { and, asc, eq, gt, inArray } from "drizzle-orm"
+import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm"
 import { Database } from "./database/database"
 import { EventSequenceTable, EventTable } from "./event/sql"
 import { Location } from "./location"
@@ -161,6 +161,9 @@ export interface PublishOptions {
   readonly location?: Location.Ref
   /** Local operational projection committed atomically with a new durable event. Not replayed or serialized. */
   readonly commit?: (seq: number) => Effect.Effect<void>
+  /** Recovery-only durable writer fence. Ordinary local publishing remains unfenced. */
+  readonly ownerID?: string
+  readonly requireOwner?: boolean
 }
 
 export interface Interface {
@@ -194,7 +197,9 @@ export interface Interface {
     options?: { readonly publish?: boolean; readonly ownerID?: string; readonly strictOwner?: boolean },
   ) => Effect.Effect<string | undefined>
   readonly remove: (aggregateID: string) => Effect.Effect<void>
-  readonly claim: (aggregateID: string, ownerID: string) => Effect.Effect<void>
+  readonly owner: (aggregateID: string) => Effect.Effect<string | undefined>
+  /** Conditionally replaces exactly the owner observed by the caller. */
+  readonly claim: (aggregateID: string, ownerID: string, expectedOwner?: string) => Effect.Effect<boolean>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Event") {}
@@ -319,10 +324,11 @@ export const layerWith = (options?: LayerOptions) =>
         definition: Definition,
         event: Payload,
         input?: {
-          readonly seq: number
-          readonly aggregateID: string
-          readonly ownerID?: string
-          readonly strictOwner?: boolean
+          readonly seq?: number
+          readonly aggregateID?: string
+           readonly ownerID?: string
+           readonly strictOwner?: boolean
+           readonly requireOwner?: boolean
         },
         commit?: (seq: number) => Effect.Effect<void>,
       ) {
@@ -338,7 +344,7 @@ export const layerWith = (options?: LayerOptions) =>
                 }),
               )
             } else {
-              if (input && input.aggregateID !== aggregateID) {
+              if (input?.aggregateID !== undefined && input.aggregateID !== aggregateID) {
                 yield* Effect.die(
                   new InvalidDurableEventError({
                     type: event.type,
@@ -364,15 +370,23 @@ export const layerWith = (options?: LayerOptions) =>
                             string,
                             unknown
                           >
-                          if (input?.strictOwner && row?.ownerID && row.ownerID !== input.ownerID) {
+                           if (input?.strictOwner && row?.ownerID && row.ownerID !== input.ownerID) {
                             yield* Effect.die(
                               new InvalidDurableEventError({
                                 type: event.type,
                                 message: `Replay owner mismatch for aggregate ${aggregateID}: expected ${row.ownerID}, got ${input.ownerID ?? "none"}`,
                               }),
                             )
-                          }
-                          if (input && input.seq <= latest) {
+                           }
+                           if (input?.requireOwner && row?.ownerID !== input.ownerID) {
+                             yield* Effect.die(
+                               new InvalidDurableEventError({
+                                 type: event.type,
+                                 message: `Recovery owner mismatch for aggregate ${aggregateID}: expected ${input.ownerID ?? "none"}, got ${row?.ownerID ?? "none"}`,
+                               }),
+                             )
+                           }
+                           if (input?.seq !== undefined && input.seq <= latest) {
                             const stored = yield* db
                               .select()
                               .from(EventTable)
@@ -479,9 +493,13 @@ export const layerWith = (options?: LayerOptions) =>
         })
       }
 
-      function publishEvent<D extends Definition>(definition: D, event: Payload<D>, commit?: PublishOptions["commit"]) {
+      function publishEvent<D extends Definition>(
+        definition: D,
+        event: Payload<D>,
+        options?: Pick<PublishOptions, "commit" | "ownerID" | "requireOwner">,
+      ) {
         return Effect.gen(function* () {
-          if (!definition?.durable && commit)
+          if (!definition?.durable && options?.commit)
             return yield* Effect.die(
               new InvalidDurableEventError({
                 type: event.type,
@@ -489,7 +507,12 @@ export const layerWith = (options?: LayerOptions) =>
               }),
             )
           if (definition?.durable) {
-            const committed = yield* commitDurableEvent(definition, event as Payload, undefined, commit)
+            const committed = yield* commitDurableEvent(
+              definition,
+              event as Payload,
+              options?.requireOwner ? { ownerID: options.ownerID, requireOwner: true } : undefined,
+              options?.commit,
+            )
             if (committed) {
               event = {
                 ...event,
@@ -546,7 +569,7 @@ export const layerWith = (options?: LayerOptions) =>
               ...(location ? { location } : {}),
               data,
             } as Payload<D>,
-            options?.commit,
+            options,
           )
         })
       }
@@ -635,13 +658,28 @@ export const layerWith = (options?: LayerOptions) =>
           .pipe(Effect.orDie)
       }
 
-      function claim(aggregateID: string, ownerID: string) {
+      const owner = (aggregateID: string) =>
+        db
+          .select({ ownerID: EventSequenceTable.owner_id })
+          .from(EventSequenceTable)
+          .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+          .get()
+          .pipe(Effect.orDie, Effect.map((row) => row?.ownerID ?? undefined))
+
+      function claim(aggregateID: string, ownerID: string, expectedOwner?: string) {
         return db
           .update(EventSequenceTable)
           .set({ owner_id: ownerID })
-          .where(eq(EventSequenceTable.aggregate_id, aggregateID))
-          .run()
+          .where(
+            and(
+              eq(EventSequenceTable.aggregate_id, aggregateID),
+              expectedOwner === undefined ? isNull(EventSequenceTable.owner_id) : eq(EventSequenceTable.owner_id, expectedOwner),
+            ),
+          )
+          .returning({ aggregateID: EventSequenceTable.aggregate_id })
+          .get()
           .pipe(Effect.orDie)
+        .pipe(Effect.map((row) => row !== undefined))
       }
 
       const subscribe = <D extends Definition>(definition: D): Stream.Stream<Payload<D>> =>
@@ -765,6 +803,7 @@ export const layerWith = (options?: LayerOptions) =>
         replay,
         replayAll,
         remove,
+        owner,
         claim,
       })
       subscriberDiagnostics.set(service, diagnostics)

@@ -27,6 +27,7 @@ import { fromRow } from "./session/info"
 import { SessionRunner } from "./session/runner/index"
 import { SessionStore } from "./session/store"
 import { SessionExecution } from "./session/execution"
+import { SessionReconcile } from "./session/reconcile"
 import { makeGlobalNode } from "./effect/app-node"
 import { LocationServiceMap } from "./location-service-map"
 import { MessageDecodeError } from "./session/error"
@@ -561,6 +562,7 @@ export const node = makeGlobalNode({
     Database.node,
     EventV2.node,
     SessionExecution.node,
+    SessionReconcile.sweepNode,
     SessionStore.node,
     LocationServiceMap.node,
     SessionProjector.node,

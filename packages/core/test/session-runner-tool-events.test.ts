@@ -36,7 +36,8 @@ const capture = () => {
     replay: () => Effect.void,
     replayAll: () => Effect.succeed(undefined),
     remove: () => Effect.void,
-    claim: () => Effect.void,
+    owner: () => Effect.succeed(undefined),
+    claim: () => Effect.succeed(true),
   })
   return {
     published,
