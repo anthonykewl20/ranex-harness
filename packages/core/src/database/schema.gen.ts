@@ -228,6 +228,8 @@ export default {
           \`model\` text,
           \`retry_attempt\` integer,
           \`retry_next_attempt_at\` integer,
+          \`retry_cumulative_delay_ms\` integer,
+          \`retry_window_started_at\` integer,
           \`execution_owner\` text,
           \`time_created\` integer NOT NULL,
           \`time_updated\` integer NOT NULL,

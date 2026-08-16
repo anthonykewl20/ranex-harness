@@ -1144,6 +1144,11 @@ export type GlobalEvent = {
           sessionID: string
           attempt: number
           error: SessionNextRetryError
+          retry_class?: "rate_limit" | "transport" | "server" | "timeout"
+          delay_ms?: number
+          cumulative_delay_ms?: number
+          window_started_at?: number
+          remaining_delay_ms?: number
         }
       }
     | {
@@ -1597,6 +1602,7 @@ export type GlobalEvent = {
         id: string
         type: "worktree.failed"
         properties: {
+          name: string
           message: string
         }
       }
@@ -1657,6 +1663,8 @@ export type GlobalEvent = {
     | SyncEventSessionNextRevertStaged
     | SyncEventSessionNextRevertCleared
     | SyncEventSessionNextRevertCommitted
+    | SyncEventWorktreeReady
+    | SyncEventWorktreeFailed
 }
 
 /**
@@ -2198,6 +2206,7 @@ export type Worktree = {
   name: string
   branch?: string
   directory: string
+  baseSha?: string
 }
 
 export type WorktreeRemoveInput = {
@@ -2680,6 +2689,7 @@ export type Workspace = {
   name: string
   branch?: string | null
   directory?: string | null
+  baseSha?: string
   extra?: unknown | null
   projectID: string
   timeUsed: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
@@ -3686,6 +3696,11 @@ export type SyncEventSessionNextRetried = {
       sessionID: string
       attempt: number
       error: SessionNextRetryError
+      retry_class?: "rate_limit" | "transport" | "server" | "timeout"
+      delay_ms?: number
+      cumulative_delay_ms?: number
+      window_started_at?: number
+      remaining_delay_ms?: number
     }
   }
 }
@@ -3769,6 +3784,36 @@ export type SyncEventSessionNextRevertCommitted = {
       timestamp: number
       sessionID: string
       messageID: string
+    }
+  }
+}
+
+export type SyncEventWorktreeReady = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "worktree.ready.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      name: string
+      branch?: string
+    }
+  }
+}
+
+export type SyncEventWorktreeFailed = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "worktree.failed.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      name: string
+      message: string
     }
   }
 }
@@ -4622,6 +4667,11 @@ export type SessionNextRetried = {
     sessionID: string
     attempt: number
     error: SessionNextRetryError
+    retry_class?: "rate_limit" | "transport" | "server" | "timeout"
+    delay_ms?: number
+    cumulative_delay_ms?: number
+    window_started_at?: number
+    remaining_delay_ms?: number
   }
 }
 
@@ -5466,6 +5516,11 @@ export type EventSessionNextRetried = {
     sessionID: string
     attempt: number
     error: SessionNextRetryError
+    retry_class?: "rate_limit" | "transport" | "server" | "timeout"
+    delay_ms?: number
+    cumulative_delay_ms?: number
+    window_started_at?: number
+    remaining_delay_ms?: number
   }
 }
 
@@ -5913,6 +5968,7 @@ export type EventWorktreeFailed = {
   id: string
   type: "worktree.failed"
   properties: {
+    name: string
     message: string
   }
 }

@@ -13,12 +13,9 @@ import {
 
 const WATCHDOG_IDLE_KIND = "watchdog-idle"
 const WATCHDOG_ABSOLUTE_KIND = "watchdog-absolute"
-const MAX_RETRIES = 2
 // One recovery is enough to repair a truncated call while guaranteeing a model
 // that repeatedly emits malformed arguments cannot consume an unbounded turn.
 const MAX_INVALID_TOOL_ARGUMENT_RECOVERIES = 1
-const BASE_DELAY_MS = 500
-const MAX_DELAY_MS = 10_000
 import { Cause, Clock, DateTime, Effect, Exit, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
 import { eq } from "drizzle-orm"
 import { AgentV2 } from "../../agent"
@@ -47,6 +44,7 @@ import { SessionStore } from "../store"
 import { type RunError, Service } from "./index"
 import { SessionRunnerModel } from "./model"
 import { ProviderWatchdog } from "./provider-watchdog"
+import { ProviderRetryPolicy } from "./provider-retry"
 import { createLLMEventPublisher } from "./publish-llm-event"
 import { toLLMMessages } from "./to-llm-message"
 import { MAX_STEPS_PROMPT } from "./max-steps"
@@ -118,6 +116,7 @@ const layer = Layer.effect(
     const store = yield* SessionStore.Service
     const location = yield* Location.Service
     const systemContext = yield* SystemContextRegistry.Service
+    const providerRetry = yield* ProviderRetryPolicy.Service
     const skillGuidance = yield* SkillGuidance.Service
     const referenceGuidance = yield* ReferenceGuidance.Service
     const config = yield* Config.Service
@@ -173,6 +172,9 @@ const layer = Layer.effect(
       constructor(
         readonly attempt: number,
         readonly error: LLMError,
+        readonly decision: Extract<ProviderRetryPolicy.Decision, { readonly _tag: "Retry" }>,
+        readonly cumulativeDelay: number,
+        readonly windowStartedAt: number,
       ) {
         super()
       }
@@ -410,13 +412,40 @@ const layer = Layer.effect(
             )
           }
           if (
-            llmFailure?.retryable &&
-            attempt < MAX_RETRIES &&
+            llmFailure &&
             !publisher.hasAssistantStarted() &&
             stream._tag === "Failure" &&
             !Cause.hasInterrupts(stream.cause)
-          )
-            return yield* Effect.die(new RetryTurnError(attempt, llmFailure))
+          ) {
+            const persisted = yield* db
+              .select({
+                cumulative_delay_ms: SessionTable.retry_cumulative_delay_ms,
+                window_started_at: SessionTable.retry_window_started_at,
+              })
+              .from(SessionTable)
+              .where(eq(SessionTable.id, session.id))
+              .get()
+              .pipe(Effect.orDie)
+            const now = yield* Clock.currentTimeMillis
+            const decision = yield* providerRetry.decide({
+              error: llmFailure,
+              completed_attempt: attempt + 1,
+              assistant_started: false,
+              interrupted: false,
+              cumulative_delay_ms: persisted?.cumulative_delay_ms ?? 0,
+              window_started_at: persisted?.window_started_at ?? now,
+            })
+            if (decision._tag === "Retry")
+              return yield* Effect.die(
+                new RetryTurnError(
+                  attempt,
+                  llmFailure,
+                  decision,
+                  persisted?.cumulative_delay_ms ?? 0,
+                  persisted?.window_started_at ?? now,
+                ),
+              )
+          }
           if (llmFailure && !recoveredInvalidToolArguments && !publisher.hasProviderError()) {
             yield* withPublication(publisher.failUnsettledTools("Provider did not return a tool result", true))
             yield* withPublication(publisher.failAssistant(llmFailure.reason.message))
@@ -512,7 +541,6 @@ const layer = Layer.effect(
       RunError
     >
 
-    const retryDelay = (attempt: number) => Math.min(BASE_DELAY_MS * 2 ** attempt, MAX_DELAY_MS)
     const retryTurn = (
       sessionID: SessionSchema.ID,
       defect: RetryTurnError,
@@ -532,13 +560,18 @@ const layer = Layer.effect(
           sessionID,
           timestamp: yield* DateTime.now,
           attempt: defect.attempt,
+          retry_class: defect.decision.class,
+          delay_ms: defect.decision.delay_ms,
+          cumulative_delay_ms: defect.cumulativeDelay + defect.decision.delay_ms,
+          window_started_at: defect.windowStartedAt,
+          remaining_delay_ms: defect.decision.remaining_delay_ms,
           error: {
             message: defect.error.message,
             statusCode,
             isRetryable: true,
           },
         })
-        yield* Effect.sleep(retryDelay(defect.attempt))
+        yield* Effect.sleep(defect.decision.delay_ms)
         return yield* reenter(defect.attempt + 1)
       })
 
@@ -635,7 +668,12 @@ const layer = Layer.effect(
           if (Exit.isFailure(exit) && (Cause.hasDies(exit.cause) || Cause.hasInterrupts(exit.cause))) return yield* exit
           yield* db
             .update(SessionTable)
-            .set({ retry_attempt: null, retry_next_attempt_at: null })
+            .set({
+              retry_attempt: null,
+              retry_next_attempt_at: null,
+              retry_cumulative_delay_ms: null,
+              retry_window_started_at: null,
+            })
             .where(eq(SessionTable.id, input.sessionID))
             .run()
             .pipe(Effect.orDie)
@@ -677,6 +715,7 @@ export const node = makeLocationNode({
     ToolRegistry.node,
     SessionRunnerModel.node,
     ProviderWatchdog.node,
+    ProviderRetryPolicy.node,
     SessionStore.node,
     Location.node,
     SystemContextRegistry.node,

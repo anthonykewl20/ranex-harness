@@ -417,7 +417,10 @@ const layer = Layer.effectDiscard(
         .set({
           retry_attempt: event.data.attempt,
           retry_next_attempt_at:
-            DateTime.toEpochMillis(event.data.timestamp) + Math.min(500 * 2 ** event.data.attempt, 10_000),
+            DateTime.toEpochMillis(event.data.timestamp) +
+            (event.data.delay_ms ?? Math.min(500 * 2 ** event.data.attempt, 10_000)),
+          retry_cumulative_delay_ms: event.data.cumulative_delay_ms,
+          retry_window_started_at: event.data.window_started_at,
         })
         .where(eq(SessionTable.id, event.data.sessionID))
         .run()

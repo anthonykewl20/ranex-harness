@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "332fa64c-35d0-456b-8d0f-2781effaa69c",
+  "id": "6b5376f2-f11b-4815-b848-2c2917e83b65",
   "prevIds": [
-    "bcd4c4c7-b8c3-44e8-869d-125508a93327"
+    "332fa64c-35d0-456b-8d0f-2781effaa69c"
   ],
   "ddl": [
     {
@@ -1447,6 +1447,26 @@
       "default": null,
       "generated": null,
       "name": "retry_next_attempt_at",
+      "entityType": "columns",
+      "table": "session"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "retry_cumulative_delay_ms",
+      "entityType": "columns",
+      "table": "session"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "retry_window_started_at",
       "entityType": "columns",
       "table": "session"
     },

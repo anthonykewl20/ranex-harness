@@ -491,16 +491,32 @@ drivingIt.effect("GREEN: fresh drain honors persisted retry delay and resumes re
     yield* Effect.yieldNow
     const firstDrain = yield* sessionExecution.resume(id).pipe(Effect.forkChild)
     yield* Deferred.await(firstStarted)
-    expect((yield* Fiber.join(firstRetried)).pipe(Option.map((event) => event.data.attempt), Option.getOrUndefined)).toBe(0)
+    expect(
+      (yield* Fiber.join(firstRetried)).pipe(
+        Option.map((event) => event.data),
+        Option.getOrUndefined,
+      ),
+    ).toMatchObject({
+      attempt: 0,
+      retry_class: "server",
+      delay_ms: 500,
+      cumulative_delay_ms: 500,
+      remaining_delay_ms: 29_500,
+    })
     expect(turnCalls).toBe(1)
     expect(
       yield* db
-        .select({ attempt: SessionTable.retry_attempt, next_attempt_at: SessionTable.retry_next_attempt_at })
+        .select({
+          attempt: SessionTable.retry_attempt,
+          next_attempt_at: SessionTable.retry_next_attempt_at,
+          cumulative_delay_ms: SessionTable.retry_cumulative_delay_ms,
+          window_started_at: SessionTable.retry_window_started_at,
+        })
         .from(SessionTable)
         .where(eq(SessionTable.id, id))
         .get()
         .pipe(Effect.orDie),
-    ).toEqual({ attempt: 0, next_attempt_at: 500 })
+    ).toEqual({ attempt: 0, next_attempt_at: 500, cumulative_delay_ms: 500, window_started_at: 0 })
     yield* sessionExecution.interrupt(id)
     const firstExit = yield* Fiber.await(firstDrain)
     expect(Exit.isFailure(firstExit) && Cause.hasInterrupts(firstExit.cause)).toBeTrue()
@@ -530,6 +546,32 @@ drivingIt.effect("GREEN: fresh drain honors persisted retry delay and resumes re
         .get()
         .pipe(Effect.orDie),
     ).toEqual({ attempt: null, next_attempt_at: null })
+  }),
+)
+
+drivingIt.effect("restart preserves the cumulative retry delay ceiling", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_cumulative_restart")
+    yield* insertDrivingSession(id)
+    const events = yield* EventV2.Service
+    const sessionExecution = yield* SessionExecution.Service
+    turnStreams = [Stream.fail(unavailable())]
+    yield* events.publish(SessionEvent.Retried, {
+      sessionID: id,
+      timestamp: DateTime.makeUnsafe(0),
+      attempt: 0,
+      retry_class: "server",
+      delay_ms: 500,
+      cumulative_delay_ms: 29_500,
+      window_started_at: 0,
+      remaining_delay_ms: 500,
+      error: { message: "unavailable", statusCode: 503, isRetryable: true },
+    })
+    const drain = yield* sessionExecution.resume(id).pipe(Effect.exit, Effect.forkChild)
+    yield* TestClock.adjust("500 millis")
+    expect(Exit.isFailure(yield* Fiber.join(drain))).toBeTrue()
+    expect(turnCalls).toBe(1)
+    expect(yield* retriedAttempts(id)).toEqual([0])
   }),
 )
 
