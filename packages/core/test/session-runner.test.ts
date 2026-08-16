@@ -721,7 +721,7 @@ describe("SessionRunnerLLM", () => {
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(SystemContext.InitializationBlocked)
       expect(requests).toHaveLength(0)
-      expect(yield* SessionInput.hasPending(db, sessionID, "steer")).toBe(true)
+      expect(yield* SessionInput.hasPending(db, sessionID, "steer")).toBe(false)
       expect(
         yield* db
           .select()
@@ -731,7 +731,7 @@ describe("SessionRunnerLLM", () => {
       ).toBeUndefined()
 
       systemUnavailable = false
-      yield* session.prompt({ id: messageID, sessionID, prompt: Prompt.make({ text: "First" }) })
+      yield* session.resume(sessionID)
 
       expect(requests).toHaveLength(1)
       expect(requests[0]?.messages.map((message) => message.role)).toEqual(["user"])
@@ -885,6 +885,7 @@ describe("SessionRunnerLLM", () => {
 
       expect(Exit.isFailure(yield* session.resume(sessionID).pipe(Effect.exit))).toBe(true)
       expect(requests).toHaveLength(0)
+      expect(yield* session.context(sessionID)).toMatchObject([{ type: "user", text: "First" }])
       expect(
         yield* db
           .select()

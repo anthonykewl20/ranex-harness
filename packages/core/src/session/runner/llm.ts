@@ -202,14 +202,6 @@ const layer = Layer.effect(
       const session = yield* getSession(sessionID)
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
         return yield* Effect.interrupt
-      const watchdog = yield* providerWatchdog.settings()
-      const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
-      const agent = yield* agents.select(session.agent)
-      const model = yield* models.resolve(session)
-      const turnSystemContext = loadSystemContext(agent, model)
-      const initialized = yield* SessionContextEpoch.initialize(db, turnSystemContext, session.id)
-      const toolFibers = yield* FiberSet.make<void, ToolOutputStore.Error>()
-      let needsContinuation = false
       let currentStep = step
       if (promotion) {
         const cutoff = yield* EventV2.latestSequence(db, session.id)
@@ -221,6 +213,14 @@ const layer = Layer.effect(
         }
         if (promoted > 0) currentStep = 1
       }
+      const watchdog = yield* providerWatchdog.settings()
+      const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
+      const agent = yield* agents.select(session.agent)
+      const model = yield* models.resolve(session)
+      const turnSystemContext = loadSystemContext(agent, model)
+      const initialized = yield* SessionContextEpoch.initialize(db, turnSystemContext, session.id)
+      const toolFibers = yield* FiberSet.make<void, ToolOutputStore.Error>()
+      let needsContinuation = false
       const system = initialized ?? (yield* SessionContextEpoch.prepare(db, events, turnSystemContext, session.id))
       const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
       const context = entries.map((entry) => entry.message)
