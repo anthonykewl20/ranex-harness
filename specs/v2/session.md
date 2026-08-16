@@ -101,7 +101,7 @@ Ambient project discovery canonicalizes and contains traversal within the projec
 Current Context Epoch follow-ups:
 
 - Add configured, remote, and nested instruction sources with explicit precedence and removal semantics.
-- Add durable post-crash continuation recovery for promoted or provider-dispatched work.
+- Continue cross-model failover work; subagent recovery remains deferred pending per-target permissions.
 - Add explicit manual compaction on top of automatic request-budget compaction.
 - Add operational metrics for observation latency, unavailable sources, contention, baseline size, and chronological-update growth.
 - Consider watcher-backed per-file caching only if measurements show direct safe-boundary observation is too expensive.

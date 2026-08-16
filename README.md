@@ -108,6 +108,12 @@ production here, and milestone #1 is closed:
 - **Session-ID fencing** — SLICE-016, `1834c96260`. Cross-process drain
   ownership is claimed and released against a live owner check.
 
+The kernel durability wave additionally shipped post-crash continuation recovery
+(#58), tunable bounded provider retry (#71), Anthropic assistant prefill (#69),
+and active-model System Context (#70). Cross-model failover (#72) is in
+progress; subagent recovery (#73) remains deferred pending per-target
+permissions (#65).
+
 A `v0.1.2 — opportunity backlog` hardening pass layered on top of milestone #1,
 scoped from an upstream-opencode audit: durable permission/question blockers
 are now Location-scoped (no cross-location settle), cascade on session delete,

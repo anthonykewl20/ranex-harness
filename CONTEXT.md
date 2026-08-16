@@ -2,6 +2,10 @@
 
 OpenCode sessions preserve durable conversational history while assembling the runtime context an agent needs to act correctly in its current environment.
 
+## Status
+
+The kernel durability wave has shipped post-crash continuation recovery (#58), the tunable bounded provider retry policy (#71), Anthropic assistant prefill (#69), and active-model System Context (#70). Cross-model failover (#72) is in progress; subagent recovery (#73) remains deferred pending per-target permissions (#65).
+
 ## Language
 
 **System Context**:
@@ -121,6 +125,7 @@ _Avoid_: Response envelope
 - Built-in and instruction context producers register through the **System Context Registry** with stable contribution keys. Plugin-defined context registration and hot-reload lifecycle remain a follow-up built on the same scoped registry seam.
 - Selected-agent available-skill guidance is a **Context Source** composed with Location-wide registry sources immediately before Context Epoch admission. It lists only names and descriptions permitted for that agent; skill bodies and locations are exposed only through the permission-checked `skill` tool.
 - The selected agent and model are sampled when a provider turn starts. Changes admitted after that boundary apply to the next provider turn and do not restart the current turn.
+- The active provider/model identity is a `core/active-model` Context Source. It initializes with the resolved model and emits one chronological update when a later provider turn resolves a different model.
 - Selected-agent available-skill guidance remains a **Context Source**. An agent switch that changes that guidance produces a **Mid-Conversation System Message** while preserving the current baseline.
 - Local tool authorization and pending permission requests retain the effective agent of the provider turn that issued the call; a later agent switch cannot change that call's policy.
 - Context source changes never wake idle sessions; the next naturally scheduled **Safe Provider-Turn Boundary** loads and compares current values lazily.
