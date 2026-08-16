@@ -27,6 +27,7 @@ import { fromRow } from "./session/info"
 import { SessionRunner } from "./session/runner/index"
 import { SessionStore } from "./session/store"
 import { SessionExecution } from "./session/execution"
+import { SessionReconcile } from "./session/reconcile"
 import { makeGlobalNode } from "./effect/app-node"
 import { LocationServiceMap } from "./location-service-map"
 import { MessageDecodeError } from "./session/error"
@@ -41,6 +42,7 @@ import { EventTable } from "./event/sql"
 import { ManagedOutput } from "@ranex/schema/managed-output"
 import { ProjectedEvent } from "./projected-event"
 import { ToolOutputStore } from "./tool-output-store"
+import { SessionRecovery } from "./session/recovery"
 
 export const RevertState = Revert.State
 export type RevertState = Revert.State
@@ -185,6 +187,13 @@ export interface Interface {
   readonly active: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError | SessionRunner.RunError>
   readonly interrupt: (sessionID: SessionSchema.ID) => Effect.Effect<void>
+  /** Records an operator's disposition of a post-crash ambiguity. It does not dispatch work. */
+  readonly resolveBlocker: (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly blockerID: string
+    readonly actor: string
+    readonly choice: SessionRecovery.Resolution
+  }) => Effect.Effect<void, NotFoundError>
   readonly revert: {
     readonly stage: (input: {
       sessionID: SessionSchema.ID
@@ -219,6 +228,15 @@ const layer = Layer.effect(
             }),
         ),
       )
+    // A dispatch marker becomes model-visible only while it is unresolved. Once a
+    // provider turn ends without content, retain its durable event for audit but do
+    // not expose an empty synthetic assistant message as conversation history.
+    const visibleMessage = (message: SessionMessage.Message) =>
+      message.type !== "assistant" ||
+      message.time.completed === undefined ||
+      message.content.length > 0 ||
+      message.finish === "error" ||
+      message.error !== undefined
 
     const result = Service.of({
       create: Effect.fn("V2Session.create")(function* (input) {
@@ -337,23 +355,39 @@ const layer = Layer.effect(
               .pipe(Effect.orDie)
           : undefined
         if (input.cursor && !anchor) return []
-        const boundary = anchor
-          ? order === "asc"
-            ? gt(SessionMessageTable.seq, anchor.seq)
-            : lt(SessionMessageTable.seq, anchor.seq)
-          : undefined
-        const where = boundary
-          ? and(eq(SessionMessageTable.session_id, input.sessionID), boundary)
-          : eq(SessionMessageTable.session_id, input.sessionID)
-        const query = db
-          .select()
-          .from(SessionMessageTable)
-          .where(where)
-          .orderBy(order === "asc" ? asc(SessionMessageTable.seq) : desc(SessionMessageTable.seq))
-        const rows = yield* (input.limit === undefined ? query.all() : query.limit(input.limit).all()).pipe(
-          Effect.orDie,
-        )
-        return yield* Effect.forEach(direction === "previous" ? rows.toReversed() : rows, decode)
+        const pageSize = input.limit ?? 100
+        const batchSize = Math.min(pageSize, 100)
+        let boundary = anchor?.seq
+        const messages: SessionMessage.Message[] = []
+        // Empty completed dispatch markers are hidden conversation implementation
+        // details. Scan bounded batches until the public page is full so a marker
+        // cannot consume an otherwise visible page.
+        while (input.limit === undefined || messages.length < input.limit) {
+          const batchBoundary =
+            boundary === undefined
+              ? undefined
+              : order === "asc"
+                ? gt(SessionMessageTable.seq, boundary)
+                : lt(SessionMessageTable.seq, boundary)
+          const rows = yield* db
+            .select()
+            .from(SessionMessageTable)
+            .where(
+              batchBoundary
+                ? and(eq(SessionMessageTable.session_id, input.sessionID), batchBoundary)
+                : eq(SessionMessageTable.session_id, input.sessionID),
+            )
+            .orderBy(order === "asc" ? asc(SessionMessageTable.seq) : desc(SessionMessageTable.seq))
+            .limit(batchSize)
+            .all()
+            .pipe(Effect.orDie)
+          if (rows.length === 0) break
+          boundary = rows.at(-1)?.seq
+          messages.push(...(yield* Effect.forEach(rows, decode)).filter(visibleMessage))
+          if (rows.length < batchSize) break
+        }
+        const page = input.limit === undefined ? messages : messages.slice(0, input.limit)
+        return direction === "previous" ? page.toReversed() : page
       }),
       message: Effect.fn("V2Session.message")(function* (input) {
         const stored = yield* store.message(input.messageID)
@@ -361,7 +395,7 @@ const layer = Layer.effect(
       }),
       context: Effect.fn("V2Session.context")(function* (sessionID) {
         yield* result.get(sessionID)
-        return yield* store.context(sessionID)
+        return (yield* store.context(sessionID)).filter(visibleMessage)
       }),
       events: (input) =>
         Stream.unwrap(
@@ -403,10 +437,9 @@ const layer = Layer.effect(
           .where(
             and(
               eq(EventTable.aggregate_id, input.sessionID),
-              inArray(
-                EventTable.type,
-                [EventV2.versionedType(SessionEvent.Tool.Success.type, SessionEvent.Tool.Success.durable!.version)],
-              ),
+              inArray(EventTable.type, [
+                EventV2.versionedType(SessionEvent.Tool.Success.type, SessionEvent.Tool.Success.durable!.version),
+              ]),
             ),
           )
           .all()
@@ -513,6 +546,16 @@ const layer = Layer.effect(
       interrupt: Effect.fn("V2Session.interrupt")((sessionID) =>
         Effect.uninterruptible(execution.interrupt(sessionID)),
       ),
+      resolveBlocker: Effect.fn("V2Session.resolveBlocker")(function* (input) {
+        yield* result.get(input.sessionID)
+        const resolved = yield* store.resolveBlocker({
+          sessionID: input.sessionID,
+          id: input.blockerID,
+          actor: input.actor,
+          choice: input.choice,
+        })
+        if (!resolved) return yield* new NotFoundError({ sessionID: input.sessionID })
+      }),
       revert: {
         stage: Effect.fn("V2Session.revert.stage")(function* (input) {
           const session = yield* result.get(input.sessionID)
@@ -561,6 +604,7 @@ export const node = makeGlobalNode({
     Database.node,
     EventV2.node,
     SessionExecution.node,
+    SessionReconcile.sweepNode,
     SessionStore.node,
     LocationServiceMap.node,
     SessionProjector.node,

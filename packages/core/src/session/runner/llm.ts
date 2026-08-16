@@ -221,8 +221,7 @@ const layer = Layer.effect(
         }
         if (promoted > 0) currentStep = 1
       }
-      const system =
-        initialized ?? (yield* SessionContextEpoch.prepare(db, events, turnSystemContext, session.id))
+      const system = initialized ?? (yield* SessionContextEpoch.prepare(db, events, turnSystemContext, session.id))
       const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
       const context = entries.map((entry) => entry.message)
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
@@ -345,24 +344,28 @@ const layer = Layer.effect(
 
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          const providerTurn = watchdog.absolute !== undefined
-            ? Effect.raceFirst(
-                restore(providerStream),
-                restore(
-                  Effect.sleep(watchdog.absolute).pipe(
-                    Effect.andThen(
-                      Effect.fail(
-                        new LLMError({
-                          module: "SessionRunner",
-                          method: "stream",
-                          reason: new TransportReason({ message: "Provider turn absolute timeout", kind: WATCHDOG_ABSOLUTE_KIND }),
-                        }),
+          const providerTurn =
+            watchdog.absolute !== undefined
+              ? Effect.raceFirst(
+                  restore(providerStream),
+                  restore(
+                    Effect.sleep(watchdog.absolute).pipe(
+                      Effect.andThen(
+                        Effect.fail(
+                          new LLMError({
+                            module: "SessionRunner",
+                            method: "stream",
+                            reason: new TransportReason({
+                              message: "Provider turn absolute timeout",
+                              kind: WATCHDOG_ABSOLUTE_KIND,
+                            }),
+                          }),
+                        ),
                       ),
                     ),
                   ),
-                ),
-              )
-            : providerStream
+                )
+              : providerStream
           const stream = yield* restore(providerTurn).pipe(Effect.exit)
           const failure =
             stream._tag === "Failure" ? Option.getOrUndefined(Cause.findErrorOption(stream.cause)) : undefined
@@ -375,7 +378,7 @@ const layer = Layer.effect(
             return yield* Effect.die(continueAfterOverflowCompaction(currentStep))
           if (overflowFailure) yield* publish(overflowFailure)
           const llmFailure = failure instanceof LLMError ? failure : undefined
-          const assistantStarted = publisher.hasAssistantStarted()
+          const assistantProducedOutput = publisher.hasAssistantProducedOutput()
           const interrupted = stream._tag === "Failure" && Cause.hasInterrupts(stream.cause)
           const invalidToolArguments =
             llmFailure?.reason._tag === "InvalidProviderOutput" &&
@@ -416,12 +419,7 @@ const layer = Layer.effect(
               }),
             )
           }
-          if (
-            llmFailure &&
-            !assistantStarted &&
-            stream._tag === "Failure" &&
-            !interrupted
-          ) {
+          if (llmFailure && !assistantProducedOutput && stream._tag === "Failure" && !interrupted) {
             // EventV2 commits the durable Retried event and this projection in the
             // same transaction, so a committed retry event always has its budget
             // columns available to a later drain.
@@ -438,7 +436,7 @@ const layer = Layer.effect(
             const decision = yield* providerRetry.decide({
               error: llmFailure,
               completed_attempt: attempt + 1,
-              assistant_started: assistantStarted,
+              assistant_started: assistantProducedOutput,
               interrupted,
               cumulative_delay_ms: persisted?.cumulative_delay_ms ?? 0,
               window_started_at: persisted?.window_started_at ?? now,
@@ -560,7 +558,7 @@ const layer = Layer.effect(
           "status" in reason
             ? reason.status
             : reason._tag === "RateLimit"
-              ? reason.http?.response?.status ?? 429
+              ? (reason.http?.response?.status ?? 429)
               : "http" in reason
                 ? reason.http?.response?.status
                 : undefined
@@ -610,14 +608,7 @@ const layer = Layer.effect(
     )
 
     const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, attempt, recoveryAttempts) {
-      return yield* runTurnAttempt(
-        sessionID,
-        promotion,
-        step,
-        attempt,
-        recoveryAttempts,
-        true,
-      ).pipe(
+      return yield* runTurnAttempt(sessionID, promotion, step, attempt, recoveryAttempts, true).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {
             if (defect instanceof RetryTurnError)

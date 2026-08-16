@@ -70,6 +70,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
   let assistantActive = false
   let assistantFailed = false
   let providerFailed = false
+  let assistantProducedOutput = false
   let stepSettlement: { readonly finish: string; readonly tokens: ReturnType<typeof tokens> } | undefined
 
   const startAssistant = Effect.fnUntraced(function* () {
@@ -265,6 +266,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
       case "step-start":
         return
       case "text-start":
+        assistantProducedOutput = true
         yield* text.start(event.id)
         yield* events.publish(SessionEvent.Text.Started, {
           sessionID: input.sessionID,
@@ -287,6 +289,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
         yield* text.end(event.id)
         return
       case "reasoning-start":
+        assistantProducedOutput = true
         yield* reasoning.start(event.id)
         yield* events.publish(SessionEvent.Reasoning.Started, {
           sessionID: input.sessionID,
@@ -310,6 +313,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
         yield* reasoning.end(event.id, event.providerMetadata)
         return
       case "tool-input-start":
+        assistantProducedOutput = true
         yield* startToolInput(event)
         return
       case "tool-input-delta": {
@@ -332,6 +336,10 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
         yield* endToolInput(event)
         return
       case "tool-call": {
+        // Some providers emit a complete call without streaming tool input first.
+        // A durable call can start a side effect, so it closes every retry and
+        // overflow-compaction window before the call is recorded.
+        assistantProducedOutput = true
         if (!tools.has(event.id)) yield* startToolInput(event)
         const tool = tools.get(event.id)!
         if (!tool.inputEnded) yield* endToolInput(event)
@@ -438,6 +446,7 @@ export const createLLMEventPublisher = (events: EventV2.Interface, input: Input)
     recoverUncalledTool,
     hasActiveAssistant: () => assistantActive,
     hasAssistantStarted: () => assistantMessageID !== undefined,
+    hasAssistantProducedOutput: () => assistantProducedOutput,
     hasCalledTools: () => [...tools.values()].some((tool) => tool.called),
     hasProviderError: () => providerFailed,
     stepSettlement: () => stepSettlement,

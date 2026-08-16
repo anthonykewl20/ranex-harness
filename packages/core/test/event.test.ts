@@ -949,6 +949,19 @@ describe("EventV2", () => {
     }),
   )
 
+  it.effect("release clears only its own recovery writer claim", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const aggregateID = Session.ID.create()
+      yield* events.publish(DurableMessage, durableData(aggregateID, "seed"))
+      expect(yield* events.claim(aggregateID, "owner-a")).toBe(true)
+      yield* events.release(aggregateID, "owner-b")
+      expect(yield* events.owner(aggregateID)).toBe("owner-a")
+      yield* events.release(aggregateID, "owner-a")
+      expect(yield* events.owner(aggregateID)).toBeUndefined()
+    }),
+  )
+
   it.effect("strict owner fences exact replay", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
@@ -1225,15 +1238,15 @@ describe("EventV2", () => {
     }),
   )
 
-  it.effect("claim updates the event sequence owner", () =>
+  it.effect("claim preserves unconditional ownership transfer", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const { db } = yield* Database.Service
       const aggregateID = EventV2.ID.create()
 
       yield* events.publish(SyncMessage, { id: aggregateID, text: "claimed" })
-      yield* events.claim(aggregateID, "owner-1")
-      yield* events.claim(aggregateID, "owner-2")
+      expect(yield* events.claim(aggregateID, "owner-1")).toBe(true)
+      expect(yield* events.claim(aggregateID, "owner-2")).toBe(true)
       const row = yield* db
         .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
         .from(EventSequenceTable)
@@ -1242,6 +1255,38 @@ describe("EventV2", () => {
         .pipe(Effect.orDie)
 
       expect(row).toEqual({ seq: 0, ownerID: "owner-2" })
+    }),
+  )
+
+  it.effect("conditional claim refuses a live mismatched owner", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const aggregateID = EventV2.ID.create()
+      yield* events.publish(SyncMessage, { id: aggregateID, text: "claimed" })
+      yield* events.claim(aggregateID, "owner-1")
+
+      expect(yield* events.claimConditional(aggregateID, "owner-2")).toBe(false)
+      expect(yield* events.claimConditional(aggregateID, "owner-2", "owner-1")).toBe(true)
+      expect(yield* events.owner(aggregateID)).toBe("owner-2")
+    }),
+  )
+
+  it.effect("requireOwner rejects unowned and mismatched recovery writes", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const aggregateID = EventV2.ID.create()
+
+      const unowned = yield* events
+        .publish(SyncMessage, { id: aggregateID, text: "unowned" }, { ownerID: "owner-1", requireOwner: true })
+        .pipe(Effect.exit)
+      expect(String(unowned)).toContain("Recovery owner mismatch")
+
+      yield* events.publish(SyncMessage, { id: aggregateID, text: "seed" })
+      yield* events.claim(aggregateID, "owner-1")
+      const mismatched = yield* events
+        .publish(SyncMessage, { id: aggregateID, text: "mismatched" }, { ownerID: "owner-2", requireOwner: true })
+        .pipe(Effect.exit)
+      expect(String(mismatched)).toContain("Recovery owner mismatch")
     }),
   )
 

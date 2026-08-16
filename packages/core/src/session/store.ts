@@ -8,9 +8,10 @@ import { SessionHistory } from "./history"
 import { MessageDecodeError } from "./error"
 import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
-import { SessionMessageTable, SessionTable } from "./sql"
+import { SessionBlockerTable, SessionMessageTable, SessionTable } from "./sql"
 import { fromRow } from "./info"
 import { ExecutionOwner } from "./execution-owner"
+import { SessionRecovery } from "./recovery"
 
 export interface Interface {
   readonly get: (sessionID: SessionSchema.ID) => Effect.Effect<SessionSchema.Info | undefined>
@@ -26,7 +27,25 @@ export interface Interface {
   readonly message: (
     messageID: SessionMessage.ID,
   ) => Effect.Effect<{ readonly sessionID: SessionSchema.ID; readonly message: SessionMessage.Message } | undefined>
+  readonly blockers: (sessionID: SessionSchema.ID) => Effect.Effect<ReadonlyArray<Blocker>>
+  readonly block: (input: BlockInput) => Effect.Effect<void>
+  readonly resolveBlocker: (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly id: string
+    readonly actor: string
+    readonly choice: SessionRecovery.Resolution
+  }) => Effect.Effect<boolean>
 }
+
+export type Blocker = {
+  readonly id: string
+  readonly kind: "provider_in_flight" | "tool_side_effect_ambiguous"
+  readonly assistantMessageID?: SessionMessage.ID
+  readonly callID?: string
+  readonly aggregateSeq: number
+}
+
+export type BlockInput = Blocker & { readonly sessionID: SessionSchema.ID }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/SessionStore") {}
 
@@ -118,6 +137,53 @@ const layer = Layer.effect(
               message: yield* decodeMessage({ ...row.data, id: row.id, type: row.type }).pipe(Effect.orDie),
             }
           : undefined
+      }),
+      blockers: Effect.fn("SessionStore.blockers")(function* (sessionID) {
+        const rows = yield* db
+          .select()
+          .from(SessionBlockerTable)
+          .where(and(eq(SessionBlockerTable.session_id, sessionID), isNull(SessionBlockerTable.time_resolved)))
+          .all()
+          .pipe(Effect.orDie)
+        return rows.map((row) => ({
+          id: row.id,
+          kind: row.kind,
+          assistantMessageID: row.assistant_message_id ? SessionMessage.ID.make(row.assistant_message_id) : undefined,
+          callID: row.call_id ?? undefined,
+          aggregateSeq: row.aggregate_seq,
+        }))
+      }),
+      block: Effect.fn("SessionStore.block")(function* (input) {
+        yield* db
+          .insert(SessionBlockerTable)
+          .values({
+            id: input.id,
+            session_id: input.sessionID,
+            kind: input.kind,
+            assistant_message_id: input.assistantMessageID,
+            call_id: input.callID,
+            aggregate_seq: input.aggregateSeq,
+            time_created: Date.now(),
+          })
+          .onConflictDoNothing()
+          .run()
+          .pipe(Effect.orDie)
+      }),
+      resolveBlocker: Effect.fn("SessionStore.resolveBlocker")(function* (input) {
+        const resolved = yield* db
+          .update(SessionBlockerTable)
+          .set({ actor: input.actor, resolution: input.choice, time_resolved: Date.now() })
+          .where(
+            and(
+              eq(SessionBlockerTable.id, input.id),
+              eq(SessionBlockerTable.session_id, input.sessionID),
+              isNull(SessionBlockerTable.time_resolved),
+            ),
+          )
+          .returning({ id: SessionBlockerTable.id })
+          .get()
+          .pipe(Effect.orDie)
+        return resolved !== undefined
       }),
     })
   }),

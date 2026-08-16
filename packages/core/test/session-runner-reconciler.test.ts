@@ -20,6 +20,7 @@ import { SessionInput } from "@ranex/core/session/input"
 import { SessionMessage } from "@ranex/core/session/message"
 import { SessionProjector } from "@ranex/core/session/projector"
 import { SessionStore } from "@ranex/core/session/store"
+import { SessionExecution } from "@ranex/core/session/execution"
 import { SessionRunner } from "@ranex/core/session/runner"
 import * as SessionRunnerLLM from "@ranex/core/session/runner/llm"
 import { SessionRunnerModel } from "@ranex/core/session/runner/model"
@@ -171,8 +172,15 @@ const runInGraph = <A, E, E2, R>(layer: Layer.Layer<R, E2>, program: Effect.Effe
 // construction and reconciles every session in the file DB. No runner, no run().
 const buildSweepLayer = () =>
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, EventV2.node, SessionProjector.node, SessionStore.node, SessionReconcile.sweepNode]),
-    [[Database.node, Database.layerFromPath(dbFile)]],
+    LayerNode.group([
+      Database.node,
+      EventV2.node,
+      SessionProjector.node,
+      SessionStore.node,
+      SessionExecution.node,
+      SessionReconcile.sweepNode,
+    ]),
+    [[Database.node, Database.layerFromPath(dbFile)], [SessionExecution.node, SessionExecution.noopLayer]],
   )
 
 const insertSession = Effect.gen(function* () {
@@ -271,6 +279,7 @@ describe("SLICE-013 reconciler reorder (empty-inbox crash)", () => {
           // The whole point: run with an empty inbox must still reconcile.
           yield* runner.run({ sessionID, force: false })
           expect(assistantTool(yield* store.context(sessionID)).state.status).toBe("error")
+          expect(assistantTool(yield* store.context(sessionID)).provider?.executed).toBe(false)
         }),
       )
     } finally {

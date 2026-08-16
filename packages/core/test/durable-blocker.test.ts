@@ -20,7 +20,7 @@ import { SessionV2 } from "@ranex/core/session"
 import { SessionEvent } from "@ranex/core/session/event"
 import { MoveBlockedError } from "@ranex/core/session/move-error"
 import { SessionProjector } from "@ranex/core/session/projector"
-import { SessionTable } from "@ranex/core/session/sql"
+import { SessionBlockerTable, SessionTable } from "@ranex/core/session/sql"
 import { SessionStore } from "@ranex/core/session/store"
 import { eq, sql } from "drizzle-orm"
 import { location } from "./fixture/location"
@@ -62,7 +62,7 @@ function layer(filename: string, locationLayer = current, eventLayer?: ReturnTyp
   )
 }
 
-function graph<A, E>(filename: string, effect: Effect.Effect<A, E, Scope.Scope | PermissionV2.Service | QuestionV2.Service | EventV2.Service | Database.Service | AgentV2.Service | MoveSession.Service>, locationLayer = current, eventLayer?: ReturnType<typeof EventV2.layerWith>) {
+function graph<A, E>(filename: string, effect: Effect.Effect<A, E, Scope.Scope | PermissionV2.Service | QuestionV2.Service | EventV2.Service | Database.Service | AgentV2.Service | MoveSession.Service | SessionStore.Service>, locationLayer = current, eventLayer?: ReturnType<typeof EventV2.layerWith>) {
   return Effect.runPromise(effect.pipe(Effect.scoped, Effect.provide(layer(filename, locationLayer, eventLayer))))
 }
 
@@ -121,6 +121,61 @@ const askQuestion = Effect.gen(function* () {
 })
 
 describe("durable permission and question blockers", () => {
+  test("records a typed recovery blocker disposition and hides it after resolution", async () => {
+    await using tmp = await tmpdir()
+    const filename = path.join(tmp.path, "blockers.sqlite")
+    const blockerID = "recovery:ses_durable_blocker:provider_in_flight:msg_recovery"
+    await graph(filename, Effect.gen(function* () {
+      yield* setup
+      const store = yield* SessionStore.Service
+      yield* store.block({
+        id: blockerID,
+        sessionID,
+        kind: "provider_in_flight",
+        aggregateSeq: 1,
+      })
+      expect((yield* store.blockers(sessionID)).map((blocker) => blocker.id)).toEqual([blockerID])
+      yield* store.resolveBlocker({ sessionID, id: blockerID, actor: "operator:test", choice: "continue" })
+      expect(yield* store.blockers(sessionID)).toEqual([])
+      const { db } = yield* Database.Service
+      expect(yield* db
+        .select({ actor: SessionBlockerTable.actor, resolution: SessionBlockerTable.resolution })
+        .from(SessionBlockerTable)
+        .where(eq(SessionBlockerTable.id, blockerID))
+        .get()
+        .pipe(Effect.orDie)).toEqual({ actor: "operator:test", resolution: "continue" })
+    }))
+  })
+
+  test("does not resolve a blocker owned by another session", async () => {
+    await using tmp = await tmpdir()
+    const filename = path.join(tmp.path, "blockers.sqlite")
+    const otherSessionID = SessionV2.ID.make("ses_durable_blocker_other")
+    const blockerID = "recovery:shared:blocker"
+    await graph(filename, Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: otherSessionID,
+          project_id: Project.ID.global,
+          slug: "other",
+          directory: "/project",
+          title: "other",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+      const store = yield* SessionStore.Service
+      yield* store.block({ id: blockerID, sessionID: otherSessionID, kind: "provider_in_flight", aggregateSeq: 1 })
+      expect(
+        yield* store.resolveBlocker({ sessionID, id: blockerID, actor: "operator:test", choice: "continue" }),
+      ).toBe(false)
+      expect((yield* store.blockers(otherSessionID)).map((blocker) => blocker.id)).toEqual([blockerID])
+    }))
+  })
+
   test("permission once survives teardown and settles exactly once", async () => {
     await using tmp = await tmpdir()
     const filename = path.join(tmp.path, "blockers.sqlite")
@@ -490,7 +545,10 @@ describe("durable permission and question blockers", () => {
       replay: () => Effect.void,
       replayAll: () => Effect.succeed(undefined),
       remove: () => Effect.void,
-      claim: () => Effect.void,
+      owner: () => Effect.succeed(undefined),
+      claim: () => Effect.succeed(true),
+      claimConditional: () => Effect.succeed(true),
+      release: () => Effect.void,
     }))
     const republished = await Effect.runPromise(Effect.gen(function* () {
       const permissions = yield* PermissionV2.Service

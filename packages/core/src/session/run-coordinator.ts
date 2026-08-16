@@ -9,7 +9,7 @@ export interface Coordinator<Key, E> {
   /** Starts execution while idle or joins the active execution. */
   readonly run: (key: Key) => Effect.Effect<void, E>
   /** Registers one coalesced follow-up after newly recorded work. */
-  readonly wake: (key: Key) => Effect.Effect<void>
+  readonly wake: (key: Key, force?: boolean) => Effect.Effect<void>
   /** Stops active execution and waits for its cleanup. */
   readonly interrupt: (key: Key) => Effect.Effect<void>
 }
@@ -18,6 +18,7 @@ type Entry<E> = {
   readonly done: Deferred.Deferred<void, E>
   owner?: Fiber.Fiber<void, never>
   pendingWake: boolean
+  pendingWakeForce: boolean
   stopping: boolean
 }
 
@@ -31,6 +32,7 @@ export const make = <Key, E>(options: {
     const makeEntry = (): Entry<E> => ({
       done: Deferred.makeUnsafe<void, E>(),
       pendingWake: false,
+      pendingWakeForce: false,
       stopping: false,
     })
 
@@ -50,8 +52,10 @@ export const make = <Key, E>(options: {
 
     const settle = (key: Key, entry: Entry<E>, exit: Exit.Exit<void, E>) => {
       if (Exit.isSuccess(exit) && !entry.stopping && entry.pendingWake) {
+        const force = entry.pendingWakeForce
         entry.pendingWake = false
-        start(key, entry, false, true)
+        entry.pendingWakeForce = false
+        start(key, entry, force, true)
         return
       }
 
@@ -59,7 +63,7 @@ export const make = <Key, E>(options: {
       if (successor === undefined) active.delete(key)
       else {
         active.set(key, successor)
-        start(key, successor, false, true)
+        start(key, successor, entry.pendingWakeForce, true)
       }
       Deferred.doneUnsafe(entry.done, exit)
     }
@@ -78,17 +82,18 @@ export const make = <Key, E>(options: {
         return restore(Deferred.await(next.done))
       })
 
-    const wake = (key: Key) =>
+    const wake = (key: Key, force = false) =>
       Effect.sync(() => {
         const entry = active.get(key)
         if (entry !== undefined) {
           entry.pendingWake = true
+          entry.pendingWakeForce ||= force
           return
         }
 
         const next = makeEntry()
         active.set(key, next)
-        start(key, next, false)
+        start(key, next, force)
       })
 
     const interrupt = (key: Key): Effect.Effect<void> =>
@@ -97,6 +102,7 @@ export const make = <Key, E>(options: {
         if (entry?.owner === undefined) return Effect.void
         entry.stopping = true
         entry.pendingWake = false
+        entry.pendingWakeForce = false
         return Fiber.interrupt(entry.owner)
       })
 

@@ -165,6 +165,134 @@ describe("SessionProjector", () => {
     }).pipe(Effect.provide(sessionsLayer)),
   )
 
+  it.effect("fills a message page past a newest completed dispatch marker", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: Project.ID.global,
+          slug: "test",
+          directory: "/project",
+          title: "test",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+      const events = yield* EventV2.Service
+      const sessions = yield* SessionV2.Service
+      const visibleID = SessionMessage.ID.make("msg_visible")
+      const markerID = SessionMessage.ID.make("msg_marker")
+      yield* events.publish(SessionEvent.Prompted, {
+        sessionID,
+        messageID: visibleID,
+        timestamp: created,
+        prompt: Prompt.make({ text: "visible" }),
+        delivery: "steer",
+      })
+      yield* events.publish(SessionEvent.Step.Started, {
+        sessionID,
+        assistantMessageID: markerID,
+        timestamp: DateTime.makeUnsafe(1),
+        agent: "build",
+        model,
+      })
+      yield* events.publish(SessionEvent.Retried, {
+        sessionID,
+        timestamp: DateTime.makeUnsafe(2),
+        attempt: 0,
+        error: { message: "unavailable", isRetryable: true },
+      })
+
+      expect(yield* sessions.messages({ sessionID, limit: 1 })).toMatchObject([{ id: visibleID, type: "user" }])
+    }).pipe(Effect.provide(sessionsLayer)),
+  )
+
+  it.effect("paginates visible messages through bounded marker batches in both directions", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: Project.ID.global,
+          slug: "marker-pages",
+          directory: "/project",
+          title: "marker pages",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+      const events = yield* EventV2.Service
+      const sessions = yield* SessionV2.Service
+      const ids = Array.from({ length: 12 }, (_, index) => SessionMessage.ID.make(`msg_marker_page_${index}`))
+      for (const [index, id] of ids.entries()) {
+        yield* events.publish(SessionEvent.Prompted, {
+          sessionID,
+          messageID: id,
+          timestamp: DateTime.makeUnsafe(index * 10),
+          prompt: Prompt.make({ text: `message ${index}` }),
+          delivery: "steer",
+        })
+        if (index !== 3 && index !== 7) continue
+        const markerID = SessionMessage.ID.make(`msg_marker_page_hidden_${index}`)
+        yield* events.publish(SessionEvent.Step.Started, {
+          sessionID,
+          assistantMessageID: markerID,
+          timestamp: DateTime.makeUnsafe(index * 10 + 1),
+          agent: "build",
+          model,
+        })
+        yield* events.publish(SessionEvent.Retried, {
+          sessionID,
+          timestamp: DateTime.makeUnsafe(index * 10 + 2),
+          attempt: 0,
+          error: { message: "unavailable", isRetryable: true },
+        })
+      }
+
+      const previous = yield* sessions.messages({
+        sessionID,
+        limit: 2,
+        order: "asc",
+        cursor: { id: ids[10]!, direction: "previous" },
+      })
+      expect(previous.map((message) => (message.type === "user" ? message.text : message.type))).toEqual([
+        "message 8",
+        "message 9",
+      ])
+
+      let cursor: SessionMessage.ID | undefined
+      const traversed: SessionMessage.Message[] = []
+      while (true) {
+        const page = yield* sessions.messages({
+          sessionID,
+          limit: 2,
+          order: "asc",
+          ...(cursor === undefined ? {} : { cursor: { id: cursor, direction: "next" as const } }),
+        })
+        if (page.length === 0) break
+        traversed.push(...page)
+        cursor = page.at(-1)?.id
+      }
+      expect(traversed.map((message) => (message.type === "user" ? message.text : message.type))).toEqual(
+        ids.map((_id, index) => `message ${index}`),
+      )
+      expect(traversed.every((message) => message.type === "user")).toBe(true)
+    }).pipe(Effect.provide(sessionsLayer)),
+  )
+
   it.effect("marks an inbox row promoted with the Prompted event sequence", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service

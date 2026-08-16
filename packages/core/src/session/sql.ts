@@ -179,3 +179,23 @@ export const SessionContextEpochTable = sqliteTable("session_context_epoch", {
   snapshot: text({ mode: "json" }).notNull().$type<SystemContext.Snapshot>(),
   baseline_seq: integer().notNull(),
 })
+
+export const SessionBlockerTable = sqliteTable(
+  "session_blocker",
+  {
+    id: text().primaryKey(),
+    session_id: text()
+      .$type<SessionSchema.ID>()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    kind: text().notNull().$type<"provider_in_flight" | "tool_side_effect_ambiguous">(),
+    assistant_message_id: text().$type<SessionMessage.ID>(),
+    call_id: text(),
+    aggregate_seq: integer().notNull(),
+    actor: text(),
+    resolution: text(),
+    time_created: integer().notNull(),
+    time_resolved: integer(),
+  },
+  (table) => [index("session_blocker_session_active_idx").on(table.session_id, table.time_resolved)],
+)
