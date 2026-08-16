@@ -12,6 +12,7 @@ import { applyCachePolicy } from "../cache-policy"
 import * as ProviderShared from "../protocols/shared"
 import type { LLMError, LLMEvent, PreparedRequestOf, ProtocolID, ProviderOptions } from "../schema"
 import {
+  AssistantPrefillUnsupportedReason,
   GenerationOptions,
   HttpOptions,
   LLMRequest,
@@ -344,6 +345,15 @@ export function make<Body, Prepared, Frame, Event, State>(
 const compile = Effect.fn("LLM.compile")(function* (request: LLMRequest) {
   const resolved = applyCachePolicy(resolveRequestOptions(request))
   const route = resolved.model.route
+  if (resolved.prefill && route.protocol !== "anthropic-messages")
+    return yield* new LLMErrorClass({
+      module: "LLM",
+      method: "compile",
+      reason: new AssistantPrefillUnsupportedReason({
+        message: `LLM route ${route.id} does not support assistant prefill`,
+        capability: "unsupported",
+      }),
+    })
 
   const body = yield* route.body
     .from(resolved)

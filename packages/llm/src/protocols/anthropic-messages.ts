@@ -5,6 +5,9 @@ import { Endpoint } from "../route/endpoint"
 import { Framing } from "../route/framing"
 import { Protocol } from "../route/protocol"
 import {
+  AssistantPrefillUnsupportedReason,
+  InvalidRequestReason,
+  LLMError,
   LLMEvent,
   Usage,
   type CacheHint,
@@ -490,6 +493,52 @@ const lowerMessages = Effect.fn("AnthropicMessages.lowerMessages")(function* (
 
 const anthropicOptions = (request: LLMRequest) => request.providerOptions?.anthropic
 
+const lowerPrefill = (request: LLMRequest, messages: AnthropicMessage[]) => {
+  const prefill = request.prefill
+  if (!prefill) return Effect.succeed(messages)
+
+  const capability = request.model.compatibility?.assistantPrefill ?? "unknown"
+  if (capability === "supported") {
+    if (messages.at(-1)?.role !== "user")
+      return Effect.fail(
+        new LLMError({
+          module: "AnthropicMessages",
+          method: "fromRequest",
+          reason: new InvalidRequestReason({
+            message: "Anthropic Messages assistant prefills require the lowered conversation to end with a user message",
+          }),
+        }),
+      )
+    return Effect.succeed([
+      ...messages,
+      { role: "assistant" as const, content: [{ type: "text" as const, text: prefill.text }] },
+    ])
+  }
+
+  // Assistant-prefill semantics are not equivalent to a user instruction, so
+  // preserve the intent only when the caller explicitly accepts this fallback.
+  if (prefill.unsupported === "instruction") {
+    return Effect.succeed([
+      ...messages,
+      {
+        role: "user" as const,
+        content: [{ type: "text" as const, text: `Continue your response from this text:\n${prefill.text}` }],
+      },
+    ])
+  }
+
+  return Effect.fail(
+    new LLMError({
+      module: "AnthropicMessages",
+      method: "fromRequest",
+      reason: new AssistantPrefillUnsupportedReason({
+        message: `Anthropic Messages model ${request.model.id} does not support assistant prefill (${capability} capability)`,
+        capability,
+      }),
+    }),
+  )
+}
+
 const lowerThinking = Effect.fn("AnthropicMessages.lowerThinking")(function* (request: LLMRequest) {
   const thinking = anthropicOptions(request)?.thinking
   if (!ProviderShared.isRecord(thinking) || thinking.type !== "enabled") return undefined
@@ -530,7 +579,8 @@ const fromRequest = Effect.fn("AnthropicMessages.fromRequest")(function* (reques
           text: part.text,
           cache_control: cacheControl(breakpoints, part.cache),
         }))
-  const messages = yield* lowerMessages(request, breakpoints)
+  const loweredMessages = yield* lowerMessages(request, breakpoints)
+  const messages = yield* lowerPrefill(request, loweredMessages)
   if (breakpoints.dropped > 0) {
     yield* Effect.logWarning(
       `Anthropic Messages: dropped ${breakpoints.dropped} cache breakpoint(s); the API allows at most ${ANTHROPIC_BREAKPOINT_CAP} per request.`,

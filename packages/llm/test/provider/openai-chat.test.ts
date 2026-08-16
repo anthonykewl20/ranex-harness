@@ -1,12 +1,12 @@
 import { describe, expect } from "bun:test"
-import { Effect, Schema, Stream } from "effect"
+import { Effect, Layer, Ref, Schema, Stream } from "effect"
 import { HttpClientRequest } from "effect/unstable/http"
 import { LLM, LLMError, LLMEvent, Message, Model, ToolCallPart, Usage } from "../../src"
 import * as Azure from "../../src/providers/azure"
 import * as OpenAI from "../../src/providers/openai"
 import * as OpenAIChat from "../../src/protocols/openai-chat"
 import { ProviderShared } from "../../src/protocols/shared"
-import { Auth, LLMClient } from "../../src/route"
+import { Auth, LLMClient, RequestExecutor } from "../../src/route"
 import { it } from "../lib/effect"
 import { dynamicResponse, fixedResponse, truncatedStream } from "../lib/http"
 import { deltaChunk, usageChunk } from "../lib/openai-chunks"
@@ -48,6 +48,32 @@ describe("OpenAI Chat route", () => {
         max_tokens: 20,
         temperature: 0,
       })
+    }),
+  )
+
+  it.effect("rejects assistant prefill before invoking RequestExecutor", () =>
+    Effect.gen(function* () {
+      const executions = yield* Ref.make(0)
+      const error = yield* LLMClient.generate(
+        LLM.request({ model, prompt: "Say hello.", prefill: { text: "Hello" } }),
+      ).pipe(
+        Effect.provide(
+          LLMClient.layer.pipe(
+            Layer.provide(
+              Layer.succeed(
+                RequestExecutor.Service,
+                RequestExecutor.Service.of({
+                  execute: () => Ref.update(executions, (count) => count + 1).pipe(Effect.andThen(Effect.die("unexpected"))),
+                }),
+              ),
+            ),
+          ),
+        ),
+        Effect.flip,
+      )
+
+      expect(error.reason).toMatchObject({ _tag: "AssistantPrefillUnsupported", capability: "unsupported" })
+      expect(yield* Ref.get(executions)).toBe(0)
     }),
   )
 

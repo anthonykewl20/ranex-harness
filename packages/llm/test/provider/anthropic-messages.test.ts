@@ -1,8 +1,8 @@
 import { describe, expect } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Layer, Ref } from "effect"
 import { HttpClientRequest } from "effect/unstable/http"
-import { CacheHint, LLM, LLMError, Message, ToolCallPart, Usage } from "../../src"
-import { Auth, LLMClient } from "../../src/route"
+import { CacheHint, LLM, LLMError, Message, Model, ToolCallPart, Usage } from "../../src"
+import { Auth, LLMClient, RequestExecutor } from "../../src/route"
 import * as AnthropicMessages from "../../src/protocols/anthropic-messages"
 import { continuationRequest, nativeAnthropicMessagesContinuation } from "../continuation-scenarios"
 import { it } from "../lib/effect"
@@ -16,6 +16,9 @@ const model = AnthropicMessages.route
 const opus48 = AnthropicMessages.route
   .with({ endpoint: { baseURL: "https://api.anthropic.test/v1/" }, auth: Auth.header("x-api-key", "test") })
   .model({ id: "claude-opus-4-8" })
+
+const prefillSupported = Model.update(model, { compatibility: { assistantPrefill: "supported" } })
+const prefillUnsupported = Model.update(model, { compatibility: { assistantPrefill: "unsupported" } })
 
 const request = LLM.request({
   id: "req_1",
@@ -54,6 +57,106 @@ describe("Anthropic Messages route", () => {
         max_tokens: 20,
         temperature: 0,
       })
+    }),
+  )
+
+  it.effect("appends a supported assistant prefill after a user turn", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<AnthropicMessages.AnthropicMessagesBody>(
+        LLM.request({
+          model: prefillSupported,
+          prompt: "Choose A, B, or C.",
+          prefill: { text: "The answer is " },
+          cache: "none",
+        }),
+      )
+
+      expect(prepared.body.messages).toEqual([
+        { role: "user", content: [{ type: "text", text: "Choose A, B, or C." }] },
+        { role: "assistant", content: [{ type: "text", text: "The answer is " }] },
+      ])
+    }),
+  )
+
+  it.effect("rejects a supported prefill when the lowered conversation does not end with a user message", () =>
+    Effect.gen(function* () {
+      const error = yield* LLMClient.prepare(
+        LLM.request({ model: prefillSupported, messages: [Message.assistant("Prior answer.")], prefill: { text: "Continue" } }),
+      ).pipe(Effect.flip)
+
+      expect(error.reason).toMatchObject({ _tag: "InvalidRequest" })
+      expect(error.message).toContain("require the lowered conversation to end with a user message")
+    }),
+  )
+
+  it.effect("rejects unknown prefill capability without stripping the prefill", () =>
+    Effect.gen(function* () {
+      const error = yield* LLMClient.prepare(
+        LLM.request({ model, prompt: "Choose.", prefill: { text: "The answer is " } }),
+      ).pipe(Effect.flip)
+
+      expect(error.retryable).toBe(false)
+      expect(error.reason).toMatchObject({ _tag: "AssistantPrefillUnsupported", capability: "unknown" })
+    }),
+  )
+
+  it.effect("uses the explicit instruction fallback for unknown prefill capability", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<AnthropicMessages.AnthropicMessagesBody>(
+        LLM.request({
+          model,
+          prompt: "Choose.",
+          prefill: { text: "The answer is ", unsupported: "instruction" },
+          cache: "none",
+        }),
+      )
+
+      expect(prepared.body.messages).toEqual([
+        { role: "user", content: [{ type: "text", text: "Choose." }] },
+        {
+          role: "user",
+          content: [{ type: "text", text: "Continue your response from this text:\nThe answer is " }],
+        },
+      ])
+    }),
+  )
+
+  it.effect("fails unsupported prefill before invoking RequestExecutor", () =>
+    Effect.gen(function* () {
+      const executions = yield* Ref.make(0)
+      const error = yield* LLMClient.generate(
+        LLM.request({ model: prefillUnsupported, prompt: "Choose.", prefill: { text: "The answer is " } }),
+      ).pipe(
+        Effect.provide(
+          LLMClient.layer.pipe(
+            Layer.provide(
+              Layer.succeed(
+                RequestExecutor.Service,
+                RequestExecutor.Service.of({
+                  execute: () => Ref.update(executions, (count) => count + 1).pipe(Effect.andThen(Effect.die("unexpected"))),
+                }),
+              ),
+            ),
+          ),
+        ),
+        Effect.flip,
+      )
+
+      expect(error.reason).toMatchObject({ _tag: "AssistantPrefillUnsupported", capability: "unsupported" })
+      expect(yield* Ref.get(executions)).toBe(0)
+    }),
+  )
+
+  it.effect("leaves historical assistant turns unchanged when there is no prefill", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<AnthropicMessages.AnthropicMessagesBody>(
+        LLM.request({ model, messages: [Message.user("Hi."), Message.assistant("Hello.")], cache: "none" }),
+      )
+
+      expect(prepared.body.messages).toEqual([
+        { role: "user", content: [{ type: "text", text: "Hi." }] },
+        { role: "assistant", content: [{ type: "text", text: "Hello." }] },
+      ])
     }),
   )
 

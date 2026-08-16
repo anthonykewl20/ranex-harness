@@ -166,8 +166,12 @@ export namespace ModelDefaults {
 export const ModelToolSchemaCompatibility = Schema.Literals(["gemini", "moonshot"])
 export type ModelToolSchemaCompatibility = Schema.Schema.Type<typeof ModelToolSchemaCompatibility>
 
+export const AssistantPrefillCapability = Schema.Literals(["supported", "unsupported", "unknown"])
+export type AssistantPrefillCapability = Schema.Schema.Type<typeof AssistantPrefillCapability>
+
 export class ModelCompatibility extends Schema.Class<ModelCompatibility>("LLM.ModelCompatibility")({
   toolSchema: Schema.optional(ModelToolSchemaCompatibility),
+  assistantPrefill: Schema.optional(AssistantPrefillCapability),
 }) {}
 
 export namespace ModelCompatibility {

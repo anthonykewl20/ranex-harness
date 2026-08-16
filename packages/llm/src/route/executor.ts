@@ -8,6 +8,7 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http"
 import {
+  AssistantPrefillUnsupportedReason,
   AuthenticationReason,
   ContentPolicyReason,
   HttpContext,
@@ -22,7 +23,7 @@ import {
   TransportReason,
   UnknownProviderReason,
 } from "../schema"
-import { isContextOverflow } from "../provider-error"
+import { isAssistantPrefillUnsupported, isContextOverflow } from "../provider-error"
 
 export interface Interface {
   readonly execute: (
@@ -230,6 +231,13 @@ const statusReason = (input: {
   readonly http: HttpContext
 }) => {
   const body = input.http.body ?? ""
+  if (isAssistantPrefillUnsupported(body)) {
+    return new AssistantPrefillUnsupportedReason({
+      message: input.message,
+      capability: "unsupported",
+      http: input.http,
+    })
+  }
   if (/content[-_\s]?policy|content_filter|safety/i.test(body)) {
     return new ContentPolicyReason({ message: input.message, http: input.http })
   }

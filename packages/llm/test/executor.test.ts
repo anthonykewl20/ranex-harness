@@ -113,6 +113,25 @@ describe("RequestExecutor", () => {
     }).pipe(Effect.provide(responsesLayer([new Response("invalid parameter", { status: 400 })]))),
   )
 
+  it.effect("classifies Copilot assistant-prefill rejection as non-retryable", () =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const error = yield* executor.execute(request).pipe(Effect.flip)
+
+      expectLLMError(error)
+      expect(error.retryable).toBe(false)
+      expect(error.reason).toMatchObject({ _tag: "AssistantPrefillUnsupported", capability: "unsupported" })
+    }).pipe(
+      Effect.provide(
+        responsesLayer([
+          new Response("This model does not support assistant message prefill. The conversation must end with a user message.", {
+            status: 400,
+          }),
+        ]),
+      ),
+    ),
+  )
+
   it.effect("returns redacted diagnostics for retryable rate limits", () =>
     Effect.gen(function* () {
       const executor = yield* RequestExecutor.Service
