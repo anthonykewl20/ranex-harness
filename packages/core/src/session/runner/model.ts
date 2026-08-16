@@ -73,7 +73,7 @@ export type Error =
   | Integration.AuthorizationError
 
 export interface Interface {
-  readonly resolve: (session: SessionSchema.Info) => Effect.Effect<Model, Error>
+  readonly resolve: (session: SessionSchema.Info, override?: ModelV2.Ref) => Effect.Effect<Model, Error>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/SessionRunnerModel") {}
@@ -190,20 +190,24 @@ export const locationLayer = Layer.effect(
     const catalog = yield* Catalog.Service
     const integrations = yield* Integration.Service
     return Service.of({
-      resolve: Effect.fn("SessionRunnerModel.resolve")(function* (session) {
+      resolve: Effect.fn("SessionRunnerModel.resolve")(function* (session, override) {
         // Location plugins populate and filter the catalog asynchronously during layer startup.
-        const defaultModel = session.model ? undefined : yield* catalog.model.default()
-        const selected = session.model
+        const defaultModel = session.model || override ? undefined : yield* catalog.model.default()
+        const selected = override
+          ? (yield* catalog.model.available()).find(
+              (model) => model.providerID === override.providerID && model.id === override.id,
+            )
+          : session.model
           ? (yield* catalog.model.available()).find(
               (model) => model.providerID === session.model?.providerID && model.id === session.model.id,
             )
           : defaultModel && supported(defaultModel)
             ? defaultModel
             : (yield* catalog.model.available()).find(supported)
-        if (!selected && session.model)
+        if (!selected && (session.model || override))
           return yield* new ModelUnavailableError({
-            providerID: session.model.providerID,
-            modelID: session.model.id,
+            providerID: override?.providerID ?? session.model!.providerID,
+            modelID: override?.id ?? session.model!.id,
           })
         if (!selected) return yield* new ModelNotSelectedError({ sessionID: session.id })
         const provider = yield* catalog.provider.get(selected.providerID)

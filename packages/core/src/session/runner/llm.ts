@@ -183,6 +183,19 @@ const layer = Layer.effect(
       }
     }
 
+    class FailoverTurnError extends Error {
+      constructor(readonly error: LLMError, readonly from: ModelV2.Ref) {
+        super()
+      }
+    }
+
+    type FailoverState = {
+      /** A failover stays selected for the active drain's continuation turns. */
+      readonly model: ModelV2.Ref | undefined
+      /** Entries tried in this drain cannot be retried until it settles. */
+      readonly used: Set<string>
+    }
+
     const continueAfterCompaction = (step: number) => new TurnTransitionError({ _tag: "ContinueAfterCompaction", step })
     const continueAfterOverflowCompaction = (step: number) =>
       new TurnTransitionError({ _tag: "ContinueAfterOverflowCompaction", step })
@@ -192,13 +205,43 @@ const layer = Layer.effect(
         concurrency: "unbounded",
       }).pipe(Effect.map((contexts) => SystemContext.combine([...contexts, ActiveModel.activeModel(model)])))
 
+    const failoverSettings = Effect.fn("SessionRunner.failoverSettings")(function* () {
+      return (yield* config.entries())
+        .filter((entry): entry is Config.Document => entry.type === "document")
+        .flatMap((entry) => (entry.info.provider_failover ? [entry.info.provider_failover] : []))
+        .reduce<{ readonly chain: readonly string[]; readonly on_watchdog: boolean }>(
+          (result, current) => ({
+            chain: current.chain ?? result.chain,
+            on_watchdog: current.on_watchdog ?? result.on_watchdog,
+          }),
+          { chain: [], on_watchdog: false },
+        )
+    })
+
+    const modelRef = (model: Model, session: SessionSchema.Info): ModelV2.Ref => ({
+      id: ModelV2.ID.make(model.id),
+      providerID: ProviderV2.ID.make(model.provider),
+      ...(session.model?.variant === undefined ? {} : { variant: session.model.variant }),
+    })
+
+    const modelKey = (model: ModelV2.Ref) => `${model.providerID}/${model.id}`
+    const isWatchdogFailure = (error: LLMError) =>
+      error.reason._tag === "Transport" &&
+      (error.reason.kind === WATCHDOG_IDLE_KIND || error.reason.kind === WATCHDOG_ABSOLUTE_KIND)
+    const exhaustedRetry = (decision: ProviderRetryPolicy.Decision) =>
+      decision._tag === "Stop" &&
+      (decision.reason === "attempt-ceiling" ||
+        decision.reason === "cumulative-delay-ceiling" ||
+        decision.reason === "elapsed-ceiling")
+
     const runTurnAttempt = Effect.fn("SessionRunner.runTurn")(function* (
       sessionID: SessionSchema.ID,
       promotion: SessionInput.Delivery | undefined,
       step: number,
       attempt: number,
       recoveryAttempts: number,
-      allowOverflowRecovery = false,
+      allowOverflowRecovery: boolean,
+      failover: FailoverState,
     ) {
       const session = yield* getSession(sessionID)
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
@@ -217,7 +260,7 @@ const layer = Layer.effect(
       const watchdog = yield* providerWatchdog.settings()
       const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
       const agent = yield* agents.select(session.agent)
-      const model = yield* models.resolve(session)
+      const model = yield* models.resolve(session, failover.model)
       const turnSystemContext = loadSystemContext(agent, model)
       const initialized = yield* SessionContextEpoch.initialize(db, turnSystemContext, session.id)
       const toolFibers = yield* FiberSet.make<void, ToolOutputStore.Error>()
@@ -244,11 +287,7 @@ const layer = Layer.effect(
       const publisher = createLLMEventPublisher(events, {
         sessionID: session.id,
         agent: agent.id,
-        model: {
-          id: ModelV2.ID.make(model.id),
-          providerID: ProviderV2.ID.make(model.provider),
-          ...(session.model?.variant === undefined ? {} : { variant: session.model.variant }),
-        },
+        model: modelRef(model, session),
         snapshot: startSnapshot,
       })
       const withPublication = Semaphore.makeUnsafe(1).withPermit
@@ -445,6 +484,9 @@ const layer = Layer.effect(
               cumulative_delay_ms: persisted?.cumulative_delay_ms ?? 0,
               window_started_at: persisted?.window_started_at ?? now,
             })
+            const failover = yield* failoverSettings()
+            if (failover.chain.length > 0 && isWatchdogFailure(llmFailure) && failover.on_watchdog)
+              return yield* Effect.die(new FailoverTurnError(llmFailure, modelRef(model, session)))
             if (decision._tag === "Retry")
               return yield* Effect.die(
                 new RetryTurnError(
@@ -455,6 +497,13 @@ const layer = Layer.effect(
                   persisted?.window_started_at ?? now,
                 ),
               )
+            if (
+              failover.chain.length > 0 &&
+              !isWatchdogFailure(llmFailure) &&
+              ProviderRetryPolicy.classify(llmFailure) !== undefined &&
+              exhaustedRetry(decision)
+            )
+              return yield* Effect.die(new FailoverTurnError(llmFailure, modelRef(model, session)))
           }
           if (llmFailure && !recoveredInvalidToolArguments && !publisher.hasProviderError()) {
             yield* withPublication(publisher.failUnsettledTools("Provider did not return a tool result", true))
@@ -562,6 +611,7 @@ const layer = Layer.effect(
       step: number,
       attempt: number,
       recoveryAttempts: number,
+      failover: FailoverState,
     ) => Effect.Effect<
       { readonly needsContinuation: boolean; readonly step: number; readonly recoveryAttempts: number },
       RunError
@@ -601,14 +651,71 @@ const layer = Layer.effect(
         return yield* reenter(defect.attempt + 1)
       })
 
+    const failoverTurn = (
+      sessionID: SessionSchema.ID,
+      step: number,
+      attempt: number,
+      recoveryAttempts: number,
+      defect: FailoverTurnError,
+      failover: FailoverState,
+      allowOverflowRecovery: boolean,
+    ) =>
+      Effect.gen(function* () {
+        const session = yield* getSession(sessionID)
+        const settings = yield* failoverSettings()
+        for (const entry of settings.chain) {
+          const parsed = ModelV2.parse(entry)
+          const to: ModelV2.Ref = {
+            id: parsed.modelID,
+            providerID: parsed.providerID,
+            ...(session.model?.variant === undefined ? {} : { variant: session.model.variant }),
+          }
+          const key = modelKey(to)
+          if (key === modelKey(defect.from) || failover.used.has(key)) continue
+          failover.used.add(key)
+          const resolution = yield* models.resolve(session, to).pipe(
+            Effect.match({
+              onFailure: (error) => ({ error }),
+              onSuccess: () => ({}),
+            }),
+          )
+          if ("error" in resolution) {
+            yield* Effect.logWarning(`Skipping unavailable provider failover model ${entry}: ${resolution.error.message}`)
+            continue
+          }
+          yield* events.publish(SessionEvent.ModelFailedOver, {
+            sessionID,
+            timestamp: yield* DateTime.now,
+            from: defect.from,
+            to,
+            error: { message: defect.error.message },
+          })
+          const next = { ...failover, model: to }
+          if (allowOverflowRecovery)
+            return yield* runTurn(sessionID, undefined, step, 0, recoveryAttempts, next)
+          return yield* runAfterOverflowCompaction(sessionID, undefined, step, 0, recoveryAttempts, next)
+        }
+        return yield* Effect.fail(defect.error)
+      })
+
     const runAfterOverflowCompaction: RunTurn = Effect.fnUntraced(
-      function* (sessionID, promotion, step, attempt, recoveryAttempts) {
-        return yield* runTurnAttempt(sessionID, promotion, step, attempt, recoveryAttempts).pipe(
+      function* (sessionID, promotion, step, attempt, recoveryAttempts, failover) {
+        return yield* runTurnAttempt(sessionID, promotion, step, attempt, recoveryAttempts, false, failover).pipe(
           Effect.catchDefect(
             Effect.fnUntraced(function* (defect) {
               if (defect instanceof RetryTurnError)
                 return yield* retryTurn(sessionID, defect, (nextAttempt) =>
-                  runAfterOverflowCompaction(sessionID, undefined, step, nextAttempt, recoveryAttempts),
+                  runAfterOverflowCompaction(sessionID, undefined, step, nextAttempt, recoveryAttempts, failover),
+                )
+              if (defect instanceof FailoverTurnError)
+                return yield* failoverTurn(
+                  sessionID,
+                  step,
+                  attempt,
+                  recoveryAttempts,
+                  defect,
+                  failover,
+                  false,
                 )
               if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
               if (defect.transition._tag === "ContinueAfterOverflowCompaction")
@@ -620,6 +727,7 @@ const layer = Layer.effect(
                 defect.transition.step,
                 attempt,
                 recoveryAttempts,
+                failover,
               )
             }),
           ),
@@ -627,14 +735,24 @@ const layer = Layer.effect(
       },
     )
 
-    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, attempt, recoveryAttempts) {
-      return yield* runTurnAttempt(sessionID, promotion, step, attempt, recoveryAttempts, true).pipe(
+    const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step, attempt, recoveryAttempts, failover) {
+      return yield* runTurnAttempt(sessionID, promotion, step, attempt, recoveryAttempts, true, failover).pipe(
         Effect.catchDefect(
           Effect.fnUntraced(function* (defect) {
             if (defect instanceof RetryTurnError)
               return yield* retryTurn(sessionID, defect, (nextAttempt) =>
-                runTurn(sessionID, undefined, step, nextAttempt, recoveryAttempts),
-              )
+                  runTurn(sessionID, undefined, step, nextAttempt, recoveryAttempts, failover),
+                )
+              if (defect instanceof FailoverTurnError)
+                return yield* failoverTurn(
+                  sessionID,
+                  step,
+                  attempt,
+                  recoveryAttempts,
+                  defect,
+                  failover,
+                  true,
+                )
             if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
             yield* Effect.yieldNow
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
@@ -644,8 +762,9 @@ const layer = Layer.effect(
                 defect.transition.step,
                 attempt,
                 recoveryAttempts,
+                failover,
               )
-            return yield* runTurn(sessionID, undefined, defect.transition.step, attempt, recoveryAttempts)
+            return yield* runTurn(sessionID, undefined, defect.transition.step, attempt, recoveryAttempts, failover)
           }),
         ),
       )
@@ -702,11 +821,14 @@ const layer = Layer.effect(
       let shouldRun = input.force || hasSteer || hasQueue || retryAttempt !== undefined
       let attempt = retryAttempt === undefined ? 0 : retryAttempt + 1
       while (shouldRun) {
+        // A fallback remains active for this drain, including tool continuations.
+        // Starting the next queued input is a new run and returns to configured selection.
+        const failover: FailoverState = { model: undefined, used: new Set() }
         let needsContinuation = true
         let step = 1
         let recoveryAttempts = 0
         while (needsContinuation) {
-          const exit = yield* runTurn(input.sessionID, promotion, step, attempt, recoveryAttempts).pipe(Effect.exit)
+          const exit = yield* runTurn(input.sessionID, promotion, step, attempt, recoveryAttempts, failover).pipe(Effect.exit)
           if (Exit.isFailure(exit) && (Cause.hasDies(exit.cause) || Cause.hasInterrupts(exit.cause))) return yield* exit
           yield* db
             .update(SessionTable)

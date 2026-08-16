@@ -367,6 +367,19 @@ const layer = Layer.effectDiscard(
         yield* run(db, event)
       }),
     )
+    yield* events.project(SessionEvent.ModelFailedOver, (event) =>
+      db
+        .update(SessionTable)
+        .set({
+          retry_attempt: null,
+          retry_next_attempt_at: null,
+          retry_cumulative_delay_ms: null,
+          retry_window_started_at: null,
+        })
+        .where(eq(SessionTable.id, event.data.sessionID))
+        .run()
+        .pipe(Effect.orDie, Effect.andThen(run(db, event))),
+    )
     yield* events.project(SessionEvent.Prompted, (event) =>
       Effect.gen(function* () {
         if (event.durable === undefined) return yield* Effect.die("Durable Session event is missing aggregate sequence")

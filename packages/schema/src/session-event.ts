@@ -75,6 +75,18 @@ export const ModelSwitched = Event.define({
 })
 export type ModelSwitched = typeof ModelSwitched.Type
 
+export const ModelFailedOver = Event.define({
+  type: "session.next.model.failed_over",
+  ...options,
+  schema: {
+    ...Base,
+    from: Model.Ref,
+    to: Model.Ref,
+    error: Schema.Struct({ message: Schema.String }),
+  },
+})
+export type ModelFailedOver = typeof ModelFailedOver.Type
+
 export const Moved = Event.define({
   type: "session.next.moved",
   ...options,
@@ -469,6 +481,7 @@ export namespace RevertEvent {
 export const DurableDefinitions = Event.inventory(
   AgentSwitched,
   ModelSwitched,
+  ModelFailedOver,
   Moved,
   Prompted,
   PromptAdmitted,
@@ -500,6 +513,7 @@ export const DurableDefinitions = Event.inventory(
 export const Definitions = Event.inventory(
   AgentSwitched,
   ModelSwitched,
+  ModelFailedOver,
   Moved,
   Prompted,
   PromptAdmitted,

@@ -20,6 +20,7 @@ import { ConfigLSP } from "./config/lsp"
 import { ConfigMCP } from "./config/mcp"
 import { ConfigPlugin } from "./config/plugin"
 import { ConfigProvider } from "./config/provider"
+import { ConfigProviderFailover } from "./config/provider-failover"
 import { ConfigProviderWatchdog } from "./config/provider-watchdog"
 import { ConfigProviderRetry } from "./config/provider-retry"
 import { ConfigProjectResolution } from "./config/project-resolution"
@@ -104,6 +105,9 @@ export class Info extends Schema.Class<Info>("Config.Info")({
   }),
   provider_retry: ConfigProviderRetry.Info.pipe(Schema.optional).annotate({
     description: "Bounded provider retry policy",
+  }),
+  provider_failover: ConfigProviderFailover.Info.pipe(Schema.optional).annotate({
+    description: "Fallback models for provider-turn failures after same-model retries",
   }),
   project_resolution: ConfigProjectResolution.Info.pipe(Schema.optional).annotate({
     description: "Project and VCS resolution readiness deadline",
