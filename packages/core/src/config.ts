@@ -21,6 +21,7 @@ import { ConfigMCP } from "./config/mcp"
 import { ConfigPlugin } from "./config/plugin"
 import { ConfigProvider } from "./config/provider"
 import { ConfigProviderWatchdog } from "./config/provider-watchdog"
+import { ConfigProviderRetry } from "./config/provider-retry"
 import { ConfigProjectResolution } from "./config/project-resolution"
 import { ConfigReference } from "./config/reference"
 import { ConfigToolOutput } from "./config/tool-output"
@@ -100,6 +101,9 @@ export class Info extends Schema.Class<Info>("Config.Info")({
   }),
   provider_watchdog: ConfigProviderWatchdog.Info.pipe(Schema.optional).annotate({
     description: "Provider stream inactivity and whole-turn watchdog timeouts",
+  }),
+  provider_retry: ConfigProviderRetry.Info.pipe(Schema.optional).annotate({
+    description: "Bounded provider retry policy",
   }),
   project_resolution: ConfigProjectResolution.Info.pipe(Schema.optional).annotate({
     description: "Project and VCS resolution readiness deadline",

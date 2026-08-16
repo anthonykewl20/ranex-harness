@@ -411,18 +411,23 @@ const layer = Layer.effectDiscard(
     yield* events.project(SessionEvent.Tool.Failed, (event) => run(db, event))
     yield* events.project(SessionEvent.Reasoning.Started, (event) => run(db, event))
     yield* events.project(SessionEvent.Reasoning.Ended, (event) => run(db, event))
-    yield* events.project(SessionEvent.Retried, (event) =>
-      db
+    yield* events.project(SessionEvent.Retried, (event) => {
+      // Historical Retried payloads predate an explicit delay. Do not recreate a
+      // retry from a guessed policy when replaying them; current producers always
+      // include delay_ms and therefore project normally.
+      if (event.data.delay_ms === undefined) return Effect.logWarning("Skipping legacy retried event without delay")
+      return db
         .update(SessionTable)
         .set({
           retry_attempt: event.data.attempt,
-          retry_next_attempt_at:
-            DateTime.toEpochMillis(event.data.timestamp) + Math.min(500 * 2 ** event.data.attempt, 10_000),
+          retry_next_attempt_at: DateTime.toEpochMillis(event.data.timestamp) + event.data.delay_ms,
+          retry_cumulative_delay_ms: event.data.cumulative_delay_ms,
+          retry_window_started_at: event.data.window_started_at,
         })
         .where(eq(SessionTable.id, event.data.sessionID))
         .run()
-        .pipe(Effect.orDie, Effect.asVoid),
-    )
+        .pipe(Effect.orDie, Effect.asVoid)
+    })
     yield* events.project(SessionEvent.Compaction.Ended, (event) => run(db, event))
     yield* events.project(SessionEvent.RevertEvent.Staged, (event) =>
       db

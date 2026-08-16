@@ -407,6 +407,11 @@ export const Retried = Event.define({
     ...Base,
     attempt: Schema.Finite,
     error: RetryError,
+    retry_class: Schema.Literals(["rate_limit", "transport", "server", "timeout"]).pipe(optional),
+    delay_ms: Schema.Finite.pipe(optional),
+    cumulative_delay_ms: Schema.Finite.pipe(optional),
+    window_started_at: Schema.Finite.pipe(optional),
+    remaining_delay_ms: Schema.Finite.pipe(optional),
   },
 })
 export type Retried = typeof Retried.Type

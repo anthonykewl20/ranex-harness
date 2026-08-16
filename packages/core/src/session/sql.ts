@@ -56,6 +56,8 @@ export const SessionTable = sqliteTable(
     }>(),
     retry_attempt: integer(),
     retry_next_attempt_at: integer(),
+    retry_cumulative_delay_ms: integer(),
+    retry_window_started_at: integer(),
     execution_owner: text(),
     ...Timestamps,
     time_compacting: integer(),
