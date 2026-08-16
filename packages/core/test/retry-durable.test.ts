@@ -16,10 +16,11 @@ import { SessionEvent } from "@ranex/core/session/event"
 import { SessionExecution } from "@ranex/core/session/execution"
 import { Prompt } from "@ranex/core/session/prompt"
 import { SessionProjector } from "@ranex/core/session/projector"
+import { SessionReconcile } from "@ranex/core/session/reconcile"
 import { SessionRunCoordinator } from "@ranex/core/session/run-coordinator"
 import { SessionRunner } from "@ranex/core/session/runner"
 import { node as sessionRunnerNode } from "@ranex/core/session/runner/llm"
-import { SessionRunnerModel } from "@ranex/core/session/runner/model"
+import { ModelUnavailableError, SessionRunnerModel } from "@ranex/core/session/runner/model"
 import { ProviderWatchdog } from "@ranex/core/session/runner/provider-watchdog"
 import { SessionTable } from "@ranex/core/session/sql"
 import { SessionStore } from "@ranex/core/session/store"
@@ -27,6 +28,8 @@ import { SessionTurnLLM } from "@ranex/core/session/runner/turn-llm"
 import { AgentV2 } from "@ranex/core/agent"
 import { Config } from "@ranex/core/config"
 import { ConfigCompaction } from "@ranex/core/config/compaction"
+import { ConfigProviderFailover } from "@ranex/core/config/provider-failover"
+import { ConfigProviderRetry } from "@ranex/core/config/provider-retry"
 import { SkillGuidance } from "@ranex/core/skill/guidance"
 import { Snapshot } from "@ranex/core/snapshot"
 import { SystemContext } from "@ranex/core/system-context"
@@ -34,12 +37,14 @@ import { SystemContextRegistry } from "@ranex/core/system-context/registry"
 import { ReferenceGuidance } from "@ranex/core/reference/guidance"
 import { ApplicationTools } from "@ranex/core/tool/application-tools"
 import { ToolRegistry } from "@ranex/core/tool/registry"
+import { EffectFlock } from "@ranex/core/util/effect-flock"
 import {
   LLMClient,
   LLMError,
   LLMEvent,
   Model,
   ProviderInternalReason,
+  TransportReason,
   InvalidRequestReason,
   type LLMClientShape,
   type LLMRequest,
@@ -273,8 +278,13 @@ it.effect("branded turn client adapter republishes its client under a distinct t
 })
 
 let turnCalls = 0
+let turnModels: string[] = []
 let turnStarted: Deferred.Deferred<void> | undefined
 let turnStreams: Stream.Stream<LLMEvent, LLMError>[] | undefined
+let providerFailover: ConfigProviderFailover.Info | undefined
+let providerRetry: ConfigProviderRetry.Info | undefined
+let unavailableFailoverModels = new Set<string>()
+let resolvedFailoverModels: string[] = []
 let globalResponses: Response[] = []
 let globalTransportCalls = 0
 
@@ -283,6 +293,19 @@ const unavailable = () =>
     module: "test",
     method: "stream",
     reason: new ProviderInternalReason({ message: "Provider unavailable", status: 503 }),
+  })
+
+class RetryableTransportReason extends TransportReason {
+  override get retryable() {
+    return true
+  }
+}
+
+const transportUnavailable = () =>
+  new LLMError({
+    module: "test",
+    method: "stream",
+    reason: new RetryableTransportReason({ message: "Provider transport unavailable" }),
   })
 
 const overflow = () =>
@@ -325,11 +348,14 @@ const turnClient = Layer.succeed(
   LLMClient.Service,
   LLMClient.Service.of({
     prepare: () => Effect.die("unused"),
-    stream: ((_request: LLMRequest) => {
+    stream: ((request: LLMRequest) => {
       const started = turnStarted
       turnStarted = undefined
       return Stream.unwrap(
-        Effect.sync(() => turnCalls++).pipe(
+        Effect.sync(() => {
+          turnCalls++
+          turnModels.push(`${request.model.provider}/${request.model.id}`)
+        }).pipe(
           Effect.andThen(started ? Deferred.succeed(started, undefined) : Effect.void),
           Effect.as(turnStreams?.shift() ?? Stream.fail(unavailable())),
         ),
@@ -360,7 +386,13 @@ const retryModel = Model.make({
     limits: { context: 20_000, output: 1_000 },
   }),
 })
-const models = SessionRunnerModel.layerWith(() => Effect.succeed(retryModel))
+const models = SessionRunnerModel.layerWith((_, override) => {
+  if (override) resolvedFailoverModels.push(`${override.providerID}/${override.id}`)
+  if (override && unavailableFailoverModels.has(`${override.providerID}/${override.id}`))
+    return Effect.fail(new ModelUnavailableError({ providerID: override.providerID, modelID: override.id }))
+  if (!override) return Effect.succeed(retryModel)
+  return Effect.succeed(Model.make({ ...retryModel, id: override.id, provider: override.providerID }))
+})
 const permission = Layer.mock(PermissionV2.Service, {
   assert: () => Effect.die("unused"),
   ask: () => Effect.die("unused"),
@@ -384,6 +416,8 @@ const config = Layer.succeed(
               buffer: 3_000,
               keep: new ConfigCompaction.Keep({ tokens: 1_000 }),
             }),
+            ...(providerFailover === undefined ? {} : { provider_failover: providerFailover }),
+            ...(providerRetry === undefined ? {} : { provider_retry: providerRetry }),
           }),
         }),
       ]),
@@ -433,6 +467,7 @@ const drivingIt = testEffect(
       AgentV2.node,
       ToolRegistry.node,
       ToolRegistry.toolsNode,
+      EffectFlock.node,
       SessionRunnerModel.node,
       SystemContextRegistry.node,
       SkillGuidance.node,
@@ -483,8 +518,13 @@ const insertDrivingSession = (id: SessionV2.ID) =>
       .run()
       .pipe(Effect.orDie)
     turnCalls = 0
+    turnModels = []
     turnStarted = undefined
     turnStreams = undefined
+    providerFailover = undefined
+    providerRetry = undefined
+    unavailableFailoverModels = new Set()
+    resolvedFailoverModels = []
     globalResponses = []
     globalTransportCalls = 0
   })
@@ -500,6 +540,18 @@ const retriedAttempts = (id: SessionV2.ID) =>
       .all()
       .pipe(Effect.orDie)
     return rows.filter((row) => row.data.sessionID === id).map((row) => row.data.attempt)
+  })
+
+const durableTypes = (id: SessionV2.ID) =>
+  Effect.gen(function* () {
+    const db = (yield* Database.Service).db
+    return yield* db
+      .select({ type: EventTable.type })
+      .from(EventTable)
+      .where(eq(EventTable.aggregate_id, id))
+      .orderBy(asc(EventTable.seq))
+      .all()
+      .pipe(Effect.orDie, Effect.map((rows) => rows.map((row) => row.type)))
   })
 
 drivingIt.effect("GREEN: fresh drain honors persisted retry delay and resumes remaining attempts", () =>
@@ -774,5 +826,218 @@ drivingIt.effect("mixed 503 then overflow preserves the retry attempt through co
     expect(yield* retriedAttempts(id)).toEqual([0, 1])
     expect(turnCalls).toBe(4)
     expect(globalTransportCalls).toBe(1)
+  }),
+)
+
+drivingIt.effect("fails over once retries are exhausted before the fallback provider turn", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_failover")
+    yield* insertDrivingSession(id)
+    providerFailover = new ConfigProviderFailover.Info({ chain: ["backup/fallback"] })
+    turnStreams = [Stream.fail(unavailable()), Stream.fail(unavailable()), Stream.fail(unavailable()), complete("ok", "Recovered")]
+    const session = yield* SessionV2.Service
+    const execution = yield* SessionExecution.Service
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Fail over" }), resume: false })
+    const drain = yield* execution.resume(id).pipe(Effect.exit, Effect.forkChild)
+    while ((yield* retriedAttempts(id)).length < 1) yield* Effect.yieldNow
+    yield* TestClock.adjust("500 millis")
+    while ((yield* retriedAttempts(id)).length < 2) yield* Effect.yieldNow
+    yield* TestClock.adjust("1 second")
+    expect(Exit.isSuccess(yield* Fiber.join(drain))).toBeTrue()
+    expect(turnModels).toEqual(["test/retry-model", "test/retry-model", "test/retry-model", "backup/fallback"])
+    expect(resolvedFailoverModels).toEqual(["backup/fallback"])
+    const types = yield* durableTypes(id)
+    expect(types.indexOf("session.next.model.failed_over.1")).toBeLessThan(types.lastIndexOf("session.next.step.started.1"))
+    expect(types.filter((type) => type === "session.next.context.updated.1")).toHaveLength(1)
+    expect((yield* session.context(id)).at(-1)).toMatchObject({
+      type: "assistant",
+      content: [{ type: "text", text: "Recovered" }],
+    })
+  }),
+)
+
+drivingIt.effect("skips unavailable failover entries and uses the next model", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_failover_skip")
+    yield* insertDrivingSession(id)
+    providerFailover = new ConfigProviderFailover.Info({ chain: ["backup/missing", "backup/available"] })
+    unavailableFailoverModels = new Set(["backup/missing"])
+    turnStreams = [Stream.fail(unavailable()), Stream.fail(unavailable()), Stream.fail(unavailable()), complete("ok", "Recovered")]
+    const session = yield* SessionV2.Service
+    const execution = yield* SessionExecution.Service
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Skip unavailable" }), resume: false })
+    const drain = yield* execution.resume(id).pipe(Effect.exit, Effect.forkChild)
+    while ((yield* retriedAttempts(id)).length < 1) yield* Effect.yieldNow
+    yield* TestClock.adjust("500 millis")
+    while ((yield* retriedAttempts(id)).length < 2) yield* Effect.yieldNow
+    yield* TestClock.adjust("1 second")
+    expect(Exit.isSuccess(yield* Fiber.join(drain))).toBeTrue()
+    expect(turnModels.at(-1)).toBe("backup/available")
+  }),
+)
+
+drivingIt.effect("uses each failover entry at most once in a drain", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_failover_once")
+    yield* insertDrivingSession(id)
+    providerFailover = new ConfigProviderFailover.Info({ chain: ["backup/first", "backup/second"] })
+    turnStreams = [
+      Stream.fail(unavailable()),
+      Stream.fail(unavailable()),
+      Stream.fail(unavailable()),
+      Stream.fail(unavailable()),
+      Stream.fail(unavailable()),
+      Stream.fail(unavailable()),
+      complete("ok", "Recovered"),
+    ]
+    const session = yield* SessionV2.Service
+    const execution = yield* SessionExecution.Service
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Fail over once" }), resume: false })
+    const drain = yield* execution.resume(id).pipe(Effect.exit, Effect.forkChild)
+    for (const [attempts, delay] of [
+      [1, "500 millis"],
+      [2, "1 second"],
+      [3, "500 millis"],
+      [4, "1 second"],
+    ] as const) {
+      while ((yield* retriedAttempts(id)).length < attempts) yield* Effect.yieldNow
+      yield* TestClock.adjust(delay)
+    }
+    expect(Exit.isSuccess(yield* Fiber.join(drain))).toBeTrue()
+    expect(turnModels).toEqual([
+      "test/retry-model",
+      "test/retry-model",
+      "test/retry-model",
+      "backup/first",
+      "backup/first",
+      "backup/first",
+      "backup/second",
+    ])
+  }),
+)
+
+drivingIt.effect("does not fail over after assistant output or interruption", () =>
+  Effect.gen(function* () {
+    const outputID = SessionV2.ID.make("ses_retry_failover_output")
+    yield* insertDrivingSession(outputID)
+    providerFailover = new ConfigProviderFailover.Info({ chain: ["backup/fallback"] })
+    turnStreams = [startedThenUnavailable()]
+    const session = yield* SessionV2.Service
+    yield* session.prompt({ sessionID: outputID, prompt: Prompt.make({ text: "Keep partial" }), resume: false })
+    yield* session.resume(outputID).pipe(Effect.exit)
+    expect(turnCalls).toBe(1)
+    expect((yield* durableTypes(outputID)).includes("session.next.model.failed_over.1")).toBeFalse()
+
+    const interruptedID = SessionV2.ID.make("ses_retry_failover_interrupt")
+    yield* insertDrivingSession(interruptedID)
+    providerFailover = new ConfigProviderFailover.Info({ chain: ["backup/fallback"] })
+    turnStreams = [Stream.fromEffect(Effect.interrupt)]
+    yield* session.prompt({ sessionID: interruptedID, prompt: Prompt.make({ text: "Interrupt" }), resume: false })
+    yield* session.resume(interruptedID).pipe(Effect.exit)
+    expect(turnCalls).toBe(1)
+    expect((yield* durableTypes(interruptedID)).includes("session.next.model.failed_over.1")).toBeFalse()
+  }),
+)
+
+drivingIt.effect("uses watchdog failover only when explicitly enabled", () =>
+  Effect.gen(function* () {
+    const error = () =>
+      Stream.fail(
+        new LLMError({
+          module: "test",
+          method: "stream",
+          reason: new TransportReason({ message: "watchdog", kind: "watchdog-idle" }),
+        }),
+      )
+    const disabledID = SessionV2.ID.make("ses_retry_failover_watchdog_disabled")
+    yield* insertDrivingSession(disabledID)
+    providerFailover = new ConfigProviderFailover.Info({ chain: ["backup/fallback"] })
+    turnStreams = [error(), error(), error()]
+    const session = yield* SessionV2.Service
+    yield* session.prompt({ sessionID: disabledID, prompt: Prompt.make({ text: "No watchdog fallback" }), resume: false })
+    const disabled = yield* session.resume(disabledID).pipe(Effect.exit, Effect.forkChild)
+    while ((yield* retriedAttempts(disabledID)).length < 1) yield* Effect.yieldNow
+    yield* TestClock.adjust("500 millis")
+    while ((yield* retriedAttempts(disabledID)).length < 2) yield* Effect.yieldNow
+    yield* TestClock.adjust("1 second")
+    expect(Exit.isFailure(yield* Fiber.join(disabled))).toBeTrue()
+    expect((yield* durableTypes(disabledID)).includes("session.next.model.failed_over.1")).toBeFalse()
+
+    const enabledID = SessionV2.ID.make("ses_retry_failover_watchdog_enabled")
+    yield* insertDrivingSession(enabledID)
+    providerFailover = new ConfigProviderFailover.Info({ chain: ["backup/fallback"], on_watchdog: true })
+    turnStreams = [error(), complete("ok", "Recovered")]
+    yield* session.prompt({ sessionID: enabledID, prompt: Prompt.make({ text: "Watchdog fallback" }), resume: false })
+    const enabled = yield* session.resume(enabledID).pipe(Effect.exit, Effect.forkChild)
+    while (turnCalls < 2) yield* Effect.yieldNow
+    expect(Exit.isSuccess(yield* Fiber.join(enabled))).toBeTrue()
+    expect(turnModels).toEqual(["test/retry-model", "backup/fallback"])
+  }),
+)
+
+drivingIt.effect("fails over when a retryable transport class is disabled", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_failover_class_disabled")
+    yield* insertDrivingSession(id)
+    providerFailover = new ConfigProviderFailover.Info({ chain: ["backup/fallback"] })
+    providerRetry = new ConfigProviderRetry.Info({ enabled: new ConfigProviderRetry.Enabled({ transport: false }) })
+    turnStreams = [Stream.fail(transportUnavailable()), complete("ok", "Recovered")]
+    const session = yield* SessionV2.Service
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Fail over after disabled transport" }), resume: false })
+    expect(Exit.isSuccess(yield* session.resume(id).pipe(Effect.exit))).toBeTrue()
+    expect(turnModels).toEqual(["test/retry-model", "backup/fallback"])
+    expect((yield* durableTypes(id)).includes("session.next.model.failed_over.1")).toBeTrue()
+  }),
+)
+
+drivingIt.effect("completes the final assistant when the full failover chain is exhausted", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_failover_exhausted")
+    yield* insertDrivingSession(id)
+    providerFailover = new ConfigProviderFailover.Info({ chain: ["backup/fallback"] })
+    turnStreams = Array.from({ length: 6 }, () => Stream.fail(unavailable()))
+    const session = yield* SessionV2.Service
+    const execution = yield* SessionExecution.Service
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Exhaust every provider" }), resume: false })
+    const drain = yield* execution.resume(id).pipe(Effect.exit, Effect.forkChild)
+    for (const [retry, delay] of (["500 millis", "1 second", "500 millis", "1 second"] as const).entries()) {
+      while ((yield* retriedAttempts(id)).length < retry + 1) yield* Effect.yieldNow
+      yield* TestClock.adjust(delay)
+    }
+    const exit = yield* Fiber.join(drain)
+    expect(Exit.isFailure(exit) && Cause.hasFails(exit.cause)).toBeTrue()
+    expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBeFalse()
+    expect((yield* durableTypes(id)).some((type) => type.startsWith("session.next.step.failed."))).toBeTrue()
+    const assistant = (yield* session.context(id)).at(-1)
+    expect(assistant).toMatchObject({
+      type: "assistant",
+      finish: "error",
+      error: { message: "Provider unavailable" },
+    })
+    if (!assistant || assistant.type !== "assistant") return yield* Effect.die("Expected a terminal assistant")
+    expect(assistant.time.completed).toBeDefined()
+    const events = yield* EventV2.Service
+    const store = yield* SessionStore.Service
+    yield* SessionReconcile.recover({ events, store, sessionID: id })
+    expect((yield* store.blockers(id)).map((blocker) => blocker.kind)).not.toContain("provider_in_flight")
+  }),
+)
+
+drivingIt.effect("keeps terminal retry exhaustion on the selected model without failover configuration", () =>
+  Effect.gen(function* () {
+    const id = SessionV2.ID.make("ses_retry_no_failover")
+    yield* insertDrivingSession(id)
+    turnStreams = Array.from({ length: 3 }, () => Stream.fail(unavailable()))
+    const session = yield* SessionV2.Service
+    const execution = yield* SessionExecution.Service
+    yield* session.prompt({ sessionID: id, prompt: Prompt.make({ text: "Do not fail over" }), resume: false })
+    const drain = yield* execution.resume(id).pipe(Effect.exit, Effect.forkChild)
+    for (const [retry, delay] of (["500 millis", "1 second"] as const).entries()) {
+      while ((yield* retriedAttempts(id)).length < retry + 1) yield* Effect.yieldNow
+      yield* TestClock.adjust(delay)
+    }
+    expect(Exit.isFailure(yield* Fiber.join(drain))).toBeTrue()
+    expect(turnModels).toEqual(["test/retry-model", "test/retry-model", "test/retry-model"])
+    expect((yield* durableTypes(id)).includes("session.next.model.failed_over.1")).toBeFalse()
   }),
 )

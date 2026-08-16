@@ -9,8 +9,8 @@ import { WorkspaceEvent } from "../src/workspace-event"
 
 describe("public event manifest", () => {
   test("owns the complete public event surface", () => {
-    expect(EventManifest.ServerDefinitions.length).toBe(59)
-    expect(EventManifest.Definitions.length).toBe(90)
+    expect(EventManifest.ServerDefinitions.length).toBe(60)
+    expect(EventManifest.Definitions.length).toBe(91)
     expect(SessionV1.Event.Definitions).toEqual([
       SessionV1.Event.Created,
       SessionV1.Event.Updated,
@@ -23,8 +23,8 @@ describe("public event manifest", () => {
       SessionV1.Event.Diff,
       SessionV1.Event.Error,
     ])
-    expect(EventManifest.Latest.size).toBe(90)
-    expect(EventManifest.Durable.size).toBe(37)
+    expect(EventManifest.Latest.size).toBe(91)
+    expect(EventManifest.Durable.size).toBe(38)
   })
 
   test("uses canonical definitions for current public events", () => {
@@ -33,6 +33,7 @@ describe("public event manifest", () => {
     expect(Workspace.Event).toBe(WorkspaceEvent)
     expect(Workspace.Event.Definitions).toBe(WorkspaceEvent.Definitions)
     expect(EventManifest.Latest.get("session.next.step.ended")).toBe(SessionEvent.Step.Ended)
+    expect(EventManifest.Latest.get("session.next.model.failed_over")).toBe(SessionEvent.ModelFailedOver)
     expect(EventManifest.Latest.get("todo.updated")).toBe(SessionTodo.Event.Updated)
     expect(EventManifest.Latest.get("project.updated")).toBe(Project.Event.Updated)
     expect(Project.Event.Definitions).toEqual([Project.Event.Updated])
@@ -42,7 +43,7 @@ describe("public event manifest", () => {
     expect(Reference.Event.Definitions).toEqual([Reference.Event.Updated])
     expect(EventManifest.Latest.has("ide.installed")).toBe(false)
     expect(IdeEvent.Definitions).toEqual([IdeEvent.Installed])
-    expect(EventManifest.Definitions.slice(44, 47)).toEqual([
+    expect(EventManifest.Definitions.slice(45, 48)).toEqual([
       SessionV1.Event.PartDelta,
       SessionV1.Event.Diff,
       SessionV1.Event.Error,

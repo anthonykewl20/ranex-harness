@@ -18,6 +18,7 @@ export type Event =
   | EventMessagePartRemoved
   | EventSessionNextAgentSwitched
   | EventSessionNextModelSwitched
+  | EventSessionNextModelFailedOver
   | EventSessionNextMoved
   | EventSessionNextPrompted
   | EventSessionNextPromptAdmitted
@@ -842,6 +843,19 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "session.next.model.failed_over"
+        properties: {
+          timestamp: number
+          sessionID: string
+          from: ModelRef
+          to: ModelRef
+          error: {
+            message: string
+          }
+        }
+      }
+    | {
+        id: string
         type: "session.next.moved"
         properties: {
           timestamp: number
@@ -1637,6 +1651,7 @@ export type GlobalEvent = {
     | SyncEventMessagePartRemoved
     | SyncEventSessionNextAgentSwitched
     | SyncEventSessionNextModelSwitched
+    | SyncEventSessionNextModelFailedOver
     | SyncEventSessionNextMoved
     | SyncEventSessionNextPrompted
     | SyncEventSessionNextPromptAdmitted
@@ -2794,6 +2809,7 @@ export type UnknownError1 = {
 export type SessionDurableEvent =
   | SessionNextAgentSwitched
   | SessionNextModelSwitched
+  | SessionNextModelFailedOver
   | SessionNextMoved
   | SessionNextPrompted
   | SessionNextPromptAdmitted
@@ -3287,6 +3303,26 @@ export type SyncEventSessionNextModelSwitched = {
       sessionID: string
       messageID: string
       model: ModelRef
+    }
+  }
+}
+
+export type SyncEventSessionNextModelFailedOver = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.model.failed_over.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      from: ModelRef
+      to: ModelRef
+      error: {
+        message: string
+      }
     }
   }
 }
@@ -4195,6 +4231,29 @@ export type SessionNextModelSwitched = {
     sessionID: string
     messageID: string
     model: ModelRef
+  }
+}
+
+export type SessionNextModelFailedOver = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.model.failed_over"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    from: ModelRef
+    to: ModelRef
+    error: {
+      message: string
+    }
   }
 }
 
@@ -5185,6 +5244,20 @@ export type EventSessionNextModelSwitched = {
     sessionID: string
     messageID: string
     model: ModelRef
+  }
+}
+
+export type EventSessionNextModelFailedOver = {
+  id: string
+  type: "session.next.model.failed_over"
+  properties: {
+    timestamp: number
+    sessionID: string
+    from: ModelRef
+    to: ModelRef
+    error: {
+      message: string
+    }
   }
 }
 
