@@ -8,6 +8,7 @@ import {
   SystemPart,
   TransportReason,
   isContextOverflowFailure,
+  type Model,
   type ProviderErrorEvent,
 } from "@ranex/llm"
 
@@ -31,6 +32,7 @@ import { PermissionV2 } from "../../permission"
 import { ProviderV2 } from "../../provider"
 import { QuestionV2 } from "../../question"
 import { SystemContext } from "../../system-context/index"
+import { ActiveModel } from "../../system-context/active-model"
 import { SystemContextRegistry } from "../../system-context/registry"
 import { SkillGuidance } from "../../skill/guidance"
 import { ReferenceGuidance } from "../../reference/guidance"
@@ -182,10 +184,10 @@ const layer = Layer.effect(
     const continueAfterOverflowCompaction = (step: number) =>
       new TurnTransitionError({ _tag: "ContinueAfterOverflowCompaction", step })
 
-    const loadSystemContext = (agent: AgentV2.Selection) =>
+    const loadSystemContext = (agent: AgentV2.Selection, model: Model) =>
       Effect.all([systemContext.load(), skillGuidance.load(agent), referenceGuidance.load()], {
         concurrency: "unbounded",
-      }).pipe(Effect.map(SystemContext.combine))
+      }).pipe(Effect.map((contexts) => SystemContext.combine([...contexts, ActiveModel.activeModel(model)])))
 
     const runTurnAttempt = Effect.fn("SessionRunner.runTurn")(function* (
       sessionID: SessionSchema.ID,
@@ -201,7 +203,9 @@ const layer = Layer.effect(
       const watchdog = yield* providerWatchdog.settings()
       const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
       const agent = yield* agents.select(session.agent)
-      const initialized = yield* SessionContextEpoch.initialize(db, loadSystemContext(agent), session.id)
+      const model = yield* models.resolve(session)
+      const turnSystemContext = loadSystemContext(agent, model)
+      const initialized = yield* SessionContextEpoch.initialize(db, turnSystemContext, session.id)
       const toolFibers = yield* FiberSet.make<void, ToolOutputStore.Error>()
       let needsContinuation = false
       let currentStep = step
@@ -216,8 +220,7 @@ const layer = Layer.effect(
         if (promoted > 0) currentStep = 1
       }
       const system =
-        initialized ?? (yield* SessionContextEpoch.prepare(db, events, loadSystemContext(agent), session.id))
-      const model = yield* models.resolve(session)
+        initialized ?? (yield* SessionContextEpoch.prepare(db, events, turnSystemContext, session.id))
       const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
       const context = entries.map((entry) => entry.message)
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
