@@ -4,7 +4,7 @@ OpenCode sessions preserve durable conversational history while assembling the r
 
 ## Status
 
-The kernel durability wave has shipped post-crash continuation recovery (#58), the tunable bounded provider retry policy (#71), Anthropic assistant prefill (#69), and active-model System Context (#70). Cross-model failover (#72) is in progress; subagent recovery (#73) remains deferred pending per-target permissions (#65).
+The kernel durability wave has shipped post-crash continuation recovery (#58), the tunable bounded provider retry policy (#71), Anthropic assistant prefill (#69), active-model System Context (#70), and cross-model failover (#72): `provider_failover` chains cap at eight entries, persist `ModelFailedOver`, switch only at safe boundaries after retry exhaustion, and fail closed through #58 blockers if a crash lands mid-failover. Subagent recovery (#73) remains deferred pending per-target permissions (#65).
 
 ## Language
 
