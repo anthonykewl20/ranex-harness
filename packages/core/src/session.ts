@@ -355,27 +355,39 @@ const layer = Layer.effect(
               .pipe(Effect.orDie)
           : undefined
         if (input.cursor && !anchor) return []
-        const boundary = anchor
-          ? order === "asc"
-            ? gt(SessionMessageTable.seq, anchor.seq)
-            : lt(SessionMessageTable.seq, anchor.seq)
-          : undefined
-        const where = boundary
-          ? and(eq(SessionMessageTable.session_id, input.sessionID), boundary)
-          : eq(SessionMessageTable.session_id, input.sessionID)
-        const query = db
-          .select()
-          .from(SessionMessageTable)
-          .where(where)
-          .orderBy(order === "asc" ? asc(SessionMessageTable.seq) : desc(SessionMessageTable.seq))
+        const pageSize = input.limit ?? 100
+        const batchSize = Math.min(pageSize, 100)
+        let boundary = anchor?.seq
+        const messages: SessionMessage.Message[] = []
         // Empty completed dispatch markers are hidden conversation implementation
-        // details. Decode and filter before applying the public page size so one
-        // newest marker cannot consume an otherwise visible page.
-        const rows = yield* query.all().pipe(Effect.orDie)
-        const messages = (yield* Effect.forEach(direction === "previous" ? rows.toReversed() : rows, decode)).filter(
-          visibleMessage,
-        )
-        return input.limit === undefined ? messages : messages.slice(0, input.limit)
+        // details. Scan bounded batches until the public page is full so a marker
+        // cannot consume an otherwise visible page.
+        while (input.limit === undefined || messages.length < input.limit) {
+          const batchBoundary =
+            boundary === undefined
+              ? undefined
+              : order === "asc"
+                ? gt(SessionMessageTable.seq, boundary)
+                : lt(SessionMessageTable.seq, boundary)
+          const rows = yield* db
+            .select()
+            .from(SessionMessageTable)
+            .where(
+              batchBoundary
+                ? and(eq(SessionMessageTable.session_id, input.sessionID), batchBoundary)
+                : eq(SessionMessageTable.session_id, input.sessionID),
+            )
+            .orderBy(order === "asc" ? asc(SessionMessageTable.seq) : desc(SessionMessageTable.seq))
+            .limit(batchSize)
+            .all()
+            .pipe(Effect.orDie)
+          if (rows.length === 0) break
+          boundary = rows.at(-1)?.seq
+          messages.push(...(yield* Effect.forEach(rows, decode)).filter(visibleMessage))
+          if (rows.length < batchSize) break
+        }
+        const page = input.limit === undefined ? messages : messages.slice(0, input.limit)
+        return direction === "previous" ? page.toReversed() : page
       }),
       message: Effect.fn("V2Session.message")(function* (input) {
         const stored = yield* store.message(input.messageID)
