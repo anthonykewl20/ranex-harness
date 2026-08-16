@@ -4,6 +4,7 @@ import { HttpClientRequest } from "effect/unstable/http"
 import { CacheHint, LLM, LLMError, Message, Model, ToolCallPart, Usage } from "../../src"
 import { Auth, LLMClient, RequestExecutor } from "../../src/route"
 import * as AnthropicMessages from "../../src/protocols/anthropic-messages"
+import * as Anthropic from "../../src/providers/anthropic"
 import { continuationRequest, nativeAnthropicMessagesContinuation } from "../continuation-scenarios"
 import { it } from "../lib/effect"
 import { dynamicResponse, fixedResponse } from "../lib/http"
@@ -75,6 +76,24 @@ describe("Anthropic Messages route", () => {
         { role: "user", content: [{ type: "text", text: "Choose A, B, or C." }] },
         { role: "assistant", content: [{ type: "text", text: "The answer is " }] },
       ])
+    }),
+  )
+
+  it.effect("lowers an assistant prefill through the canonical Anthropic model", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<AnthropicMessages.AnthropicMessagesBody>(
+        LLM.request({
+          model: Anthropic.configure({ apiKey: "test" }).model("claude-sonnet-4-5"),
+          prompt: "Choose A, B, or C.",
+          prefill: { text: "The answer is " },
+          cache: "none",
+        }),
+      )
+
+      expect(prepared.body.messages.at(-1)).toEqual({
+        role: "assistant",
+        content: [{ type: "text", text: "The answer is " }],
+      })
     }),
   )
 

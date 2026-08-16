@@ -154,7 +154,7 @@ export const fromCatalogModel = (
     return Effect.succeed(
       withDefaults(resolved, AnthropicMessages.route)
         .with({ auth: key === undefined ? Auth.none : Auth.header("x-api-key", key) })
-        .model({ id: resolved.api.id }),
+        .model({ id: resolved.api.id, compatibility: { assistantPrefill: "supported" } }),
     )
   }
   if (resolved.api.type === "aisdk" && resolved.api.package === "@ai-sdk/openai-compatible" && resolved.api.url) {

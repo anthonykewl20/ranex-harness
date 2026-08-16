@@ -26,7 +26,7 @@ export const configure = (input: Config = {}) => {
   const route = configuredRoute(input)
   return {
     id,
-    model: (modelID: string | ModelID) => route.model({ id: modelID }),
+    model: (modelID: string | ModelID) => route.model({ id: modelID, compatibility: { assistantPrefill: "supported" } }),
     configure,
   }
 }
