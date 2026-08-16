@@ -115,6 +115,8 @@ const client = Layer.succeed(
 )
 const model = Model.make({ id: "fake-model", provider: "fake", route: OpenAIChat.route })
 const replacementModel = Model.make({ id: "replacement", provider: "fake", route: OpenAIChat.route })
+const withActiveModel = (baseline: string, resolved = model) =>
+  `${baseline}\n\nActive model: ${resolved.provider}/${resolved.id}`
 const compactModel = Model.make({
   id: "compact",
   provider: "fake",
@@ -783,8 +785,8 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Initial context"],
+        [withActiveModel("Initial context")],
+        [withActiveModel("Initial context")],
       ])
       expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "user", "system"])
       expect(requests[1]?.messages.at(-1)?.content).toEqual([{ type: "text", text: "Changed context" }])
@@ -800,6 +802,71 @@ describe("SessionRunnerLLM", () => {
       ).toHaveLength(1)
       yield* replaySessionProjection(sessionID)
       expect(yield* session.messages({ sessionID })).toHaveLength(3)
+    }),
+  )
+
+  it.effect("admits one active-model update before a changed model runs", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "First" }), resume: false })
+
+      requests.length = 0
+      response = fragmentFixture("text", "text-first-model", ["First result"]).completeEvents
+      yield* session.resume(sessionID)
+      yield* events.publish(SessionEvent.ModelSwitched, {
+        sessionID,
+        messageID: SessionMessage.ID.create(),
+        timestamp: DateTime.makeUnsafe(1),
+        model: { id: ModelV2.ID.make("replacement"), providerID: ProviderV2.ID.make("fake") },
+      })
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Second" }), resume: false })
+      response = fragmentFixture("text", "text-replacement-model", ["Second result"]).completeEvents
+      yield* session.resume(sessionID)
+
+      expect(requests.map((request) => request.model)).toEqual([model, replacementModel])
+      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
+        [withActiveModel("Initial context")],
+        [withActiveModel("Initial context")],
+      ])
+      expect(systemTexts(requests[1]!)).toEqual([
+        "Active model changed from fake/fake-model to fake/replacement",
+      ])
+      expect(
+        yield* db
+          .select({ id: EventTable.id })
+          .from(EventTable)
+          .where(eq(EventTable.type, "session.next.context.updated.1"))
+          .all()
+          .pipe(Effect.orDie),
+      ).toHaveLength(1)
+      expect((yield* session.messages({ sessionID })).filter((message) => message.type === "assistant")).toMatchObject([
+        { model: { id: "replacement", providerID: "fake" } },
+        { model: { id: "fake-model", providerID: "fake" } },
+      ])
+    }),
+  )
+
+  it.effect("does not admit active model context when model resolution fails", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const { db } = yield* Database.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "First" }), resume: false })
+      modelResolveHook = Effect.die("model resolution failed")
+      requests.length = 0
+
+      expect(Exit.isFailure(yield* session.resume(sessionID).pipe(Effect.exit))).toBe(true)
+      expect(requests).toHaveLength(0)
+      expect(
+        yield* db
+          .select()
+          .from(SessionContextEpochTable)
+          .where(eq(SessionContextEpochTable.session_id, sessionID))
+          .get(),
+      ).toBeUndefined()
     }),
   )
 
@@ -820,7 +887,10 @@ describe("SessionRunnerLLM", () => {
       response = fragmentFixture("text", "text-build", ["Done"]).completeEvents
       yield* session.resume(sessionID)
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Build agent instructions", "Initial context"])
+      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual([
+        "Build agent instructions",
+        withActiveModel("Initial context"),
+      ])
     }),
   )
 
@@ -846,7 +916,10 @@ describe("SessionRunnerLLM", () => {
       response = fragmentFixture("text", "text-reviewer", ["Done"]).completeEvents
       yield* session.resume(sessionID)
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Reviewer instructions", "Initial context"])
+      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual([
+        "Reviewer instructions",
+        withActiveModel("Initial context"),
+      ])
       expect((yield* session.messages({ sessionID }))[0]).toMatchObject({ type: "assistant", agent: "reviewer" })
     }),
   )
@@ -875,7 +948,10 @@ describe("SessionRunnerLLM", () => {
       response = fragmentFixture("text", "text-selected", ["Done"]).completeEvents
       yield* session.resume(sessionID)
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Reviewer instructions", "Initial context"])
+      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual([
+        "Reviewer instructions",
+        withActiveModel("Initial context"),
+      ])
       expect((yield* session.messages({ sessionID }))[0]).toMatchObject({ type: "assistant", agent: "reviewer" })
     }),
   )
@@ -902,8 +978,8 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context\n\nBuild skills"],
-        ["Initial context\n\nBuild skills"],
+        [withActiveModel("Initial context\n\nBuild skills")],
+        [withActiveModel("Initial context\n\nBuild skills")],
       ])
       expect(systemTexts(requests[1]!)).toContainEqual(expect.stringContaining("Reviewer skills"))
     }),
@@ -936,7 +1012,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context\n\nBuild skills"],
+        [withActiveModel("Initial context\n\nBuild skills")],
       ])
     }),
   )
@@ -965,7 +1041,9 @@ describe("SessionRunnerLLM", () => {
       response = []
       yield* session.resume(sessionID)
       expect(requests.map((request) => request.model)).toEqual([model])
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([["Initial context"]])
+      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
+        [withActiveModel("Initial context")],
+      ])
     }),
   )
 
@@ -1014,9 +1092,9 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Initial context"],
-        ["Initial context"],
+        [withActiveModel("Initial context")],
+        [withActiveModel("Initial context")],
+        [withActiveModel("Initial context")],
       ])
       expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "user", "system"])
       expect(requests[2]?.messages.filter((message) => message.role === "system")).toHaveLength(2)
@@ -1060,9 +1138,9 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Initial context"],
-        ["Initial context"],
+        [withActiveModel("Initial context")],
+        [withActiveModel("Initial context")],
+        [withActiveModel("Initial context")],
       ])
     }),
   )
@@ -1097,8 +1175,8 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Replacement context"],
+        [withActiveModel("Initial context")],
+        [withActiveModel("Replacement context")],
       ])
       yield* replaySessionProjection(sessionID)
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Third" }), resume: false })
@@ -1262,8 +1340,9 @@ describe("SessionRunnerLLM", () => {
       expect(requests).toHaveLength(2)
       const context = yield* session.context(sessionID)
       expect(context.some((message) => message.type === "compaction")).toBe(false)
-      expect(context.slice(-2)).toMatchObject([
+      expect(context.slice(-3)).toMatchObject([
         { type: "user", text: "Continue" },
+        { type: "system", text: "Active model changed from fake/fake-model to fake/recovery" },
         { type: "assistant", finish: "error", error: { message: "prompt too long" } },
       ])
     }),
@@ -1326,7 +1405,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Third" }), resume: false })
       yield* session.resume(sessionID)
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Initial context"])
+      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual([withActiveModel("Initial context")])
       expect(systemTexts(requests.at(-1)!)).toContain("Changed context")
     }),
   )
@@ -1689,10 +1768,10 @@ describe("SessionRunnerLLM", () => {
 
       expect(requests.map((request) => request.model)).toEqual([model, replacementModel])
       expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
-        ["Initial context"],
-        ["Initial context"],
+        [withActiveModel("Initial context")],
+        [withActiveModel("Initial context")],
       ])
-      expect(systemTexts(requests[1]!)).toContain("Replacement context")
+      expect(systemTexts(requests[1]!)).toContainEqual(expect.stringContaining("Replacement context"))
     }),
   )
 
