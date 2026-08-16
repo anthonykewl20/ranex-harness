@@ -14,6 +14,7 @@ import { SessionSchema } from "./schema"
 import { SessionStore } from "./store"
 import { SessionTable } from "./sql"
 import { eq } from "drizzle-orm"
+import type { ProviderMetadata } from "@ranex/llm"
 
 /**
  * The recovery critical section owns both fences. The Session owner excludes a
@@ -32,7 +33,12 @@ export const recover = Effect.fn("Session.recover")(function* (input: {
   yield* flock.withLock(input.sessionID)(
     Effect.gen(function* () {
       const claimed = yield* input.store.claimExecution(input.sessionID, ExecutionOwner.ownerID)
-      if (!claimed) return
+      if (!claimed) {
+        yield* Effect.logDebug("Session recovery skipped: execution ownership was not acquired").pipe(
+          Effect.annotateLogs({ sessionID: input.sessionID }),
+        )
+        return
+      }
       yield* Effect.gen(function* () {
         const previousEventOwner = yield* input.events.owner(input.sessionID)
         if (previousEventOwner && (yield* Effect.promise(() => ExecutionOwner.isLive(previousEventOwner)))) {
@@ -43,7 +49,7 @@ export const recover = Effect.fn("Session.recover")(function* (input: {
         }
         const eventClaimed = yield* input.events.claim(input.sessionID, ExecutionOwner.ownerID, previousEventOwner)
         if (!eventClaimed) {
-          yield* Effect.logWarning("Session recovery skipped: durable event owner is already claimed").pipe(
+          yield* Effect.logWarning("Session recovery skipped: durable event writer claim was not acquired").pipe(
             Effect.annotateLogs({ sessionID: input.sessionID }),
           )
           return
@@ -57,7 +63,6 @@ export const recover = Effect.fn("Session.recover")(function* (input: {
         if (!row) return yield* Effect.die(`Session not found: ${input.sessionID}`)
         const decision = SessionRecovery.classify({
           messages: yield* input.store.context(input.sessionID),
-          latestSeq: yield* EventV2.latestSequence(db, input.sessionID),
           retry:
             row.retryAttempt === null || row.retryNextAttemptAt === null
               ? undefined
@@ -74,23 +79,18 @@ export const recover = Effect.fn("Session.recover")(function* (input: {
             callID: decision.callID,
             aggregateSeq: yield* EventV2.latestSequence(db, input.sessionID),
           }
-          yield* input.events.publish(
-            SessionEvent.Tool.Failed,
-            {
-              sessionID: input.sessionID,
-              timestamp: yield* DateTime.now,
-              assistantMessageID: decision.assistantMessageID,
-              callID: decision.callID,
-              error: { type: "unknown", message: "Tool execution interrupted" },
-              provider: { executed: true },
-            },
-            {
+          yield* interruptTool(input.events, {
+            sessionID: input.sessionID,
+            assistantMessageID: decision.assistantMessageID,
+            callID: decision.callID,
+            provider: { executed: true },
+            options: {
               ownerID: ExecutionOwner.ownerID,
               requireOwner: true,
               // Event publication and its ambiguity marker must commit together.
               commit: () => input.store.block(blocker),
             },
-          )
+          })
           return
         }
         if (decision._tag === "BlockAmbiguousProvider") {
@@ -108,7 +108,10 @@ export const recover = Effect.fn("Session.recover")(function* (input: {
           return
         }
         if (input.wake) yield* input.wake(input.sessionID, true)
-      }).pipe(Effect.ensuring(input.store.releaseExecution(input.sessionID, ExecutionOwner.ownerID)))
+      }).pipe(
+        Effect.ensuring(input.events.release(input.sessionID, ExecutionOwner.ownerID)),
+        Effect.ensuring(input.store.releaseExecution(input.sessionID, ExecutionOwner.ownerID)),
+      )
     }),
   )
 })
@@ -123,14 +126,12 @@ export const reconcileInterruptedTools = Effect.fn("Session.reconcileInterrupted
   for (const message of messages) {
     if (message.type !== "assistant") continue
     for (const tool of message.content) {
-      if (tool.type !== "tool" || (tool.state.status !== "pending" && tool.state.status !== "running")) continue
+      if (tool.type !== "tool" || tool.state.status !== "running") continue
       yield* Effect.yieldNow
-      yield* input.events.publish(SessionEvent.Tool.Failed, {
+      yield* interruptTool(input.events, {
         sessionID: input.sessionID,
-        timestamp: yield* DateTime.now,
         assistantMessageID: message.id,
         callID: tool.id,
-        error: { type: "unknown", message: "Tool execution interrupted" },
         provider: {
           executed: tool.provider?.executed === true,
           ...(tool.provider?.metadata === undefined ? {} : { metadata: tool.provider.metadata }),
@@ -139,6 +140,28 @@ export const reconcileInterruptedTools = Effect.fn("Session.reconcileInterrupted
     }
   }
 })
+
+const interruptTool = (events: EventV2.Interface, input: {
+  readonly sessionID: SessionSchema.ID
+  readonly assistantMessageID: import("./message").SessionMessage.ID
+  readonly callID: string
+  readonly provider: { readonly executed: boolean; readonly metadata?: ProviderMetadata }
+  readonly options?: EventV2.PublishOptions
+}) =>
+  Effect.gen(function* () {
+    yield* events.publish(
+      SessionEvent.Tool.Failed,
+      {
+        sessionID: input.sessionID,
+        timestamp: yield* DateTime.now,
+        assistantMessageID: input.assistantMessageID,
+        callID: input.callID,
+        error: { type: "unknown", message: "Tool execution interrupted" },
+        provider: input.provider,
+      },
+      input.options,
+    )
+  })
 
 const sweepLayer = Layer.effectDiscard(
   Effect.gen(function* () {

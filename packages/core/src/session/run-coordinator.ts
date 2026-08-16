@@ -45,7 +45,7 @@ export const make = <Key, E>(options: {
           Effect.exit,
           Effect.asVoid,
         ),
-      )
+        )
       entry.owner = owner
       if (!successor) Deferred.doneUnsafe(ready, Effect.void)
     }

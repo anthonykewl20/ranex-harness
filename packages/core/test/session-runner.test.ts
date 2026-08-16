@@ -52,6 +52,7 @@ import {
   SessionTable,
 } from "@ranex/core/session/sql"
 import { SessionStore } from "@ranex/core/session/store"
+import { SessionRecovery } from "@ranex/core/session/recovery"
 import { SystemContext } from "@ranex/core/system-context"
 import { SystemContextRegistry } from "@ranex/core/system-context/registry"
 import { SkillGuidance } from "@ranex/core/skill/guidance"
@@ -416,6 +417,29 @@ const replaySessionProjection = (id: SessionV2.ID) =>
       })),
     )
   })
+
+it.effect("records provider dispatch before the stream's first event", () =>
+  Effect.gen(function* () {
+    yield* setup
+    const session = yield* SessionV2.Service
+    requests.length = 0
+    streamGate = yield* Deferred.make<void>()
+    streamStarted = yield* Deferred.make<void>()
+    yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Dispatch marker" }), resume: false })
+    const running = yield* session.resume(sessionID).pipe(Effect.forkScoped)
+    yield* Deferred.await(streamStarted)
+
+    expect(requests).toHaveLength(1)
+    const messages = yield* session.context(sessionID)
+    expect(messages.at(-1)).toMatchObject({ type: "assistant", content: [] })
+    expect(SessionRecovery.classify({ messages, blockers: [] })).toMatchObject({
+      _tag: "BlockAmbiguousProvider",
+    })
+
+    yield* Fiber.interrupt(running)
+    requests.length = 0
+  }),
+)
 
 type FragmentKind = "text" | "reasoning" | "tool input"
 
@@ -2032,9 +2056,7 @@ describe("SessionRunnerLLM", () => {
       expect(userTexts(requests[1]!)).toEqual(["Start working", "Change direction"])
       expect((yield* session.context(sessionID)).map((message) => message.type)).toEqual([
         "user",
-        "assistant",
         "user",
-        "assistant",
       ])
     }),
   )
@@ -2503,7 +2525,7 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
-  it.effect("durably fails pending tool input left by a prior process before continuing", () =>
+  it.effect("does not invent a failed call for pending tool input left by a prior process", () =>
     Effect.gen(function* () {
       yield* setup
       const session = yield* SessionV2.Service
@@ -2534,10 +2556,10 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests).toHaveLength(1)
-      expect(requests[0]?.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"])
+      expect(requests[0]?.messages.map((message) => message.role)).toEqual(["user", "assistant"])
       expect(yield* session.context(sessionID)).toMatchObject([
         { type: "user", text: "Recover interrupted tool input" },
-        { type: "assistant", content: [{ type: "tool", id: "call-pending-interrupted", state: { status: "error" } }] },
+        { type: "assistant", content: [{ type: "tool", id: "call-pending-interrupted", state: { status: "pending" } }] },
       ])
     }),
   )
@@ -2841,7 +2863,6 @@ describe("SessionRunnerLLM", () => {
             { type: "tool", id: "call-blocked", state: { status: "error", error: { message: "Permission blocked" } } },
           ],
         },
-        { type: "assistant", finish: "stop" },
       ])
     }),
   )
@@ -2934,7 +2955,6 @@ describe("SessionRunnerLLM", () => {
             { type: "tool", id: "call-corrected", state: { status: "error", error: { message: "Use another tool" } } },
           ],
         },
-        { type: "assistant", finish: "stop" },
       ])
     }),
   )

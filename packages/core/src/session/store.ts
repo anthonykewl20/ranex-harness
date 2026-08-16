@@ -11,6 +11,7 @@ import { SessionSchema } from "./schema"
 import { SessionBlockerTable, SessionMessageTable, SessionTable } from "./sql"
 import { fromRow } from "./info"
 import { ExecutionOwner } from "./execution-owner"
+import { SessionRecovery } from "./recovery"
 
 export interface Interface {
   readonly get: (sessionID: SessionSchema.ID) => Effect.Effect<SessionSchema.Info | undefined>
@@ -28,7 +29,11 @@ export interface Interface {
   ) => Effect.Effect<{ readonly sessionID: SessionSchema.ID; readonly message: SessionMessage.Message } | undefined>
   readonly blockers: (sessionID: SessionSchema.ID) => Effect.Effect<ReadonlyArray<Blocker>>
   readonly block: (input: BlockInput) => Effect.Effect<void>
-  readonly resolveBlocker: (input: { readonly id: string; readonly actor: string; readonly resolution: string }) => Effect.Effect<void>
+  readonly resolveBlocker: (input: {
+    readonly id: string
+    readonly actor: string
+    readonly choice: SessionRecovery.Resolution
+  }) => Effect.Effect<void>
 }
 
 export type Blocker = {
@@ -166,7 +171,7 @@ const layer = Layer.effect(
       resolveBlocker: Effect.fn("SessionStore.resolveBlocker")(function* (input) {
         yield* db
           .update(SessionBlockerTable)
-          .set({ actor: input.actor, resolution: input.resolution, time_resolved: Date.now() })
+          .set({ actor: input.actor, resolution: input.choice, time_resolved: Date.now() })
           .where(and(eq(SessionBlockerTable.id, input.id), isNull(SessionBlockerTable.time_resolved)))
           .run()
           .pipe(Effect.orDie)

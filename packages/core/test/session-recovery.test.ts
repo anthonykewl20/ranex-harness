@@ -22,7 +22,6 @@ describe("SessionRecovery.classify", () => {
   test("active blockers dominate every other durable signal", () => {
     expect(SessionRecovery.classify({
       messages: [assistant([])],
-      latestSeq: 4,
       retry: { attempt: 1, nextAttemptAt: 10 },
       blockers: [{ kind: "provider_in_flight" }],
     })).toEqual({ _tag: "Idle" })
@@ -37,9 +36,21 @@ describe("SessionRecovery.classify", () => {
         time: { created: DateTime.makeUnsafe(0) },
         state: SessionMessage.ToolStateRunning.make({ status: "running", input: {}, structured: {}, content: [] }),
       })])],
-      latestSeq: 9,
       blockers: [],
     })).toEqual({ _tag: "InterruptAmbiguousTool", assistantMessageID: assistantID, callID: "call_recovery" })
+  })
+
+  test("a pending tool input blocks provider recovery without inventing a tool execution", () => {
+    expect(SessionRecovery.classify({
+      messages: [assistant([SessionMessage.AssistantTool.make({
+        type: "tool",
+        id: "call_pending",
+        name: "write",
+        time: { created: DateTime.makeUnsafe(0) },
+        state: SessionMessage.ToolStatePending.make({ status: "pending", input: "" }),
+      })])],
+      blockers: [],
+    })).toEqual({ _tag: "BlockAmbiguousProvider", assistantMessageID: assistantID })
   })
 
   test("a settled tool continuation is safe while a bare provider turn is blocked", () => {
@@ -53,10 +64,9 @@ describe("SessionRecovery.classify", () => {
           status: "completed", input: {}, structured: {}, content: [], outputPaths: [], outputRefs: [], result: "ok",
         }),
       })])],
-      latestSeq: 12,
       blockers: [],
-    })).toEqual({ _tag: "ContinueCommitted", after: 12 })
-    expect(SessionRecovery.classify({ messages: [assistant([])], latestSeq: 13, blockers: [] })).toEqual({
+    })).toEqual({ _tag: "ContinueCommitted" })
+    expect(SessionRecovery.classify({ messages: [assistant([])], blockers: [] })).toEqual({
       _tag: "BlockAmbiguousProvider",
       assistantMessageID: assistantID,
     })
@@ -65,7 +75,6 @@ describe("SessionRecovery.classify", () => {
   test("a persisted retry waits only when no active provider turn remains", () => {
     expect(SessionRecovery.classify({
       messages: [assistant([], true)],
-      latestSeq: 1,
       retry: { attempt: 2, nextAttemptAt: 100 },
       blockers: [],
     })).toEqual({ _tag: "WaitForRetry", retry: { attempt: 2, nextAttemptAt: 100 } })

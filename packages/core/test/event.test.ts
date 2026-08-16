@@ -949,6 +949,19 @@ describe("EventV2", () => {
     }),
   )
 
+  it.effect("release clears only its own recovery writer claim", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const aggregateID = Session.ID.create()
+      yield* events.publish(DurableMessage, durableData(aggregateID, "seed"))
+      expect(yield* events.claim(aggregateID, "owner-a")).toBe(true)
+      yield* events.release(aggregateID, "owner-b")
+      expect(yield* events.owner(aggregateID)).toBe("owner-a")
+      yield* events.release(aggregateID, "owner-a")
+      expect(yield* events.owner(aggregateID)).toBeUndefined()
+    }),
+  )
+
   it.effect("strict owner fences exact replay", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service

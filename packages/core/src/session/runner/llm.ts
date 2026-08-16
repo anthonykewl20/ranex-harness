@@ -252,6 +252,9 @@ const layer = Layer.effect(
         outputPaths: ReadonlyArray<string> = [],
         outputRefs: ReadonlyArray<import("@ranex/schema/managed-output").ManagedOutput.ID> = [],
       ) => withPublication(publisher.publish(event, outputPaths, outputRefs))
+      // Commit a visible dispatch marker before the provider stream can be constructed
+      // or consumed. A crash in that window must never look like an idle Session.
+      yield* withPublication(publisher.startAssistant())
       let overflowFailure: ProviderErrorEvent | undefined
       let recoveredInvalidToolArguments = false
       const idleError = new LLMError({
@@ -289,11 +292,11 @@ const layer = Layer.effect(
           Effect.gen(function* () {
             if (overflowFailure || publisher.hasProviderError()) return
             if (LLMEvent.is.providerError(event)) {
-              if (isContextOverflowFailure(event) && !publisher.hasAssistantStarted()) {
+              if (isContextOverflowFailure(event) && !publisher.hasAssistantProducedOutput()) {
                 overflowFailure = event
                 return
               }
-              if (event.retryable && !publisher.hasAssistantStarted())
+              if (event.retryable && !publisher.hasAssistantProducedOutput())
                 return yield* Effect.fail(
                   new LLMError({
                     module: "SessionRunner",
@@ -363,7 +366,7 @@ const layer = Layer.effect(
             stream._tag === "Failure" ? Option.getOrUndefined(Cause.findErrorOption(stream.cause)) : undefined
           if (
             allowOverflowRecovery &&
-            !publisher.hasAssistantStarted() &&
+            !publisher.hasAssistantProducedOutput() &&
             isContextOverflowFailure(overflowFailure ?? failure) &&
             (yield* restore(compaction.compactAfterOverflow({ sessionID: session.id, entries, model, request })))
           )
@@ -412,7 +415,7 @@ const layer = Layer.effect(
           if (
             llmFailure?.retryable &&
             attempt < MAX_RETRIES &&
-            !publisher.hasAssistantStarted() &&
+            !publisher.hasAssistantProducedOutput() &&
             stream._tag === "Failure" &&
             !Cause.hasInterrupts(stream.cause)
           )
@@ -480,6 +483,22 @@ const layer = Layer.effect(
               }),
             )
           }
+          if (
+            stream._tag === "Success" &&
+            !stepSettlement &&
+            !publisher.hasProviderError() &&
+            !publisher.hasAssistantProducedOutput()
+          )
+            yield* withPublication(
+              events.publish(SessionEvent.Step.Ended, {
+                sessionID: session.id,
+                timestamp: yield* DateTime.now,
+                assistantMessageID: yield* publisher.startAssistant(),
+                finish: "stop",
+                cost: 0,
+                tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+              }),
+            )
           if (publisher.hasProviderError())
             yield* withPublication(publisher.failUnsettledTools("Tool execution interrupted"))
           if (stream._tag === "Success" && !publisher.hasProviderError())

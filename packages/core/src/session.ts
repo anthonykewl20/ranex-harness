@@ -42,6 +42,7 @@ import { EventTable } from "./event/sql"
 import { ManagedOutput } from "@ranex/schema/managed-output"
 import { ProjectedEvent } from "./projected-event"
 import { ToolOutputStore } from "./tool-output-store"
+import { SessionRecovery } from "./session/recovery"
 
 export const RevertState = Revert.State
 export type RevertState = Revert.State
@@ -186,6 +187,13 @@ export interface Interface {
   readonly active: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError | SessionRunner.RunError>
   readonly interrupt: (sessionID: SessionSchema.ID) => Effect.Effect<void>
+  /** Records an operator's disposition of a post-crash ambiguity. It does not dispatch work. */
+  readonly resolveBlocker: (input: {
+    readonly sessionID: SessionSchema.ID
+    readonly blockerID: string
+    readonly actor: string
+    readonly choice: SessionRecovery.Resolution
+  }) => Effect.Effect<void, NotFoundError>
   readonly revert: {
     readonly stage: (input: {
       sessionID: SessionSchema.ID
@@ -220,6 +228,15 @@ const layer = Layer.effect(
             }),
         ),
       )
+    // A dispatch marker becomes model-visible only while it is unresolved. Once a
+    // provider turn ends without content, retain its durable event for audit but do
+    // not expose an empty synthetic assistant message as conversation history.
+    const visibleMessage = (message: SessionMessage.Message) =>
+      message.type !== "assistant" ||
+      message.time.completed === undefined ||
+      message.content.length > 0 ||
+      message.finish === "error" ||
+      message.error !== undefined
 
     const result = Service.of({
       create: Effect.fn("V2Session.create")(function* (input) {
@@ -354,7 +371,7 @@ const layer = Layer.effect(
         const rows = yield* (input.limit === undefined ? query.all() : query.limit(input.limit).all()).pipe(
           Effect.orDie,
         )
-        return yield* Effect.forEach(direction === "previous" ? rows.toReversed() : rows, decode)
+        return (yield* Effect.forEach(direction === "previous" ? rows.toReversed() : rows, decode)).filter(visibleMessage)
       }),
       message: Effect.fn("V2Session.message")(function* (input) {
         const stored = yield* store.message(input.messageID)
@@ -362,7 +379,7 @@ const layer = Layer.effect(
       }),
       context: Effect.fn("V2Session.context")(function* (sessionID) {
         yield* result.get(sessionID)
-        return yield* store.context(sessionID)
+        return (yield* store.context(sessionID)).filter(visibleMessage)
       }),
       events: (input) =>
         Stream.unwrap(
@@ -514,6 +531,10 @@ const layer = Layer.effect(
       interrupt: Effect.fn("V2Session.interrupt")((sessionID) =>
         Effect.uninterruptible(execution.interrupt(sessionID)),
       ),
+      resolveBlocker: Effect.fn("V2Session.resolveBlocker")(function* (input) {
+        yield* result.get(input.sessionID)
+        yield* store.resolveBlocker({ id: input.blockerID, actor: input.actor, choice: input.choice })
+      }),
       revert: {
         stage: Effect.fn("V2Session.revert.stage")(function* (input) {
           const session = yield* result.get(input.sessionID)

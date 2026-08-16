@@ -200,6 +200,8 @@ export interface Interface {
   readonly owner: (aggregateID: string) => Effect.Effect<string | undefined>
   /** Conditionally replaces exactly the owner observed by the caller. */
   readonly claim: (aggregateID: string, ownerID: string, expectedOwner?: string) => Effect.Effect<boolean>
+  /** Releases a recovery writer claim only when it is still owned by the caller. */
+  readonly release: (aggregateID: string, ownerID: string) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Event") {}
@@ -682,6 +684,14 @@ export const layerWith = (options?: LayerOptions) =>
         .pipe(Effect.map((row) => row !== undefined))
       }
 
+      const release = (aggregateID: string, ownerID: string) =>
+        db
+          .update(EventSequenceTable)
+          .set({ owner_id: null })
+          .where(and(eq(EventSequenceTable.aggregate_id, aggregateID), eq(EventSequenceTable.owner_id, ownerID)))
+          .run()
+          .pipe(Effect.orDie, Effect.asVoid)
+
       const subscribe = <D extends Definition>(definition: D): Stream.Stream<Payload<D>> =>
         Stream.unwrap(getOrCreate(definition).pipe(Effect.map((pubsub) => Stream.fromPubSub(pubsub)))).pipe(
           Stream.map((event) => event as Payload<D>),
@@ -805,6 +815,7 @@ export const layerWith = (options?: LayerOptions) =>
         remove,
         owner,
         claim,
+        release,
       })
       subscriberDiagnostics.set(service, diagnostics)
       return service
