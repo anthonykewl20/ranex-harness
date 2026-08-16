@@ -27,19 +27,26 @@ class RetryableTransportReason extends TransportReason {
   }
 }
 
-const config = (provider_retry?: ConfigProviderRetry.Info) =>
+const config = (...provider_retries: ConfigProviderRetry.Info[]) =>
   Layer.succeed(
     Config.Service,
     Config.Service.of({
       entries: () =>
         Effect.succeed(
-          provider_retry ? [new Config.Document({ type: "document", info: new Config.Info({ provider_retry }) })] : [],
+          provider_retries.map((provider_retry) =>
+            new Config.Document({ type: "document", info: new Config.Info({ provider_retry }) }),
+          ),
         ),
     }),
   )
 
-const policy = (provider_retry?: ConfigProviderRetry.Info) =>
-  ProviderRetryPolicy.defaultLayer.pipe(Layer.provide(config(provider_retry)))
+const policy = (...provider_retries: ConfigProviderRetry.Info[]) =>
+  ProviderRetryPolicy.defaultLayer.pipe(Layer.provide(config(...provider_retries)))
+
+const settings = Effect.gen(function* () {
+  const service = yield* ProviderRetryPolicy.Service
+  return yield* service.settings()
+})
 
 const error = (reason: ConstructorParameters<typeof LLMError>[0]["reason"]) =>
   new LLMError({ module: "test", method: "provider", reason })
@@ -74,6 +81,29 @@ describe("provider retry config", () => {
         { max_elapsed_ms: 120_001 },
       ]
       invalid.forEach((provider_retry) => expect(Option.isNone(decode({ provider_retry }))).toBe(true))
+    }),
+  )
+
+  testEffect(policy(new ConfigProviderRetry.Info({ base_delay_ms: 15_000 }))).effect(
+    "normalizes a document-valid base delay against the inherited maximum",
+    () =>
+      Effect.gen(function* () {
+        expect(yield* settings).toMatchObject({ base_delay_ms: 10_000, max_delay_ms: 10_000 })
+        expect(yield* decision(new RateLimitReason({ message: "limited" }))).toMatchObject({
+          _tag: "Retry",
+          delay_ms: 10_000,
+        })
+    }),
+  )
+
+  testEffect(
+    policy(
+      new ConfigProviderRetry.Info({ max_delay_ms: 10_000 }),
+      new ConfigProviderRetry.Info({ base_delay_ms: 15_000 }),
+    ),
+  ).effect("keeps independently valid layered delays ordered", () =>
+    Effect.gen(function* () {
+      expect(yield* settings).toMatchObject({ base_delay_ms: 10_000, max_delay_ms: 10_000 })
     }),
   )
 })

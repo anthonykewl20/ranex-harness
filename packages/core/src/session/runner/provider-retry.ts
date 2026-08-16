@@ -1,6 +1,6 @@
 export * as ProviderRetryPolicy from "./provider-retry"
 
-import { Clock, Context, Effect, Layer, Random, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Random } from "effect"
 import { LLMError } from "@ranex/llm"
 import { makeLocationNode } from "../../effect/app-node"
 import { Config } from "../../config"
@@ -40,7 +40,9 @@ export interface Interface {
   readonly decide: (input: {
     readonly error: LLMError
     readonly completed_attempt: number
+    /** Defense in depth for callers that do not prefilter after assistant output begins. */
     readonly assistant_started: boolean
+    /** Defense in depth for callers that do not prefilter interrupted turns. */
     readonly interrupted: boolean
     readonly cumulative_delay_ms: number
     readonly window_started_at: number
@@ -93,16 +95,7 @@ export const defaultLayer = Layer.effect(
           }),
           defaults,
         )
-      yield* Schema.decodeUnknownEffect(ConfigProviderRetry.Info)({
-        max_attempts: values.max_attempts,
-        base_delay_ms: values.base_delay_ms,
-        max_delay_ms: values.max_delay_ms,
-        max_cumulative_delay_ms: values.max_cumulative_delay_ms,
-        max_elapsed_ms: values.max_elapsed_ms,
-        jitter_ratio: values.jitter_ratio,
-        enabled: values.enabled,
-      }).pipe(Effect.orDie)
-      return values
+      return { ...values, base_delay_ms: Math.min(values.base_delay_ms, values.max_delay_ms) }
     })
     return Service.of({
       settings,
