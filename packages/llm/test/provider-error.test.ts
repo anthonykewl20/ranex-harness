@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { isContextOverflow } from "../src"
+import { isAssistantPrefillUnsupported, isContextOverflow } from "../src"
 
 describe("provider error classification", () => {
   test("classifies provider token limit messages as context overflow", () => {
@@ -26,5 +26,14 @@ describe("provider error classification", () => {
     ]
 
     expect(messages.some(isContextOverflow)).toBe(false)
+  })
+
+  test("recognizes assistant prefill rejection", () => {
+    expect(
+      isAssistantPrefillUnsupported(
+        "This model does not support assistant message prefill. The conversation must end with a user message.",
+      ),
+    ).toBe(true)
+    expect(isAssistantPrefillUnsupported("invalid parameter")).toBe(false)
   })
 })

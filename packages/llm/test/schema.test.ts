@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
 import * as OpenAIChat from "../src/protocols/openai-chat"
 import * as OpenAIResponses from "../src/protocols/openai-responses"
-import { ContentPart, LLMEvent, LLMRequest, Model, ModelID, ProviderID, Usage } from "../src/schema"
+import { AssistantPrefill, ContentPart, LLMEvent, LLMRequest, Model, ModelID, ProviderID, Usage } from "../src/schema"
 import { ProviderShared } from "../src/protocols/shared"
 
 const model = new Model({
@@ -41,6 +41,34 @@ describe("llm schema", () => {
     })
 
     expect(decoded.model.route.id).toBe("openai-responses")
+  })
+
+  test("accepts non-empty text assistant prefills", () => {
+    const decoded = decodeLLMRequest({
+      model,
+      system: [],
+      messages: [],
+      tools: [],
+      prefill: { text: "The answer is " },
+    })
+
+    expect(decoded.prefill).toEqual(new AssistantPrefill({ text: "The answer is " }))
+  })
+
+  test("rejects empty, whitespace-only, and structured assistant prefills", () => {
+    const request = { model, system: [], messages: [], tools: [] }
+
+    expect(() => decodeLLMRequest({ ...request, prefill: { text: "" } })).toThrow()
+    expect(() => decodeLLMRequest({ ...request, prefill: { text: " \t\n " } })).toThrow()
+    expect(() => decodeLLMRequest({ ...request, prefill: { text: [{ type: "text", text: "partial" }] } })).toThrow()
+    expect(() => decodeLLMRequest({ ...request, prefill: { type: "text", text: "partial" } })).toThrow()
+    expect(() => decodeLLMRequest({ ...request, prefill: { type: "reasoning", text: "partial" } })).toThrow()
+    expect(() =>
+      decodeLLMRequest({
+        ...request,
+        prefill: { type: "tool-call", id: "call_1", name: "lookup", input: {} },
+      }),
+    ).toThrow()
   })
 
   test("rejects invalid event type", () => {

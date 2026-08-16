@@ -37,6 +37,9 @@ export const isContextOverflow = (message: string) =>
   !exclusions.some((pattern) => pattern.test(message)) &&
   (patterns.some((pattern) => pattern.test(message)) || /^4(00|13)\s*(status code)?\s*\(no body\)/i.test(message))
 
+export const isAssistantPrefillUnsupported = (message: string) =>
+  /this model does not support assistant message prefill\. the conversation must end with a user message\./i.test(message)
+
 export const isContextOverflowFailure = (failure: unknown) =>
   failure instanceof LLMError
     ? failure.reason._tag === "InvalidRequest" && failure.reason.classification === "context-overflow"

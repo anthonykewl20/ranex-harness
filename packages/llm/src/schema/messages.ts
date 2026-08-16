@@ -268,6 +268,24 @@ export const ResponseFormat = Schema.Union([
 ]).pipe(Schema.toTaggedUnion("type"))
 export type ResponseFormat = Schema.Schema.Type<typeof ResponseFormat>
 
+export class AssistantPrefill extends Schema.Class<AssistantPrefill>("LLM.AssistantPrefill")({
+  text: Schema.String.pipe(
+    Schema.refine(
+      (text): text is string => text.trim().length > 0,
+      { message: "must contain non-whitespace characters" },
+    ),
+  ),
+  type: Schema.optional(Schema.Never),
+  unsupported: Schema.optional(Schema.Literals(["reject", "instruction"])),
+}) {}
+
+export namespace AssistantPrefill {
+  export type Input = AssistantPrefill | ConstructorParameters<typeof AssistantPrefill>[0]
+
+  /** Normalize a prefill into its text-only canonical representation. */
+  export const make = (input: Input) => (input instanceof AssistantPrefill ? input : new AssistantPrefill(input))
+}
+
 export class LLMRequest extends Schema.Class<LLMRequest>("LLM.Request")({
   id: Schema.optional(Schema.String),
   model: ModelSchema,
@@ -280,6 +298,7 @@ export class LLMRequest extends Schema.Class<LLMRequest>("LLM.Request")({
   http: Schema.optional(HttpOptions),
   responseFormat: Schema.optional(ResponseFormat),
   cache: Schema.optional(CachePolicy),
+  prefill: Schema.optional(AssistantPrefill),
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 }) {}
 
@@ -298,6 +317,7 @@ export namespace LLMRequest {
     http: request.http,
     responseFormat: request.responseFormat,
     cache: request.cache,
+    prefill: request.prefill,
     metadata: request.metadata,
   })
 

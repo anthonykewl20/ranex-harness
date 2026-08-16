@@ -44,6 +44,20 @@ export class InvalidRequestReason extends Schema.Class<InvalidRequestReason>("LL
   }
 }
 
+export class AssistantPrefillUnsupportedReason extends Schema.Class<AssistantPrefillUnsupportedReason>(
+  "LLM.Error.AssistantPrefillUnsupported",
+)({
+  _tag: Schema.tag("AssistantPrefillUnsupported"),
+  message: Schema.String,
+  capability: Schema.Literals(["unsupported", "unknown"]),
+  providerMetadata: Schema.optional(ProviderMetadata),
+  http: Schema.optional(HttpContext),
+}) {
+  get retryable() {
+    return false
+  }
+}
+
 export class NoRouteReason extends Schema.Class<NoRouteReason>("LLM.Error.NoRoute")({
   _tag: Schema.tag("NoRoute"),
   route: RouteID,
@@ -163,6 +177,7 @@ export class UnknownProviderReason extends Schema.Class<UnknownProviderReason>("
 
 export const LLMErrorReason = Schema.Union([
   InvalidRequestReason,
+  AssistantPrefillUnsupportedReason,
   NoRouteReason,
   AuthenticationReason,
   RateLimitReason,
