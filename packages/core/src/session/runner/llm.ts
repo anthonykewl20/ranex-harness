@@ -660,7 +660,11 @@ const layer = Layer.effect(
       // projected tool context, never SessionInput, so the guard is unchanged.
       yield* failInterruptedTools(input.sessionID)
       const persistedRetry = yield* db
-        .select({ attempt: SessionTable.retry_attempt, next_attempt_at: SessionTable.retry_next_attempt_at })
+        .select({
+          attempt: SessionTable.retry_attempt,
+          next_attempt_at: SessionTable.retry_next_attempt_at,
+          window_started_at: SessionTable.retry_window_started_at,
+        })
         .from(SessionTable)
         .where(eq(SessionTable.id, input.sessionID))
         .get()
@@ -669,6 +673,25 @@ const layer = Layer.effect(
       const retryNextAttemptAt = persistedRetry?.next_attempt_at ?? undefined
       if (retryAttempt !== undefined && retryNextAttemptAt !== undefined) {
         const now = yield* Clock.currentTimeMillis
+        const settings = yield* providerRetry.settings()
+        if (
+          persistedRetry?.window_started_at !== null &&
+          persistedRetry?.window_started_at !== undefined &&
+          now - persistedRetry.window_started_at >= settings.max_elapsed_ms
+        ) {
+          yield* db
+            .update(SessionTable)
+            .set({
+              retry_attempt: null,
+              retry_next_attempt_at: null,
+              retry_cumulative_delay_ms: null,
+              retry_window_started_at: null,
+            })
+            .where(eq(SessionTable.id, input.sessionID))
+            .run()
+            .pipe(Effect.orDie)
+          return
+        }
         yield* Effect.sleep(Math.max(0, retryNextAttemptAt - now))
       }
       const hasSteer = yield* SessionInput.hasPending(db, input.sessionID, "steer")
