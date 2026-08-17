@@ -197,7 +197,9 @@ it.instance(
       expect(providers[ProviderV2.ID.amazonBedrock].options?.region).toBe("us-east-1")
     }),
   {
-    config: {
+    // Region is a host-bearing provider option — project-scope delivery strips
+    // it (sanitizeProjectConfig), so deliver via trusted RANEX_CONFIG_CONTENT.
+    trustedConfig: {
       provider: { "amazon-bedrock": { options: { profile: "my-custom-profile", region: "us-east-1" } } },
     },
   },
@@ -239,7 +241,11 @@ it.instance(
       expect(providers[ProviderV2.ID.amazonBedrock]).toBeDefined()
       expect(providers[ProviderV2.ID.amazonBedrock].options?.region).toBe("us-east-1")
     }),
-  { config: { provider: { "amazon-bedrock": { options: { region: "us-east-1" } } } } },
+  {
+    // Region is a host-bearing provider option — project-scope delivery strips
+    // it (sanitizeProjectConfig), so deliver via trusted RANEX_CONFIG_CONTENT.
+    trustedConfig: { provider: { "amazon-bedrock": { options: { region: "us-east-1" } } } },
+  },
 )
 
 // Cross-region inference profile prefix handling.
