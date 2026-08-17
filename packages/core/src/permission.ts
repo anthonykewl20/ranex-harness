@@ -40,10 +40,32 @@ export type Request = typeof Request.Type
 export const Reply = Permission.Reply
 export type Reply = typeof Reply.Type
 
+// Delegation-level bound on what an assert may allow. Scope only narrows:
+// allow decisions stand solely for targets inside the scope, while deny and
+// ask decisions are unaffected. An omitted scope keeps legacy behavior.
+// Scope vocabularies are kind-bound (see `pathScopedActions` /
+// `serverScopedActions` below): a scope can only vouch for action kinds whose
+// resources it can reason about, and any scope present on an unbound action
+// degrades allow → ask — fail closed.
+export const Scope = Schema.Struct({
+  // Workspace-relative path or glob bounds in rule-resource wildcard syntax
+  // (`src/**`), matched with the engine's own wildcard matcher. Binds only to
+  // the path-resourced actions (`read`, `edit`, `external_directory`); on any
+  // other action a present `paths` scope degrades allow → ask.
+  paths: Schema.Array(Schema.String).pipe(Schema.optional),
+  // MCP server IDs; a target names a listed server as the exact ID or as a
+  // `server/...` / `server:...` prefixed resource. Binds only to the `mcp`
+  // action; on any other action a present `servers` scope degrades
+  // allow → ask.
+  servers: Schema.Array(Schema.String).pipe(Schema.optional),
+}).annotate({ identifier: "PermissionV2.Scope" })
+export type Scope = typeof Scope.Type
+
 export const AssertInput = Schema.Struct({
   id: ID.pipe(Schema.optional),
   ...RequestFields,
   agent: AgentV2.ID.pipe(Schema.optional),
+  scope: Scope.pipe(Schema.optional),
 }).annotate({ identifier: "PermissionV2.AssertInput" })
 export type AssertInput = typeof AssertInput.Type
 
@@ -114,6 +136,57 @@ export function merge(...rulesets: Permission.Ruleset[]): Permission.Ruleset {
   return rulesets.flat()
 }
 
+// Scope narrows allows only: an allow for a target outside the delegation's
+// scope degrades to ask — the engine's non-allow outcome — so scope can never
+// widen access and never mutes a deny.
+function scopedEvaluate(
+  action: string,
+  resource: string,
+  rules: Permission.Ruleset,
+  scope: Scope | undefined,
+): Permission.Effect {
+  const effect = evaluate(action, resource, rules).effect
+  if (effect !== "allow" || !scope) return effect
+  return inScope(action, scope, resource) ? effect : "ask"
+}
+
+// Scope vocabularies are bound to action kinds, mirroring the concrete V2
+// assert sites: `read` (tool/read.ts) and `edit` (tool/edit.ts, write.ts,
+// apply-patch.ts) resources are workspace paths, and `external_directory`
+// (location-mutation.ts) resources are canonical directory globs — all
+// matched by the `paths` vocabulary. The `servers` vocabulary applies only
+// to the `mcp` action, whose resources name MCP servers. Every other action
+// (bash commands, web URLs, search patterns, skill or question targets) has
+// no vocabulary, so a scope present on it degrades allow → ask: a scoped
+// delegation must never allow an action kind the scope cannot reason about.
+const pathScopedActions = new Set(["read", "edit", "external_directory"])
+const serverScopedActions = new Set(["mcp"])
+
+function inScope(action: string, scope: Scope, resource: string) {
+  if (pathScopedActions.has(action)) {
+    // Path bounds keep the allow-rule casing convention: strict on POSIX so
+    // scope `src/**` cannot be satisfied by `SRC/x`, insensitive on win32.
+    const paths = scope.paths ?? []
+    if (paths.some((pattern) => Wildcard.match(resource, pattern, { caseInsensitive: process.platform === "win32" })))
+      return true
+  }
+  if (serverScopedActions.has(action)) {
+    const servers = scope.servers ?? []
+    // Server membership is exact-ID with a separator boundary, so listing
+    // `github` never admits `githubevil/x` or `my_github/x`. Empty IDs are
+    // skipped so `servers: [""]` can never match via the `"/..."` prefix on
+    // absolute paths.
+    if (
+      servers.some(
+        (server) =>
+          server !== "" && (resource === server || resource.startsWith(server + "/") || resource.startsWith(server + ":")),
+      )
+    )
+      return true
+  }
+  return false
+}
+
 export interface Interface {
   readonly ask: (input: AssertInput) => EffectRuntime.Effect<AskResult, SessionV2.NotFoundError>
   readonly assert: (input: AssertInput) => EffectRuntime.Effect<void, Error | SessionV2.NotFoundError>
@@ -128,6 +201,9 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/v2
 interface Pending {
   readonly request: Request
   readonly agent?: AgentV2.ID
+  // The assert-time scope; restored requests predate or outlive it and stay
+  // unscoped, keeping their legacy evaluation.
+  readonly scope?: Scope
   readonly deferred: Deferred.Deferred<void, DeclinedError | CorrectedError>
 }
 
@@ -204,7 +280,7 @@ const layer = Layer.effect(
       const rules = yield* configured(input.sessionID, input.agent)
       if (denied(input, rules)) return { effect: "deny" as const, rules }
       const all = [...rules, ...(yield* savedRules())]
-      const effects = input.resources.map((resource) => evaluate(input.action, resource, all).effect)
+      const effects = input.resources.map((resource) => scopedEvaluate(input.action, resource, all, input.scope))
       const effect: Permission.Effect = effects.includes("deny") ? "deny" : effects.includes("ask") ? "ask" : "allow"
       return { effect, rules: all }
     })
@@ -221,11 +297,11 @@ const layer = Layer.effect(
       }
     }
 
-    const create = (request: Request, agent?: AgentV2.ID) =>
+    const create = (request: Request, agent?: AgentV2.ID, scope?: Scope) =>
       EffectRuntime.uninterruptible(
         EffectRuntime.gen(function* () {
           const deferred = yield* Deferred.make<void, DeclinedError | CorrectedError>()
-          const item = { request, agent, deferred }
+          const item = { request, agent, scope, deferred }
           if (pending.has(request.id)) return yield* EffectRuntime.die(`Duplicate pending permission ID: ${request.id}`)
           const admitted = yield* db
             .transaction(
@@ -287,7 +363,7 @@ const layer = Layer.effect(
     const ask = EffectRuntime.fn("PermissionV2.ask")(function* (input: AssertInput) {
       const result = yield* evaluateInput(input)
       const value = request(input)
-      if (result.effect === "ask") yield* create(value, input.agent)
+      if (result.effect === "ask") yield* create(value, input.agent, input.scope)
       return { id: value.id, effect: result.effect }
     })
 
@@ -301,7 +377,7 @@ const layer = Layer.effect(
             })
           }
           if (result.effect === "allow") return
-          const item = yield* create(request(input), input.agent)
+          const item = yield* create(request(input), input.agent, input.scope)
           return yield* restore(Deferred.await(item.deferred)).pipe(
             EffectRuntime.catchTag("PermissionV2.DeclinedError", (error) => EffectRuntime.die(error)),
             EffectRuntime.ensuring(
@@ -414,7 +490,7 @@ const layer = Layer.effect(
                 const effective = [...rules, ...rememberedRules]
                 if (
                   !item.request.resources.every(
-                    (resource) => evaluate(item.request.action, resource, effective).effect === "allow",
+                    (resource) => scopedEvaluate(item.request.action, resource, effective, item.scope) === "allow",
                   )
                 )
                   return

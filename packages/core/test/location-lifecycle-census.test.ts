@@ -1,9 +1,11 @@
+import { $ } from "bun"
 import { describe, expect, test } from "bun:test"
-import { Cause, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Option, RcMap } from "effect"
+import { Cause, ConfigProvider, Console, Context, Deferred, Effect, Exit, Fiber, Layer, Option, RcMap, Stream } from "effect"
 import { ApplicationTools } from "@ranex/core/tool/application-tools"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { Database } from "@ranex/core/database/database"
 import { EventV2 } from "@ranex/core/event"
+import { Watcher } from "@ranex/core/filesystem/watcher"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { AbsolutePath } from "@ranex/core/schema"
 import { Location } from "@ranex/core/location"
@@ -15,6 +17,13 @@ import { tmpdir } from "./fixture/tmpdir"
 
 const location = Location.Ref.make({ directory: AbsolutePath.make("/tmp/location-lifecycle-census") })
 const silentConsole = new Proxy({}, { get: () => () => {} }) as Console.Console
+// Location generations build lazily inside the LayerMap at acquisition time,
+// so a build-time ConfigProvider layer around the graph never reaches them;
+// the watcher flag has to ride the runtime context instead.
+const watcherFlags = ConfigProvider.fromUnknown({
+  RANEX_EXPERIMENTAL_FILEWATCHER: "true",
+  RANEX_EXPERIMENTAL_DISABLE_FILEWATCHER: "false",
+})
 
 class CapturedLifecycle extends Context.Service<
   CapturedLifecycle,
@@ -251,6 +260,85 @@ describe("LocationLifecycle", () => {
             ),
           ),
         ).pipe(Effect.provide(realGraph((inspection) => closed.push(inspection))), Effect.provideService(Console.Console, silentConsole)),
+      )
+    },
+    30_000,
+  )
+
+  test.skipIf(!Watcher.hasNativeBinding() || !!process.env.CI)(
+    "expires a git location generation with an active watcher subscription at a zero census",
+    () => {
+      const closed: LocationLifecycle.ClosedInspection[] = []
+      return Effect.runPromise(
+        Effect.scoped(
+          Effect.acquireRelease(
+            Effect.promise(async () => {
+              const tmp = await tmpdir()
+              await $`git init`.cwd(tmp.path).quiet()
+              await $`git config core.fsmonitor false`.cwd(tmp.path).quiet()
+              await $`git config commit.gpgsign false`.cwd(tmp.path).quiet()
+              await $`git config user.email test@opencode.test`.cwd(tmp.path).quiet()
+              await $`git config user.name Test`.cwd(tmp.path).quiet()
+              await $`git commit --allow-empty -m root`.cwd(tmp.path).quiet()
+              return tmp
+            }),
+            (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+          ).pipe(
+            Effect.flatMap((tmp) =>
+              Effect.gen(function* () {
+                const locations = yield* LocationServiceMap.Service
+                const ref = Location.Ref.make({ directory: AbsolutePath.make(tmp.path) })
+                // Hold the generation until the watcher's root subscription is
+                // live — its "subscription" census entry must exist before
+                // expiry, or the teardown regression under test cannot
+                // reproduce. The parcel subscription attaches asynchronously,
+                // so keep writing fresh probe files until one update lands.
+                yield* Effect.gen(function* () {
+                  const events = yield* EventV2.Service
+                  const updated = yield* Deferred.make<void>()
+                  const fiber = yield* events.subscribe(Watcher.Event.Updated).pipe(
+                    Stream.runForEach((event) =>
+                      event.data.file.startsWith(`${tmp.path}/.census-probe`)
+                        ? Deferred.succeed(updated, undefined)
+                        : Effect.void,
+                    ),
+                    Effect.forkScoped,
+                  )
+                  yield* Effect.yieldNow
+                  let live = false
+                  for (let attempt = 0; attempt < 40; attempt++) {
+                    yield* Effect.promise(() => Bun.write(`${tmp.path}/.census-probe-${attempt}`, "probe"))
+                    const seen = yield* Deferred.await(updated).pipe(Effect.timeoutOption("250 millis"))
+                    if (Option.isSome(seen)) {
+                      live = true
+                      break
+                    }
+                  }
+                  yield* Fiber.interrupt(fiber)
+                  expect(live).toBe(true)
+                  // The census registration lands in the same fork, right
+                  // after the parcel subscription resolves; let it settle.
+                  yield* Effect.sleep("50 millis")
+                }).pipe(Effect.provide(locations.get(ref)), Effect.scoped)
+                yield* Effect.sleep("60 millis")
+                expect(yield* RcMap.has(locations.rcMap, ref)).toBe(false)
+                yield* waitForClosed(closed, 1).pipe(
+                  Effect.timeoutOrElse({
+                    duration: "10 seconds",
+                    orElse: () => Effect.die("generation did not close with a zero census (leaked registration)"),
+                  }),
+                )
+                expect(closed[0]).toMatchObject({
+                  state: "closed",
+                  counts: { fiber: 0, event_consumer: 0, listener: 0, subscription: 0 },
+                })
+              }),
+            ),
+          ).pipe(
+            Effect.provideService(ConfigProvider.ConfigProvider, watcherFlags),
+            Effect.provide(realGraph((inspection) => closed.push(inspection))),
+          ),
+        ),
       )
     },
     30_000,

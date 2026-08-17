@@ -10,7 +10,7 @@ import { withNetworkOptions, resolveNetworkOptionsNoConfig, hasArg } from "@/cli
 import { Filesystem } from "@/util/filesystem"
 import type { GlobalEvent } from "@ranex/sdk/v2"
 import type { EventSource } from "@ranex/tui/context/sdk"
-import { writeHeapSnapshot } from "v8"
+import { Heap } from "@/cli/heap"
 import { ServerAuth } from "@/server/auth"
 import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@ranex/tui/terminal-win32"
@@ -292,7 +292,7 @@ export const TuiThreadCommand = cmd({
           run({
             url: transport.url,
             async onSnapshot() {
-              const tui = writeHeapSnapshot("tui.heapsnapshot")
+              const tui = Heap.snapshot("tui")
               const server = await client.call("snapshot", undefined)
               return [tui, server]
             },

@@ -14,14 +14,16 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js"
 import { LayerNode } from "@ranex/core/effect/layer-node"
-import { Cause, Effect, Exit } from "effect"
+import { Cause, Effect, Exit, Layer } from "effect"
 import type { MCP as MCPNS } from "../../src/mcp/index"
 import { MCP } from "../../src/mcp/index"
+import { Command } from "../../src/command"
 import { McpOAuthCallback } from "../../src/mcp/oauth-callback"
 import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
 const it = testEffect(LayerNode.compile(MCP.node))
+const commandIt = testEffect(LayerNode.compile(LayerNode.group([MCP.node, Command.node])))
 const stdioFixture = path.join(import.meta.dir, "../fixture/mcp-lifecycle-stdio.ts")
 
 type Page<T> = { items: T[]; nextCursor?: string }
@@ -37,9 +39,11 @@ interface LifecycleServerState {
   resourceTemplatePages?: Record<string, Page<{ name: string; uriTemplate: string; description?: string }>>
   listToolsError?: string
   requestDelay?: number
+  promptText?: string
   roots?: Array<{ uri: string; name?: string }>
   requests: string[]
   aborted: number
+  getPromptRequests: number
 }
 
 function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructions?: string; requestRoots?: boolean }) {
@@ -53,6 +57,7 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
         resourceTemplates: [],
         requests: [],
         aborted: 0,
+        getPromptRequests: 0,
       }
 
       const makeProtocol = async () => {
@@ -78,8 +83,13 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
             return Promise.resolve({ prompts: page?.items ?? state.prompts, nextCursor: page?.nextCursor })
           })
           protocol.setRequestHandler(GetPromptRequestSchema, async () => {
+            state.getPromptRequests++
+            // Capture the result at handler entry: tests flip promptText while
+            // a delayed request is still in flight, and only requests issued
+            // after the flip must observe it.
+            const text = state.promptText ?? "prompt result"
             if (state.requestDelay) await Bun.sleep(state.requestDelay)
-            return { messages: [{ role: "user", content: { type: "text", text: "prompt result" } }] }
+            return { messages: [{ role: "user", content: { type: "text", text } }] }
           })
         }
         if (capabilities.resources) {
@@ -431,6 +441,203 @@ it.instance("uses per-server timeouts for prompt and resource requests", () =>
     expect(yield* mcp.getPrompt("timeout-server", "test")).toBeUndefined()
     expect(yield* mcp.readResource("timeout-server", "test://resource")).toBeUndefined()
   }),
+)
+
+commandIt.instance(
+  "reconnect drops cached prompt templates and re-forks the prewarm exactly once",
+  () =>
+    Effect.gen(function* () {
+      const server = yield* lifecycleServer()
+      server.state.prompts = [{ name: "greet", description: "greeting prompt" }]
+      const mcp = yield* MCP.Service
+      const commands = yield* Command.Service
+      yield* mcp.add("prompt-cache", remote(server.url))
+
+      const prewarmed = yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const cmd = yield* commands.get("prompt-cache:greet")
+          return typeof cmd?.template === "string" ? cmd.template : undefined
+        }),
+        "template never prewarmed",
+      )
+      expect(prewarmed).toBe("prompt result")
+      expect(server.state.getPromptRequests).toBe(1)
+
+      yield* mcp.disconnect("prompt-cache")
+      yield* Effect.promise(server.restart)
+      yield* mcp.connect("prompt-cache")
+
+      yield* pollWithTimeout(
+        Effect.sync(() => (server.state.getPromptRequests === 2 ? true : undefined)),
+        "reconnect did not re-fetch the prompt template",
+      )
+      const refreshed = yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const cmd = yield* commands.get("prompt-cache:greet")
+          return typeof cmd?.template === "string" ? cmd.template : undefined
+        }),
+        "template never re-prewarmed after reconnect",
+      )
+      expect(refreshed).toBe("prompt result")
+
+      // Exactly one re-fetch per reconnect: no further requests settle.
+      yield* Effect.sleep(200)
+      expect(server.state.getPromptRequests).toBe(2)
+    }),
+  30_000,
+)
+
+commandIt.instance(
+  "reconnect during an in-flight prewarm refetches against the new client",
+  () =>
+    Effect.gen(function* () {
+      const old = yield* lifecycleServer()
+      old.state.prompts = [{ name: "greet", description: "greeting prompt" }]
+      old.state.requestDelay = 500
+      old.state.promptText = "old template"
+      const replaced = yield* lifecycleServer()
+      replaced.state.prompts = [{ name: "greet", description: "greeting prompt" }]
+      replaced.state.promptText = "new template"
+      const mcp = yield* MCP.Service
+      const commands = yield* Command.Service
+      yield* mcp.add("prompt-cache", remote(old.url))
+
+      // Registration triggers the prewarm: the first getPrompt is now in
+      // flight against the initial connection.
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          yield* commands.get("prompt-cache:greet")
+          return old.state.getPromptRequests >= 1 ? true : undefined
+        }),
+        "first getPrompt never went in flight",
+      )
+
+      // Replace the server without disconnecting first: storeClient fires the
+      // reconnect hooks while the old client — and its in-flight getPrompt —
+      // is still open.
+      yield* mcp.add("prompt-cache", remote(replaced.url))
+
+      const template = yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const cmd = yield* commands.get("prompt-cache:greet")
+          return typeof cmd?.template === "string" ? cmd.template : undefined
+        }),
+        "template never re-prewarmed after reconnect",
+      )
+      // The stale in-flight completion must not latch: the template comes
+      // from a fresh fetch against the new client.
+      expect(template).toBe("new template")
+
+      yield* Effect.sleep(200)
+      expect(old.state.getPromptRequests).toBe(1)
+      expect(replaced.state.getPromptRequests).toBe(1)
+    }),
+  30_000,
+)
+
+// Deterministic reconnect-race probe at the Command layer: getPrompt call 1
+// stays in flight until the test resolves it with the STALE result after the
+// reconnect hook fired, so the stale-completion latch is exercised without
+// transport-level abort timing.
+type McpGetPromptResult = ReturnType<MCP.Interface["getPrompt"]>
+type RacePromptResult = NonNullable<Effect.Success<McpGetPromptResult>>
+
+const raceProbe = {
+  calls: 0,
+  hook: undefined as (() => Effect.Effect<void>) | undefined,
+  first: undefined as Promise<RacePromptResult> | undefined,
+  resolveFirst: undefined as ((value: RacePromptResult) => void) | undefined,
+}
+
+const raceMcp = Layer.succeed(
+  MCP.Service,
+  MCP.Service.of({
+    status: () => Effect.succeed({}),
+    clients: () => Effect.succeed({}),
+    instructions: () => Effect.succeed([]),
+    tools: () => Effect.succeed({}),
+    prompts: () =>
+      Effect.succeed({
+        "race:greet": { name: "greet", client: "race", description: "race prompt" },
+      }),
+    resources: () => Effect.succeed({}),
+    resourceTemplates: () => Effect.succeed({}),
+    add: () => Effect.succeed({ status: { status: "disabled" as const } }),
+    connect: () => Effect.void,
+    disconnect: () => Effect.void,
+    onReconnect: (_server, hook) =>
+      Effect.sync(() => {
+        raceProbe.hook = hook
+        return () => {
+          raceProbe.hook = undefined
+        }
+      }),
+    getPrompt: () =>
+      Effect.suspend((): McpGetPromptResult => {
+        raceProbe.calls++
+        if (raceProbe.calls > 1)
+          return Effect.succeed({
+            messages: [{ role: "user" as const, content: { type: "text" as const, text: "new template" } }],
+          })
+        // tryPromise keeps the in-flight fetch interruptible, like the real
+        // MCP client path.
+        return Effect.tryPromise({ try: () => raceProbe.first!, catch: (error) => error }).pipe(
+          Effect.orElseSucceed(() => undefined),
+        )
+      }),
+    readResource: () => Effect.succeed(undefined),
+    startAuth: () => Effect.die("unexpected MCP auth in lifecycle tests"),
+    authenticate: () => Effect.die("unexpected MCP auth in lifecycle tests"),
+    finishAuth: () => Effect.die("unexpected MCP auth in lifecycle tests"),
+    removeAuth: () => Effect.void,
+    supportsOAuth: () => Effect.succeed(false),
+    hasStoredTokens: () => Effect.succeed(false),
+    getAuthStatus: () => Effect.succeed("not_authenticated" as const),
+  }),
+)
+
+const raceIt = testEffect(LayerNode.compile(LayerNode.group([Command.node]), [[MCP.node, raceMcp]]))
+
+raceIt.instance(
+  "stale in-flight prewarm completion never latches the template after reconnect",
+  () =>
+    Effect.gen(function* () {
+      raceProbe.calls = 0
+      raceProbe.hook = undefined
+      raceProbe.first = new Promise<RacePromptResult>((resolve) => {
+        raceProbe.resolveFirst = resolve
+      })
+      const commands = yield* Command.Service
+
+      // Registration starts the prewarm: getPrompt call 1 is in flight and
+      // the reconnect hook is registered.
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          yield* commands.get("race:greet")
+          return raceProbe.calls >= 1 && raceProbe.hook !== undefined ? true : undefined
+        }),
+        "prewarm getPrompt never went in flight",
+      )
+
+      // Reconnect while the fetch is in flight, then let the OLD fetch
+      // complete: its stale result must be discarded, not latched.
+      const fireReconnect = raceProbe.hook!
+      yield* fireReconnect()
+      raceProbe.resolveFirst!({
+        messages: [{ role: "user" as const, content: { type: "text" as const, text: "old template" } }],
+      })
+
+      const template = yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const cmd = yield* commands.get("race:greet")
+          return typeof cmd?.template === "string" ? cmd.template : undefined
+        }),
+        "template never re-fetched after reconnect",
+      )
+      expect(template).toBe("new template")
+      expect(raceProbe.calls).toBe(2)
+    }),
+  30_000,
 )
 
 it.instance("connects resource-only, prompt-only, and tools-only servers", () =>

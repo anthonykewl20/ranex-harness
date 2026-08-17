@@ -109,21 +109,29 @@ function errorTool(parts: SessionV1.Part[]) {
   return part?.state.status === "error" ? (part as ErrorToolPart) : undefined
 }
 
-function makeMcp(instructions: MCP.ServerInstructions[] = []) {
+type McpPromptsResult = ReturnType<MCP.Interface["prompts"]>
+type McpGetPromptResult = ReturnType<MCP.Interface["getPrompt"]>
+
+function makeMcp(input?: {
+  instructions?: MCP.ServerInstructions[]
+  prompts?: () => McpPromptsResult
+  getPrompt?: (clientName: string, name: string, args?: Record<string, string>) => McpGetPromptResult
+}) {
   return Layer.succeed(
     MCP.Service,
     MCP.Service.of({
       status: () => Effect.succeed({}),
       clients: () => Effect.succeed({}),
-      instructions: () => Effect.succeed(instructions),
+      instructions: () => Effect.succeed(input?.instructions ?? []),
       tools: () => Effect.succeed({}),
-      prompts: () => Effect.succeed({}),
+      prompts: input?.prompts ?? (() => Effect.succeed({})),
       resources: () => Effect.succeed({}),
       resourceTemplates: () => Effect.succeed({}),
       add: () => Effect.succeed({ status: { status: "disabled" as const } }),
       connect: () => Effect.void,
       disconnect: () => Effect.void,
-      getPrompt: () => Effect.succeed(undefined),
+      onReconnect: () => Effect.succeed(() => {}),
+      getPrompt: input?.getPrompt ?? (() => Effect.succeed(undefined)),
       readResource: () => Effect.succeed(undefined),
       startAuth: () => Effect.die("unexpected MCP auth in prompt-effect tests"),
       authenticate: () => Effect.die("unexpected MCP auth in prompt-effect tests"),
@@ -208,11 +216,19 @@ const promptRoot = LayerNode.group([
   RuntimeFlags.node,
 ])
 
-function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+function makePrompt(input?: {
+  mcpInstructions?: MCP.ServerInstructions[]
+  mcpPrompts?: () => McpPromptsResult
+  mcpGetPrompt?: (clientName: string, name: string, args?: Record<string, string>) => McpGetPromptResult
+  processor?: "blocking"
+}) {
   const replacements = [
     [SessionSummary.node, summary],
     [LSP.node, lsp],
-    [MCP.node, makeMcp(input?.mcpInstructions)],
+    [
+      MCP.node,
+      makeMcp({ instructions: input?.mcpInstructions, prompts: input?.mcpPrompts, getPrompt: input?.mcpGetPrompt }),
+    ],
     [RuntimeFlags.node, runtimeFlags],
   ] as const
   if (input?.processor === "blocking") {
@@ -221,12 +237,20 @@ function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; proces
   return LayerNode.compile(promptRoot, replacements)
 }
 
-function makeHttp(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+function makeHttp(input?: {
+  mcpInstructions?: MCP.ServerInstructions[]
+  mcpPrompts?: () => McpPromptsResult
+  mcpGetPrompt?: (clientName: string, name: string, args?: Record<string, string>) => McpGetPromptResult
+  processor?: "blocking"
+}) {
   const root = LayerNode.group([promptRoot, testLLMServerNode])
   const replacements = [
     [SessionSummary.node, summary],
     [LSP.node, lsp],
-    [MCP.node, makeMcp(input?.mcpInstructions)],
+    [
+      MCP.node,
+      makeMcp({ instructions: input?.mcpInstructions, prompts: input?.mcpPrompts, getPrompt: input?.mcpGetPrompt }),
+    ],
     [RuntimeFlags.node, runtimeFlags],
   ] as const
   if (input?.processor === "blocking") {
@@ -2402,6 +2426,290 @@ noLLMServer.instance(
           expect(err.data.message).toContain("init")
         }
       }
+    }),
+  30_000,
+)
+
+// MCP prompt commands: prewarmed template cache + optimistic echo
+
+const promptStub: { calls: number; delay: Duration.Input; template: string | undefined } = {
+  calls: 0,
+  delay: 0,
+  template: "STUB TEMPLATE $1",
+}
+
+const mcpPrompt = testEffect(
+  makeHttp({
+    mcpPrompts: () =>
+      Effect.succeed({
+        "slow:review": {
+          name: "review",
+          client: "slow",
+          description: "slow server prompt",
+          arguments: [{ name: "topic", description: "review topic", required: true }],
+        },
+      }),
+    mcpGetPrompt: () =>
+      Effect.gen(function* () {
+        promptStub.calls++
+        if (promptStub.delay !== 0) yield* Effect.sleep(promptStub.delay)
+        const template = promptStub.template
+        if (template === undefined) return undefined
+        return { messages: [{ role: "user" as const, content: { type: "text" as const, text: template } }] }
+      }),
+  }),
+)
+
+const resetPromptStub = Effect.addFinalizer(() =>
+  Effect.sync(() => {
+    promptStub.calls = 0
+    promptStub.delay = 0
+    promptStub.template = "STUB TEMPLATE $1"
+  }),
+)
+
+mcpPrompt.instance(
+  "mcp command echoes placeholder immediately and swaps in the resolved template",
+  () =>
+    Effect.gen(function* () {
+      yield* resetPromptStub
+      promptStub.delay = "2 seconds"
+      promptStub.template = "REVIEW TEMPLATE $1"
+
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      // Warm agent/model resolution so the timing below measures only the
+      // template round trip, not one-time provider initialization.
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "warm" }],
+      })
+      yield* llm.text("done")
+
+      const started = Date.now()
+      const command = yield* prompt
+        .command({ sessionID: chat.id, command: "slow:review", arguments: "the-topic" })
+        .pipe(Effect.forkChild)
+
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const msgs = yield* sessions.messages({ sessionID: chat.id })
+          return msgs.some(
+            (msg) =>
+              msg.info.role === "user" &&
+              msg.parts.some(
+                (part) => part.type === "text" && part.synthetic && part.text.includes(`Loading "/slow:review"`),
+              ),
+          )
+            ? true
+            : undefined
+        }),
+        "optimistic echo placeholder never appeared",
+        "1500 millis",
+      )
+      expect(Date.now() - started).toBeLessThan(2000)
+      expect(promptStub.calls).toBe(1)
+
+      // The placeholder must be model-invisible from creation, not just after
+      // settlement: the persisted part carries ignored: true while the
+      // template is still unresolved.
+      const pendingMsgs = yield* sessions.messages({ sessionID: chat.id })
+      const placeholderPart = pendingMsgs
+        .findLast((msg) => msg.info.role === "user")
+        ?.parts.find(
+          (part): part is SessionV1.TextPart =>
+            part.type === "text" && part.text.includes(`Loading "/slow:review"`),
+        )
+      expect(placeholderPart?.ignored).toBe(true)
+
+      const exit = yield* Fiber.await(command)
+      expect(Exit.isSuccess(exit)).toBe(true)
+
+      const msgs = yield* sessions.messages({ sessionID: chat.id })
+      const user = msgs.findLast((msg) => msg.info.role === "user")
+      expect(user?.parts.some((part) => part.type === "text" && part.text.includes("REVIEW TEMPLATE the-topic"))).toBe(
+        true,
+      )
+      expect(user?.parts.some((part) => part.type === "text" && part.text.includes(`Loading "/slow:review"`))).toBe(
+        false,
+      )
+      expect(promptStub.calls).toBe(1)
+      const inputs = yield* llm.inputs
+      const serialized = JSON.stringify(inputs.map((input) => input.messages))
+      expect(serialized).toContain("REVIEW TEMPLATE the-topic")
+      // Match the JSON-escaped placeholder text: the raw form's quotes are
+      // always escaped in `serialized`, so an unescaped literal can never fail.
+      expect(serialized).not.toContain(String.raw`Loading \"/slow:review\" from MCP server`)
+    }),
+  30_000,
+)
+
+mcpPrompt.instance(
+  "placeholder never reaches model input while the template is unresolved",
+  () =>
+    Effect.gen(function* () {
+      yield* resetPromptStub
+      promptStub.delay = "2 seconds"
+      promptStub.template = "REVIEW TEMPLATE $1"
+
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+
+      const command = yield* prompt
+        .command({ sessionID: chat.id, command: "slow:review", arguments: "the-topic" })
+        .pipe(Effect.forkChild)
+
+      // Advance until the placeholder part exists while the template is
+      // still unresolved (getPrompt is parked in its 2s delay).
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const msgs = yield* sessions.messages({ sessionID: chat.id })
+          return msgs.some(
+            (msg) =>
+              msg.info.role === "user" &&
+              msg.parts.some((part) => part.type === "text" && part.text.includes(`Loading "/slow:review"`)),
+          )
+            ? true
+            : undefined
+        }),
+        "optimistic echo placeholder never appeared",
+        "1500 millis",
+      )
+      expect(promptStub.calls).toBe(1)
+
+      // The persisted placeholder is ignored from creation...
+      const pendingMsgs = yield* sessions.messages({ sessionID: chat.id })
+      const placeholderPart = pendingMsgs
+        .findLast((msg) => msg.info.role === "user")
+        ?.parts.find(
+          (part): part is SessionV1.TextPart =>
+            part.type === "text" && part.text.includes(`Loading "/slow:review"`),
+        )
+      expect(placeholderPart?.synthetic).toBe(true)
+      expect(placeholderPart?.ignored).toBe(true)
+
+      // ...so a provider turn fired on the busy session during the pending
+      // window never sees the placeholder in its model inputs.
+      yield* llm.text("meanwhile done")
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        parts: [{ type: "text", text: "meanwhile" }],
+      })
+      const duringPending = JSON.stringify((yield* llm.inputs).map((input) => input.messages))
+      expect(duringPending).toContain("meanwhile")
+      // JSON-escaped placeholder text, so the assertion can actually fail.
+      expect(duringPending).not.toContain(String.raw`Loading \"/slow:review\" from MCP server`)
+
+      // Settlement still swaps the template in and clears the placeholder.
+      const exit = yield* Fiber.await(command)
+      expect(Exit.isSuccess(exit)).toBe(true)
+      const msgs = yield* sessions.messages({ sessionID: chat.id })
+      const echo = msgs.find(
+        (msg) =>
+          msg.info.role === "user" &&
+          msg.parts.some((part) => part.type === "text" && part.text.includes("REVIEW TEMPLATE the-topic")),
+      )
+      expect(echo).toBeDefined()
+      expect(
+        msgs.some((msg) =>
+          msg.parts.some((part) => part.type === "text" && part.text.includes(`Loading "/slow:review"`)),
+        ),
+      ).toBe(false)
+      expect(promptStub.calls).toBe(1)
+    }),
+  30_000,
+)
+
+mcpPrompt.instance(
+  "second mcp command invocation performs zero extra getPrompt calls",
+  () =>
+    Effect.gen(function* () {
+      yield* resetPromptStub
+      promptStub.delay = "2 seconds"
+      promptStub.template = "REVIEW TEMPLATE $1"
+
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+
+      yield* llm.text("first done")
+      yield* prompt.command({ sessionID: chat.id, command: "slow:review", arguments: "one" })
+      expect(promptStub.calls).toBe(1)
+
+      yield* llm.text("second done")
+      yield* prompt.command({ sessionID: chat.id, command: "slow:review", arguments: "two" })
+      expect(promptStub.calls).toBe(1)
+
+      const msgs = yield* sessions.messages({ sessionID: chat.id })
+      const users = msgs.filter((msg) => msg.info.role === "user")
+      expect(users).toHaveLength(2)
+      const last = users.at(-1)
+      expect(last?.parts.some((part) => part.type === "text" && part.text.includes("REVIEW TEMPLATE two"))).toBe(true)
+      expect(
+        last?.parts.some(
+          (part) => part.type === "text" && part.synthetic && part.text.includes(`Loading "/slow:review"`),
+        ),
+      ).toBe(false)
+    }),
+  30_000,
+)
+
+mcpPrompt.instance(
+  "mcp command template failure publishes an error naming the server",
+  () =>
+    Effect.gen(function* () {
+      yield* resetPromptStub
+      promptStub.template = undefined
+
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const events = yield* EventV2Bridge.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      const errors: NonNullable<SessionV1.Assistant["error"]>[] = []
+      const off = yield* events.listen((event) => {
+        if (event.type !== Session.Event.Error.type) return Effect.void
+        const data = event.data as typeof Session.Event.Error.data.Type
+        if (data.sessionID === chat.id && data.error) errors.push(data.error)
+        return Effect.void
+      })
+
+      const exit = yield* prompt
+        .command({ sessionID: chat.id, command: "slow:review", arguments: "" })
+        .pipe(Effect.exit)
+      yield* off
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const err = Cause.squash(exit.cause)
+        expect(NamedError.Unknown.isInstance(err)).toBe(true)
+        if (NamedError.Unknown.isInstance(err)) {
+          expect(err.data.message).toContain('MCP server "slow"')
+        }
+      }
+      expect(errors.some((error) => (error.data as { message?: string }).message?.includes('MCP server "slow"'))).toBe(
+        true,
+      )
+      expect(promptStub.calls).toBe(1)
+      expect(yield* llm.calls).toBe(0)
+
+      // Failure must not leave the optimistic echo behind: no placeholder
+      // part and no orphaned echo message remain in session state.
+      const msgs = yield* sessions.messages({ sessionID: chat.id })
+      expect(
+        msgs.some((msg) =>
+          msg.parts.some((part) => part.type === "text" && part.text.includes(`Loading "/slow:review"`)),
+        ),
+      ).toBe(false)
+      expect(msgs.filter((msg) => msg.info.role === "user")).toHaveLength(0)
     }),
   30_000,
 )

@@ -1,12 +1,13 @@
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import path from "path"
-import { Effect, Layer, Context, Schema } from "effect"
+import { Effect, Layer, Context, Schema, Cause, Exit, FiberHandle, Scope, ScopedCache } from "effect"
 import { NamedError } from "@ranex/core/util/error"
 import type { Agent } from "@/agent/agent"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { Global } from "@ranex/core/global"
 import { SkillPlugin } from "@ranex/core/plugin/skill"
+import { Watcher } from "@ranex/core/filesystem/watcher"
 import { Permission } from "@/permission"
 import { FSUtil } from "@ranex/core/fs-util"
 import { Config } from "@/config/config"
@@ -87,11 +88,15 @@ type State = {
 type DiscoveryState = {
   matches: string[]
   dirs: string[]
+  // Directories that were scanned for skills; watching these covers new,
+  // edited, and removed SKILL.md files without another discovery pass.
+  roots: string[]
 }
 
 type ScanState = {
   matches: Set<string>
   dirs: Set<string>
+  roots: Set<string>
 }
 
 export interface Interface {
@@ -100,6 +105,14 @@ export interface Interface {
   readonly all: () => Effect.Effect<Info[]>
   readonly dirs: () => Effect.Effect<string[]>
   readonly available: (agent?: Agent.Info) => Effect.Effect<Info[]>
+  /** Drops cached discovery and skill state for the current instance so later reads re-scan disk. */
+  readonly refresh: () => Effect.Effect<void>
+  /**
+   * Registers a hook fired whenever skill state is invalidated (explicit
+   * refresh or watcher flush) so dependents that froze skill listings, like
+   * Command, drop their stale copies. Returns an unsubscribe function.
+   */
+  readonly onInvalidate: (hook: () => Effect.Effect<void>) => Effect.Effect<() => void>
 }
 
 const add = Effect.fnUntraced(function* (state: State, match: string, events: EventV2Bridge.Service["Service"]) {
@@ -168,6 +181,7 @@ const scan = Effect.fnUntraced(function* (
     state.matches.add(match)
     state.dirs.add(path.dirname(match))
   }
+  state.roots.add(root)
 })
 
 const discoverSkills = Effect.fnUntraced(function* (
@@ -180,7 +194,7 @@ const discoverSkills = Effect.fnUntraced(function* (
   directory: string,
   worktree: string,
 ) {
-  const state: ScanState = { matches: new Set(), dirs: new Set() }
+  const state: ScanState = { matches: new Set(), dirs: new Set(), roots: new Set() }
 
   const externalDirs: string[] = []
   if (!disableExternalSkills) {
@@ -229,6 +243,7 @@ const discoverSkills = Effect.fnUntraced(function* (
   return {
     matches: Array.from(state.matches),
     dirs: Array.from(state.dirs),
+    roots: Array.from(state.roots),
   }
 })
 
@@ -244,6 +259,10 @@ const loadSkills = Effect.fnUntraced(function* (
 
   yield* Effect.logInfo("init", { count: Object.keys(state.skills).length })
 })
+
+// Filesystem events under a discovery root trigger a debounced flush that
+// invalidates cached state so write bursts coalesce into one re-scan.
+const WATCH_DEBOUNCE = "1 second"
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Skill") {}
 
@@ -282,9 +301,96 @@ const layer = Layer.effect(
           content: CUSTOMIZE_RANEX_SKILL_BODY,
         }
         yield* loadSkills(s, yield* InstanceState.get(discovered), events)
+        // Lazily starts this directory's skill watchers; the entry scope keeps
+        // them alive until the instance is disposed or a refresh replaces them.
+        yield* InstanceState.get(watched)
         return s
       }),
     )
+
+    // Dependents like Command freeze skill listings into their own instance
+    // state; these hooks let them drop that state whenever skills are
+    // re-scanned, for the directory the flush or refresh runs under.
+    const invalidateHooks: Array<() => Effect.Effect<void>> = []
+    const notifyInvalidated = Effect.forEach(invalidateHooks, (hook) => hook().pipe(Effect.ignore), {
+      concurrency: "unbounded",
+      discard: true,
+    })
+
+    const onInvalidate = Effect.fn("Skill.onInvalidate")(function* (hook: () => Effect.Effect<void>) {
+      invalidateHooks.push(hook)
+      return () => {
+        const index = invalidateHooks.indexOf(hook)
+        if (index >= 0) invalidateHooks.splice(index, 1)
+      }
+    })
+
+    // Per-instance scoped watchers over the discovery roots. The ScopedCache
+    // entry scope owns the subscriptions, so invalidating or disposing the
+    // instance releases them; the flush only invalidates discovery and skill
+    // state and never its own entry, which would interrupt the flush itself.
+    // The annotation breaks the state<->watched type inference cycle.
+    const watched: InstanceState.InstanceState<void> = yield* InstanceState.make(
+      Effect.fnUntraced(function* (ctx) {
+        const directory = ctx.directory
+        const context = yield* Effect.context()
+        const runFork = Effect.runForkWith(context)
+        const pending = yield* FiberHandle.make()
+        const subscriptions = new Map<string, Effect.Effect<void>>()
+
+        const resync = Effect.gen(function* () {
+          const roots: Set<string> = new Set((yield* ScopedCache.get(discovered.cache, directory)).roots)
+          for (const [root, close] of subscriptions) {
+            if (roots.has(root)) continue
+            subscriptions.delete(root)
+            yield* close.pipe(Effect.ignore)
+          }
+          for (const root of roots) {
+            if (subscriptions.has(root)) continue
+            const entryScope = yield* Scope.make()
+            const subscribed = yield* Watcher.watchDirectory(root, trigger).pipe(
+              Scope.provide(entryScope),
+              Effect.catchCause((cause) =>
+                Effect.logError("failed to watch skill root", { root, cause: Cause.pretty(cause) }).pipe(
+                  Effect.as(false),
+                ),
+              ),
+            )
+            if (subscribed) subscriptions.set(root, Scope.close(entryScope, Exit.void))
+          }
+        })
+
+        const flush = Effect.gen(function* () {
+          yield* Effect.sleep(WATCH_DEBOUNCE)
+          yield* ScopedCache.invalidate(discovered.cache, directory)
+          yield* ScopedCache.invalidate(state.cache, directory)
+          // Skill state rebuilds lazily on the next read; discovery re-runs now
+          // so new and removed roots are watched immediately.
+          yield* resync
+          yield* notifyInvalidated
+        }).pipe(
+          Effect.catchCause((cause) => Effect.logError("skill watch refresh failed", { cause: Cause.pretty(cause) })),
+        )
+
+        // Explicitly typed: resync's subscription callbacks reference this
+        // before its initializer runs, and the annotation breaks the cycle.
+        const trigger: () => void = () => runFork(FiberHandle.run(pending, flush))
+
+        yield* resync
+        yield* Effect.addFinalizer(() =>
+          Effect.forEach(subscriptions.values(), (close) => close.pipe(Effect.ignore), { discard: true }),
+        )
+      }),
+    )
+
+    const refresh = Effect.fn("Skill.refresh")(function* () {
+      const directory = yield* InstanceState.directory
+      yield* ScopedCache.invalidate(discovered.cache, directory)
+      yield* ScopedCache.invalidate(state.cache, directory)
+      yield* ScopedCache.invalidate(watched.cache, directory)
+      yield* notifyInvalidated
+      yield* InstanceState.get(state)
+    })
 
     const get = Effect.fn("Skill.get")(function* (name: string) {
       const s = yield* InstanceState.get(state)
@@ -314,7 +420,7 @@ const layer = Layer.effect(
       return list.filter((skill) => Permission.evaluate("skill", skill.name, agent.permission).action !== "deny")
     })
 
-    return Service.of({ get, require, all, dirs, available })
+    return Service.of({ get, require, all, dirs, available, refresh, onInvalidate })
   }),
 )
 

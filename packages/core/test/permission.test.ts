@@ -85,7 +85,7 @@ function assertion(input: Partial<PermissionV2.AssertInput> = {}) {
   } satisfies PermissionV2.AssertInput
 }
 
-function waitForRequest() {
+function waitForRequest(input: Partial<PermissionV2.AssertInput> = {}) {
   return Effect.gen(function* () {
     const service = yield* PermissionV2.Service
     const events = yield* EventV2.Service
@@ -96,7 +96,7 @@ function waitForRequest() {
         : Effect.void,
     )
     yield* Effect.addFinalizer(() => unsubscribe)
-    const fiber = yield* service.assert(assertion()).pipe(Effect.forkScoped)
+    const fiber = yield* service.assert(assertion(input)).pipe(Effect.forkScoped)
     const request = yield* Deferred.await(asked)
     return { service, fiber, request }
   })
@@ -273,6 +273,232 @@ describe("PermissionV2", () => {
       yield* setRules([{ action: "read", resource: "Secrets/*", effect: "deny" }])
       expect(yield* service.ask(assertion({ resources: ["secrets/key.pem"] }))).toMatchObject({ effect: "deny" })
       expect(yield* service.ask(assertion({ resources: ["Secrets/key.pem"] }))).toMatchObject({ effect: "deny" })
+    }),
+  )
+
+  it.effect("narrows allows to file-path scope", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "allow" }])
+      const service = yield* PermissionV2.Service
+      const scope = { paths: ["src/**"] }
+      expect(yield* service.ask(assertion({ resources: ["src/index.ts"], scope }))).toMatchObject({ effect: "allow" })
+      expect(yield* service.ask(assertion({ resources: ["src/deep/nested.ts"], scope }))).toMatchObject({
+        effect: "allow",
+      })
+      // Out-of-scope and mis-cased targets degrade the session-wide allow to ask.
+      expect(
+        yield* service.ask(assertion({ id: PermissionV2.ID.create("per_outside"), resources: ["lib/index.ts"], scope })),
+      ).toMatchObject({ effect: "ask" })
+      expect(
+        yield* service.ask(assertion({ id: PermissionV2.ID.create("per_cased"), resources: ["SRC/index.ts"], scope })),
+      ).toMatchObject({ effect: "ask" })
+    }),
+  )
+
+  it.effect("narrows allows to MCP-server scope by exact server membership", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "mcp", resource: "*", effect: "allow" }])
+      const service = yield* PermissionV2.Service
+      const scope = { servers: ["github"] }
+      expect(yield* service.ask(assertion({ action: "mcp", resources: ["github"], scope }))).toMatchObject({
+        effect: "allow",
+      })
+      expect(yield* service.ask(assertion({ action: "mcp", resources: ["github/create_issue"], scope }))).toMatchObject({
+        effect: "allow",
+      })
+      expect(yield* service.ask(assertion({ action: "mcp", resources: ["github:list_repos"], scope }))).toMatchObject({
+        effect: "allow",
+      })
+      expect(
+        yield* service.ask(
+          assertion({ action: "mcp", id: PermissionV2.ID.create("per_server"), resources: ["gitlab/create_issue"], scope }),
+        ),
+      ).toMatchObject({ effect: "ask" })
+      // Membership is separator-bounded: a sibling server name must not sneak in.
+      expect(
+        yield* service.ask(
+          assertion({
+            action: "mcp",
+            id: PermissionV2.ID.create("per_boundary"),
+            resources: ["githubevil/create_issue"],
+            scope,
+          }),
+        ),
+      ).toMatchObject({ effect: "ask" })
+    }),
+  )
+
+  it.effect("does not admit a file action through a servers scope on a colliding resource", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "allow" }])
+      const service = yield* PermissionV2.Service
+      const scope = { servers: ["github"] }
+      // `servers` cannot reason about path resources, so even a resource that
+      // happens to look like a listed server degrades the allow to ask.
+      expect(
+        yield* service.ask(assertion({ id: PermissionV2.ID.create("per_cross_dir"), resources: ["github/creds.ts"], scope })),
+      ).toMatchObject({ effect: "ask" })
+      expect(
+        yield* service.ask(assertion({ id: PermissionV2.ID.create("per_cross_exact"), resources: ["github"], scope })),
+      ).toMatchObject({ effect: "ask" })
+    }),
+  )
+
+  it.effect("does not admit an mcp action through a paths scope", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "mcp", resource: "*", effect: "allow" }])
+      const service = yield* PermissionV2.Service
+      // `paths` cannot reason about MCP server resources, even when the glob
+      // textually covers them.
+      expect(
+        yield* service.ask(
+          assertion({ action: "mcp", id: PermissionV2.ID.create("per_cross_mcp"), resources: ["github/create_issue"], scope: { paths: ["github/**"] } }),
+        ),
+      ).toMatchObject({ effect: "ask" })
+    }),
+  )
+
+  it.effect("degrades allow to ask for actions with no scope vocabulary", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "*", resource: "*", effect: "allow" }])
+      const service = yield* PermissionV2.Service
+      // bash resources are commands, not paths or servers, so any scope on
+      // the action is fail-closed: the delegation cannot vouch for it.
+      expect(
+        yield* service.ask(assertion({ action: "bash", id: PermissionV2.ID.create("per_bash_paths"), resources: ["pwd"], scope: { paths: ["**"] } })),
+      ).toMatchObject({ effect: "ask" })
+      expect(
+        yield* service.ask(
+          assertion({ action: "bash", id: PermissionV2.ID.create("per_bash_servers"), resources: ["pwd"], scope: { servers: ["github"] } }),
+        ),
+      ).toMatchObject({ effect: "ask" })
+      // Unscoped evaluation of the same target keeps its allow.
+      expect(
+        yield* service.ask(assertion({ action: "bash", id: PermissionV2.ID.create("per_bash_bare"), resources: ["pwd"] })),
+      ).toMatchObject({ effect: "allow" })
+    }),
+  )
+
+  it.effect("degrades every allow to ask when the scope is present but empty", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "allow" }])
+      const service = yield* PermissionV2.Service
+      // A present-but-empty scope is fail-closed: nothing counts as in scope.
+      expect(
+        yield* service.ask(assertion({ id: PermissionV2.ID.create("per_empty_bare"), scope: {} })),
+      ).toMatchObject({ effect: "ask" })
+      expect(
+        yield* service.ask(assertion({ id: PermissionV2.ID.create("per_empty_paths"), scope: { paths: [] } })),
+      ).toMatchObject({ effect: "ask" })
+      expect(
+        yield* service.ask(assertion({ id: PermissionV2.ID.create("per_empty_servers"), scope: { servers: [] } })),
+      ).toMatchObject({ effect: "ask" })
+    }),
+  )
+
+  it.effect("aggregates per-resource scope degradation across mixed resources", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "allow" }])
+      const service = yield* PermissionV2.Service
+      // One out-of-scope target beside in-scope targets degrades the whole
+      // request to ask under an otherwise session-wide allow.
+      expect(
+        yield* service.ask(
+          assertion({
+            id: PermissionV2.ID.create("per_mixed"),
+            resources: ["src/index.ts", "lib/outside.ts"],
+            scope: { paths: ["src/**"] },
+          }),
+        ),
+      ).toMatchObject({ effect: "ask" })
+    }),
+  )
+
+  it.effect("keeps deny rules absolute under scope", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "deny" }])
+      const service = yield* PermissionV2.Service
+      const scope = { paths: ["src/**"] }
+      // Deny stands for out-of-scope targets too — scope never mutes it.
+      expect(yield* service.ask(assertion({ resources: ["lib/outside.ts"], scope }))).toMatchObject({ effect: "deny" })
+      expect(yield* service.ask(assertion({ resources: ["src/inside.ts"], scope }))).toMatchObject({ effect: "deny" })
+
+      yield* setRules([
+        { action: "read", resource: "*", effect: "allow" },
+        { action: "read", resource: "secrets/*", effect: "deny" },
+      ])
+      expect(
+        yield* service.ask(assertion({ resources: ["secrets/key.pem"], scope: { paths: ["secrets/**"] } })),
+      ).toMatchObject({ effect: "deny" })
+    }),
+  )
+
+  it.effect("stays behavior-identical when scope is omitted", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "allow" }])
+      const service = yield* PermissionV2.Service
+      expect(yield* service.ask(assertion())).toEqual({ id: PermissionV2.ID.create("per_test"), effect: "allow" })
+      expect(yield* service.ask(assertion({ scope: undefined }))).toEqual({
+        id: PermissionV2.ID.create("per_test"),
+        effect: "allow",
+      })
+
+      yield* setRules([{ action: "read", resource: "*", effect: "deny" }])
+      expect(yield* service.ask(assertion())).toEqual({ id: PermissionV2.ID.create("per_test"), effect: "deny" })
+
+      yield* setRules([])
+      expect(yield* service.ask(assertion())).toEqual({ id: PermissionV2.ID.create("per_test"), effect: "ask" })
+      expect(yield* service.get(PermissionV2.ID.create("per_test"))).toBeDefined()
+    }),
+  )
+
+  it.effect("never widens: out-of-scope targets fall through to ask", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "read", resource: "*", effect: "allow" }])
+      const { service, fiber, request } = yield* waitForRequest({
+        id: PermissionV2.ID.create("per_scoped"),
+        resources: ["lib/outside.ts"],
+        scope: { paths: ["src/**"] },
+      })
+      // The session-wide allow does not settle the assert; a human must.
+      expect(request.resources).toEqual(["lib/outside.ts"])
+      expect(yield* service.list()).toEqual([request])
+      yield* service.reply({ requestID: request.id, reply: "once" })
+      yield* Fiber.join(fiber)
+    }),
+  )
+
+  it.effect("narrows saved always-allow rules to scope and leaves scoped requests pending", () =>
+    Effect.gen(function* () {
+      yield* setup()
+      const service = yield* PermissionV2.Service
+      const scope = { paths: ["src/**"] }
+      // A scoped ask parks on human approval even though nothing allows it yet.
+      expect(
+        yield* service.ask(assertion({ id: PermissionV2.ID.create("per_stays"), resources: ["lib/a.ts"], scope })),
+      ).toMatchObject({ effect: "ask" })
+      expect(
+        yield* service.ask(assertion({ id: PermissionV2.ID.create("per_twin"), resources: ["lib/c.ts"] })),
+      ).toMatchObject({ effect: "ask" })
+      expect(
+        yield* service.ask(
+          assertion({ id: PermissionV2.ID.create("per_saver"), resources: ["lib/b.ts"], save: ["lib/*"] }),
+        ),
+      ).toMatchObject({ effect: "ask" })
+
+      // Replying always to the saver records `allow read lib/*`; the cascade
+      // settles the unscoped twin but must skip the scoped request.
+      yield* service.reply({ requestID: PermissionV2.ID.create("per_saver"), reply: "always" })
+      expect((yield* service.list()).map((request) => request.id)).toEqual([PermissionV2.ID.create("per_stays")])
+      expect(yield* service.get(PermissionV2.ID.create("per_twin"))).toBeUndefined()
+
+      // Saved project-level approvals stay narrowed for later asks too.
+      expect(
+        yield* service.ask(assertion({ id: PermissionV2.ID.create("per_after"), resources: ["lib/a.ts"], scope })),
+      ).toMatchObject({ effect: "ask" })
+      expect(yield* service.ask(assertion({ resources: ["lib/a.ts"] }))).toMatchObject({ effect: "allow" })
+      yield* service.reply({ requestID: PermissionV2.ID.create("per_stays"), reply: "once" })
+      yield* service.reply({ requestID: PermissionV2.ID.create("per_after"), reply: "once" })
     }),
   )
 

@@ -3,7 +3,7 @@ import path from "path"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
 import type { InstanceContext } from "@/project/instance-context"
-import { Effect, Layer, Context, Schema } from "effect"
+import { Duration, Effect, Fiber, Layer, Context, Schema } from "effect"
 import { Config } from "@/config/config"
 import { MCP } from "../mcp"
 import { Skill } from "../skill"
@@ -55,12 +55,101 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Command") {}
 
+type McpPrompt = Effect.Success<ReturnType<MCP.Interface["prompts"]>>[string]
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
     const mcp = yield* MCP.Service
     const skill = yield* Skill.Service
+
+    // MCP prompt templates are prewarmed at registration through a manually
+    // invalidatable cache: the first /command use pays no round trip when the
+    // prewarm succeeded, misses join the in-flight fetch, and a server
+    // reconnect re-fetches exactly once. Each reconnect swaps in a FRESH
+    // cache instance under a new generation: invalidate() alone does not
+    // unseat an in-flight run (its completion would repopulate the shared
+    // cache with the stale template and latch it forever), while a fresh
+    // instance starts idle and therefore always fetches against the new
+    // client. Completions from a superseded generation never latch.
+    const mcpPromptCommand = Effect.fn("Command.mcpPromptCommand")(function* (
+      name: string,
+      prompt: McpPrompt,
+      bridge: EffectBridge.Shape,
+    ) {
+      const fetchTemplate = mcp
+        .getPrompt(
+          prompt.client,
+          prompt.name,
+          prompt.arguments
+            ? Object.fromEntries(prompt.arguments.map((argument, i) => [argument.name, `$${i + 1}`]))
+            : {},
+        )
+        .pipe(
+          Effect.flatMap((template) => {
+            if (template === undefined)
+              return Effect.fail(
+                new Error(`Failed to fetch prompt "${prompt.name}" from MCP server "${prompt.client}"`),
+              )
+            return Effect.succeed(
+              template.messages
+                .map((message) => (message.content.type === "text" ? message.content.text : ""))
+                .join("\n") || "",
+            )
+          }),
+        )
+      let generation = 0
+      let template: string | undefined
+      let [cached, invalidate] = yield* Effect.cachedInvalidateWithTTL(fetchTemplate, Duration.infinity)
+      const scope = yield* Effect.scope
+      let prewarmFiber: Fiber.Fiber<void, never> | undefined
+      // Interrupts the previous generation's prewarm so a superseded fetch
+      // cannot linger, then forks this generation's into the registration
+      // scope, so disposal still owns every fiber.
+      const prewarm = (gen: number) =>
+        Effect.gen(function* () {
+          if (prewarmFiber) yield* Fiber.interrupt(prewarmFiber)
+          prewarmFiber = yield* cached.pipe(
+            Effect.tap((value) =>
+              Effect.sync(() => {
+                if (gen === generation) template = value
+              }),
+            ),
+            Effect.ignore,
+            Effect.forkIn(scope),
+          )
+        })
+      yield* prewarm(0)
+      const off = yield* mcp.onReconnect(prompt.client, () =>
+        Effect.gen(function* () {
+          generation++
+          template = undefined
+          ;[cached, invalidate] = yield* Effect.cachedInvalidateWithTTL(fetchTemplate, Duration.infinity)
+          yield* prewarm(generation)
+        }),
+      )
+      yield* Effect.addFinalizer(() => Effect.sync(off))
+      return {
+        name,
+        source: "mcp" as const,
+        description: prompt.description,
+        get template(): Promise<string> | string {
+          if (template !== undefined) return template
+          const pending = bridge.promise(cached).catch((error: unknown) => {
+            // Drop the latched failure so the next invocation retries.
+            void bridge.promise(invalidate).catch(() => {})
+            throw error
+          })
+          // Rejections must stay observable to the caller, but an unattached
+          // rejected promise floating across await points would be reported
+          // as unhandled before the caller gets to await it.
+          pending.catch(() => {})
+          return pending
+        },
+        hints: prompt.arguments?.map((_, i) => `$${i + 1}`) ?? [],
+      } satisfies Info
+    })
 
     const init = Effect.fn("Command.state")(function* (ctx: InstanceContext) {
       const cfg = yield* config.get()
@@ -103,32 +192,7 @@ const layer = Layer.effect(
       }
 
       for (const [name, prompt] of Object.entries(yield* mcp.prompts())) {
-        commands[name] = {
-          name,
-          source: "mcp",
-          description: prompt.description,
-          get template() {
-            return bridge.promise(
-              mcp
-                .getPrompt(
-                  prompt.client,
-                  prompt.name,
-                  prompt.arguments
-                    ? Object.fromEntries(prompt.arguments.map((argument, i) => [argument.name, `$${i + 1}`]))
-                    : {},
-                )
-                .pipe(
-                  Effect.map(
-                    (template) =>
-                      template?.messages
-                        .map((message) => (message.content.type === "text" ? message.content.text : ""))
-                        .join("\n") || "",
-                  ),
-                ),
-            )
-          },
-          hints: prompt.arguments?.map((_, i) => `$${i + 1}`) ?? [],
-        }
+        commands[name] = yield* mcpPromptCommand(name, prompt, bridge)
       }
 
       for (const item of yield* skill.all()) {
@@ -157,6 +221,11 @@ const layer = Layer.effect(
     })
 
     const state = yield* InstanceState.make<State>((ctx) => init(ctx))
+
+    // Command state freezes skill.all() at init; drop it when skills are
+    // re-scanned so the next list()/get() rebuilds from fresh skills.
+    const off = yield* skill.onInvalidate(() => InstanceState.invalidate(state))
+    yield* Effect.addFinalizer(() => Effect.sync(off))
 
     const get = Effect.fn("Command.get")(function* (name: string) {
       const s = yield* InstanceState.get(state)

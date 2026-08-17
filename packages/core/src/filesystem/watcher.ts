@@ -9,7 +9,7 @@ import { FileSystemWatcher } from "@ranex/schema/filesystem-watcher"
 import path from "path"
 import { Config } from "../config"
 import { EventV2 } from "../event"
-import { Flag } from "../flag/flag"
+import { Flag, truthy } from "../flag/flag"
 import { FSUtil } from "../fs-util"
 import { Location } from "../location"
 import { LocationLifecycle } from "../location-lifecycle"
@@ -51,15 +51,70 @@ function protecteds(dir: string) {
 
 export const hasNativeBinding = () => !!watcher()
 
+interface TrackedSubscription {
+  readonly subscription: ParcelWatcher.AsyncSubscription
+  readonly deactivate: () => void
+}
+
+// Failures resolve to undefined after logging so callers keep working without
+// the subscription; retries happen naturally next time it is requested.
+const subscribeParcel = (directory: string, ignore: string[], callback: ParcelWatcher.SubscribeCallback) => {
+  const w = watcher()
+  const backend = getBackend()
+  if (!w || !backend || truthy("RANEX_EXPERIMENTAL_DISABLE_FILEWATCHER")) return Effect.succeed(undefined)
+  let active = true
+  const pending = w.subscribe(
+    directory,
+    (error, updates) => {
+      if (active) callback(error, updates)
+    },
+    { ignore, backend },
+  )
+  return Effect.promise(() => pending).pipe(
+    Effect.map((subscription) => ({ subscription, deactivate: () => (active = false) })),
+    Effect.timeout(SUBSCRIBE_TIMEOUT_MS),
+    Effect.catchCause((cause) => {
+      pending.then((subscription) => subscription.unsubscribe()).catch(() => {})
+      return Effect.logError("failed to subscribe", { directory, cause: Cause.pretty(cause) }).pipe(
+        Effect.as(undefined),
+      )
+    }),
+  )
+}
+
+const unsubscribeTracked = (tracked: TrackedSubscription) =>
+  Effect.sync(tracked.deactivate)
+    .pipe(
+      Effect.andThen(Effect.promise(() => tracked.subscription.unsubscribe())),
+      // parcel unsubscribe can throw native errors (e.g. EINVAL when the
+      // kernel already dropped the watch); Effect.promise turns throws into
+      // defects, which Effect.ignore cannot catch.
+      Effect.catchDefect(() => Effect.void),
+    )
+    .pipe(Effect.asVoid)
+
+/**
+ * Scoped recursive filesystem subscription for one directory, reusing the
+ * parcel watcher binding and backend selection used by the watcher service.
+ * Resolves `false` when watching is unavailable or fails; closing the scope
+ * releases the subscription.
+ */
+export const watchDirectory = (
+  directory: string,
+  onEvent: (file: string) => void,
+): Effect.Effect<boolean, never, Scope.Scope> =>
+  Effect.acquireRelease(
+    subscribeParcel(directory, [], (_error, updates) => {
+      for (const update of updates ?? []) onEvent(update.path)
+    }),
+    (tracked) => (tracked ? unsubscribeTracked(tracked) : Effect.void),
+  ).pipe(Effect.map((tracked) => tracked !== undefined))
+
 export interface Interface {}
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/FileWatcher") {}
 
-interface Subscription {
-  readonly subscription: ParcelWatcher.AsyncSubscription
-  readonly deactivate: () => void
-  readonly unregister: Effect.Effect<void> | undefined
-}
+type Subscription = TrackedSubscription & { readonly unregister: Effect.Effect<void> | undefined }
 
 const layer = Layer.effect(
   Service,
@@ -87,15 +142,17 @@ const layer = Layer.effect(
     const context = yield* Effect.context()
     const runFork = Effect.runForkWith(context)
     const subscriptions = new Set<Subscription>()
-    yield* Effect.addFinalizer(() =>
-      Effect.forEach(subscriptions, ({ subscription, deactivate, unregister }) =>
-        Effect.sync(deactivate).pipe(
-          Effect.andThen(Effect.promise(() => subscription.unsubscribe())),
-          Effect.ignore,
-          Effect.ensuring(unregister ?? Effect.void),
+    // Shared teardown for one tracked subscription: release the parcel
+    // subscription, forget it, and unregister its lifecycle census entry.
+    // Both the scope finalizer and an explicit stop must run all three steps,
+    // or the census entry leaks and LocationLifecycle.close() dies.
+    const drain = (tracked: Subscription) =>
+      unsubscribeTracked(tracked).pipe(
+        Effect.ensuring(
+          Effect.sync(() => subscriptions.delete(tracked)).pipe(Effect.andThen(tracked.unregister ?? Effect.void)),
         ),
-      ).pipe(Effect.asVoid),
-    )
+      )
+    yield* Effect.addFinalizer(() => Effect.forEach(subscriptions, drain, { discard: true }))
 
     const callback: ParcelWatcher.SubscribeCallback = (_error, updates) => {
       for (const update of updates) {
@@ -105,22 +162,7 @@ const layer = Layer.effect(
       }
     }
 
-    const subscribe = (directory: string, ignore: string[]) => {
-      let active = true
-      const pending = w.subscribe(directory, (error, updates) => {
-        if (active) callback(error, updates)
-      }, { ignore, backend })
-      return Effect.promise(() => pending).pipe(
-        Effect.map((subscription) => ({ subscription, deactivate: () => (active = false) })),
-        Effect.timeout(SUBSCRIBE_TIMEOUT_MS),
-        Effect.catchCause((cause) => {
-          pending.then((subscription) => subscription.unsubscribe()).catch(() => {})
-          return Effect.logError("failed to subscribe", { directory, cause: Cause.pretty(cause) }).pipe(
-            Effect.as(undefined),
-          )
-        }),
-      )
-    }
+    const subscribe = (directory: string, ignore: string[]) => subscribeParcel(directory, ignore, callback)
 
     const configService = yield* Config.Service
     const bootstrap = configService.bootstrapEntries
@@ -156,14 +198,6 @@ const layer = Layer.effect(
           Effect.forkIn(scope, { startImmediately: true }),
         )
     })
-    const stopSubscription = (tracked: Subscription) =>
-      Effect.sync(tracked.deactivate).pipe(
-        Effect.andThen(Effect.promise(() => tracked.subscription.unsubscribe())),
-        Effect.ignore,
-        Effect.ensuring(
-          Effect.sync(() => subscriptions.delete(tracked)).pipe(Effect.andThen(tracked.unregister ?? Effect.void)),
-        ),
-      )
     const root = { subscription: undefined as Subscription | undefined }
     const rootSubscription = rootStarted
       ? yield* startSubscription(
@@ -190,7 +224,7 @@ const layer = Layer.effect(
       const rootChanged =
         bootstrapIgnore.length !== rootIgnore.length || bootstrapIgnore.some((item, index) => item !== rootIgnore[index])
       if (replacement && (rootChanged || ready.project.vcs?.type !== "git")) {
-        yield* stopSubscription(replacement)
+        yield* drain(replacement)
       }
       if (ready.project.vcs?.type !== "git") {
         return

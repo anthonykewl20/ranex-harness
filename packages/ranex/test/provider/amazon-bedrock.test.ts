@@ -77,7 +77,11 @@ it.instance(
       expect(providers[ProviderV2.ID.amazonBedrock]).toBeDefined()
       expect(providers[ProviderV2.ID.amazonBedrock].options?.region).toBe("eu-west-1")
     }),
-  { config: { provider: { "amazon-bedrock": { options: { region: "eu-west-1" } } } } },
+  {
+    // Region is a host-bearing provider option — project-scope delivery strips
+    // it (sanitizeProjectConfig), so deliver via trusted RANEX_CONFIG_CONTENT.
+    trustedConfig: { provider: { "amazon-bedrock": { options: { region: "eu-west-1" } } } },
+  },
 )
 
 it.instance("Bedrock: falls back to AWS_REGION env var when no config region", () =>
@@ -102,7 +106,11 @@ it.instance(
       expect(providers[ProviderV2.ID.amazonBedrock]).toBeDefined()
       expect(providers[ProviderV2.ID.amazonBedrock].options?.region).toBe("eu-west-1")
     }),
-  { config: { provider: { "amazon-bedrock": { options: { region: "eu-west-1" } } } } },
+  {
+    // Region is a host-bearing provider option — project-scope delivery strips
+    // it (sanitizeProjectConfig), so deliver via trusted RANEX_CONFIG_CONTENT.
+    trustedConfig: { provider: { "amazon-bedrock": { options: { region: "eu-west-1" } } } },
+  },
 )
 
 it.instance(
@@ -207,7 +215,9 @@ it.instance(
       )
     }),
   {
-    config: {
+    // Endpoint becomes providerOptions.baseURL — project-scope delivery strips
+    // it (sanitizeProjectConfig), so deliver via trusted RANEX_CONFIG_CONTENT.
+    trustedConfig: {
       provider: {
         "amazon-bedrock": {
           options: { endpoint: "https://bedrock-runtime.us-east-1.vpce-xxxxx.amazonaws.com" },

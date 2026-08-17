@@ -108,6 +108,20 @@ at the forwarding hop — the proxied instance enforces the same cap itself —
 and the in-process web handler (loopback `fetch` from the same process
 only) does not route body reads through the Node adapters.
 
+## Heap snapshots
+
+Heap snapshots — taken automatically when RSS crosses the
+`RANEX_AUTO_HEAP_SNAPSHOT` threshold (tunable via
+`RANEX_HEAP_SNAPSHOT_RSS_BYTES` / `RANEX_HEAP_SNAPSHOT_INTERVAL_MS`), or on
+the manual triggers — the `app.heap_snapshot` TUI command ("Write heap
+snapshot" in `packages/tui/src/app.tsx`) and the snapshot RPC in
+`packages/ranex/src/cli/tui/worker.ts` — capture the process's entire heap,
+including in-memory secrets such as credentials and
+API keys. They are written as `0600` files with absolute timestamped names
+under the app's log directory (`~/.local/share/ranex/log` by default) and are
+never overwritten; treat every snapshot file as highly sensitive and delete
+it as soon as debugging is done.
+
 ## Proxy and catch-all hardening
 
 - `ProxyUtil.headers` strips end-client credentials (`authorization`,

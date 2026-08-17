@@ -582,4 +582,180 @@ description: A skill in the .opencode/skills directory.
       { git: true },
     ),
   )
+
+  it.live("refresh() picks up a new SKILL.md created after initial load", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const skill = yield* Skill.Service
+          yield* Effect.promise(() =>
+            Bun.write(
+              path.join(dir, ".opencode", "skill", "existing", "SKILL.md"),
+              `---
+name: existing
+description: Existing skill.
+---
+
+# Existing
+`,
+            ),
+          )
+          expect((yield* skill.all()).filter((item) => item.location !== "<built-in>").map((item) => item.name)).toEqual(
+            ["existing"],
+          )
+
+          yield* Effect.promise(() =>
+            Bun.write(
+              path.join(dir, ".opencode", "skill", "added", "SKILL.md"),
+              `---
+name: added
+description: Added skill.
+---
+
+# Added
+`,
+            ),
+          )
+          expect((yield* skill.all()).filter((item) => item.location !== "<built-in>").map((item) => item.name)).toEqual(
+            ["existing"],
+          )
+
+          yield* skill.refresh()
+          expect(
+            (yield* skill.all()).filter((item) => item.location !== "<built-in>").map((item) => item.name).toSorted(),
+          ).toEqual(["added", "existing"])
+        }),
+      { git: true },
+    ),
+  )
+
+  it.live("refresh() drops a removed skill", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const skill = yield* Skill.Service
+          yield* Effect.promise(() =>
+            Promise.all([
+              Bun.write(
+                path.join(dir, ".opencode", "skill", "kept", "SKILL.md"),
+                `---
+name: kept
+description: Kept skill.
+---
+
+# Kept
+`,
+              ),
+              Bun.write(
+                path.join(dir, ".opencode", "skill", "gone", "SKILL.md"),
+                `---
+name: gone
+description: Removed skill.
+---
+
+# Gone
+`,
+              ),
+            ]),
+          )
+          expect(
+            (yield* skill.all()).filter((item) => item.location !== "<built-in>").map((item) => item.name).toSorted(),
+          ).toEqual(["gone", "kept"])
+
+          yield* Effect.promise(() => fs.rm(path.join(dir, ".opencode", "skill", "gone"), { recursive: true }))
+          yield* skill.refresh()
+          expect((yield* skill.all()).filter((item) => item.location !== "<built-in>").map((item) => item.name)).toEqual(
+            ["kept"],
+          )
+        }),
+      { git: true },
+    ),
+  )
+
+  it.live("refresh() surfaces edited SKILL.md guidance", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const skill = yield* Skill.Service
+          yield* Effect.promise(() =>
+            Bun.write(
+              path.join(dir, ".opencode", "skill", "edited", "SKILL.md"),
+              `---
+name: edited
+description: Before edit.
+---
+
+# Edited
+`,
+            ),
+          )
+          expect((yield* skill.get("edited"))?.description).toBe("Before edit.")
+
+          yield* Effect.promise(() =>
+            Bun.write(
+              path.join(dir, ".opencode", "skill", "edited", "SKILL.md"),
+              `---
+name: edited
+description: After edit.
+---
+
+# Edited
+`,
+            ),
+          )
+          yield* skill.refresh()
+          expect((yield* skill.get("edited"))?.description).toBe("After edit.")
+        }),
+      { git: true },
+    ),
+  )
+
+  it.live("watcher refreshes skills without an explicit refresh call", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const skill = yield* Skill.Service
+          yield* Effect.promise(() =>
+            Bun.write(
+              path.join(dir, ".opencode", "skill", "watched", "SKILL.md"),
+              `---
+name: watched
+description: Watched skill.
+---
+
+# Watched
+`,
+            ),
+          )
+          expect((yield* skill.all()).filter((item) => item.location !== "<built-in>").map((item) => item.name)).toEqual(
+            ["watched"],
+          )
+
+          yield* Effect.promise(() =>
+            Bun.write(
+              path.join(dir, ".opencode", "skill", "late", "SKILL.md"),
+              `---
+name: late
+description: Arrived after the initial load.
+---
+
+# Late
+`,
+            ),
+          )
+          const refreshed = yield* Effect.gen(function* () {
+            const deadline = Date.now() + 15_000
+            while (Date.now() < deadline) {
+              const list = yield* skill.all()
+              if (list.some((item) => item.name === "late" && item.location !== "<built-in>")) return true
+              yield* Effect.sleep(100)
+            }
+            return false
+          })
+          expect(refreshed).toBe(true)
+        }),
+      { git: true },
+    ),
+    20_000,
+  )
 })

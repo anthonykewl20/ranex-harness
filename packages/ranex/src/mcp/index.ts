@@ -183,6 +183,9 @@ interface State {
   clients: Record<string, MCPClient>
   defs: Record<string, MCPToolDef[]>
   instructions: Record<string, string>
+  // Hooks fired once per server reconnect so per-instance caches bound to the
+  // old connection (e.g. prewarmed command templates) can drop and re-fetch.
+  reconnectHooks: Record<string, Array<() => Effect.Effect<void>>>
 }
 
 export interface ServerInstructions {
@@ -212,6 +215,7 @@ export interface Interface {
   readonly add: (name: string, mcp: ConfigMCPV1.Info) => Effect.Effect<{ status: Record<string, Status> | Status }>
   readonly connect: (name: string) => Effect.Effect<void, NotFoundError>
   readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError>
+  readonly onReconnect: (server: string, hook: () => Effect.Effect<void>) => Effect.Effect<() => void>
   readonly getPrompt: (
     clientName: string,
     name: string,
@@ -537,6 +541,7 @@ const layer = Layer.effect(
           clients: {},
           defs: {},
           instructions: {},
+          reconnectHooks: {},
         }
 
         yield* Effect.forEach(
@@ -571,6 +576,7 @@ const layer = Layer.effect(
             s.clients = {}
             s.defs = {}
             s.instructions = {}
+            s.reconnectHooks = {}
             yield* Effect.forEach(
               clients,
               (client) =>
@@ -621,8 +627,24 @@ const layer = Layer.effect(
       if (instructions) s.instructions[name] = instructions
       else delete s.instructions[name]
       watch(s, name, client, bridge, timeout)
+      // A new client replaced the old connection: drop caches bound to it.
+      // Fired exactly once per reconnect, after the new client is stored.
+      yield* Effect.forEach(s.reconnectHooks[name] ?? [], (hook) => hook().pipe(Effect.ignore), {
+        concurrency: "unbounded",
+        discard: true,
+      })
       if (previous) yield* Effect.tryPromise(() => previous.close()).pipe(Effect.ignore)
       return s.status[name]
+    })
+
+    const onReconnect = Effect.fn("MCP.onReconnect")(function* (server: string, hook: () => Effect.Effect<void>) {
+      const s = yield* InstanceState.get(state)
+      const hooks = (s.reconnectHooks[server] ??= [])
+      hooks.push(hook)
+      return () => {
+        const index = hooks.indexOf(hook)
+        if (index >= 0) hooks.splice(index, 1)
+      }
     })
 
     const status = Effect.fn("MCP.status")(function* () {
@@ -1017,6 +1039,7 @@ const layer = Layer.effect(
       add,
       connect,
       disconnect,
+      onReconnect,
       getPrompt,
       readResource,
       startAuth,

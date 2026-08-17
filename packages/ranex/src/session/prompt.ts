@@ -1353,6 +1353,61 @@ const layer = Layer.effect(
       return yield* state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready)
     })
 
+    // Resolves a command template. MCP templates are prewarmed at command
+    // registration; when one is not ready yet, publish an optimistic echo on
+    // the user message immediately (reusing the synthetic-part pattern from
+    // the shell path) and swap in the resolved template when it arrives. The
+    // placeholder part is `ignored` from creation so the model never sees it
+    // — even mid-window, if another provider turn drains history while the
+    // template is unresolved (message-v2.toModelMessagesEffect drops ignored
+    // text parts) — and it is removed once the template settles so the
+    // projector does not persist it next to the template parts.
+    const commandTemplate = Effect.fn("SessionPrompt.commandTemplate")(function* (
+      cmd: Command.Info,
+      input: CommandInput,
+    ) {
+      const pending = cmd.template
+      if (typeof pending === "string") return { template: pending, messageID: input.messageID }
+      const echoAgent = cmd.agent ?? input.agent ?? (yield* agents.defaultInfo()).name
+      const echoModel = input.model ? Provider.parseModel(input.model) : yield* currentModel(input.sessionID)
+      const echo: SessionV1.User = {
+        id: input.messageID ?? MessageID.ascending(),
+        role: "user",
+        sessionID: input.sessionID,
+        time: { created: Date.now() },
+        agent: echoAgent,
+        model: { providerID: echoModel.providerID, modelID: echoModel.modelID },
+      }
+      yield* sessions.updateMessage(echo)
+      const placeholder: SessionV1.TextPart = {
+        id: PartID.ascending(),
+        messageID: echo.id,
+        sessionID: input.sessionID,
+        type: "text",
+        text: `Loading "/${input.command}" from MCP server...`,
+        // `synthetic` keeps the placeholder out of the TUI transcript and
+        // `ignored` keeps it out of model input from creation; the part stays
+        // durable only so transcript tooling can observe the pending window.
+        synthetic: true,
+        ignored: true,
+      }
+      yield* sessions.updatePart(placeholder)
+      const exit = yield* Effect.exit(Effect.promise(() => pending))
+      yield* sessions.removePart({ sessionID: input.sessionID, messageID: echo.id, partID: placeholder.id })
+      if (Exit.isSuccess(exit)) return { template: exit.value, messageID: echo.id }
+      // The optimistic echo is orphaned on failure: drop the echo message so
+      // neither the transcript nor model history keeps it.
+      yield* sessions.removeMessage({ sessionID: input.sessionID, messageID: echo.id })
+      const reason = Cause.squash(exit.cause)
+      const error = new NamedError.Unknown({
+        message: `Failed to load "/${input.command}" template: ${
+          reason instanceof Error ? reason.message : String(reason)
+        }`,
+      })
+      yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
+      throw error
+    })
+
     const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
       yield* Effect.logInfo("command", {
         "session.id": input.sessionID,
@@ -1371,7 +1426,8 @@ const layer = Layer.effect(
 
       const raw = input.arguments.match(argsRegex) ?? []
       const args = raw.map((arg) => arg.replace(quoteTrimRegex, ""))
-      const templateCommand = yield* Effect.promise(async () => cmd.template)
+      const resolved = yield* commandTemplate(cmd, input)
+      const templateCommand = resolved.template
 
       const placeholders = templateCommand.match(placeholderRegex) ?? []
       let last = 0
@@ -1465,7 +1521,7 @@ const layer = Layer.effect(
 
       const result = yield* prompt({
         sessionID: input.sessionID,
-        messageID: input.messageID,
+        messageID: resolved.messageID,
         model: userModel,
         agent: userAgent,
         parts,

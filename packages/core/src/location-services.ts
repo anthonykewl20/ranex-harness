@@ -31,6 +31,7 @@ import { SessionRunnerModel } from "./session/runner/model"
 import { SessionTodo } from "./session/todo"
 import { SkillV2 } from "./skill"
 import { SkillGuidance } from "./skill/guidance"
+import { SkillWatch } from "./skill/watch"
 import { Snapshot } from "./snapshot"
 import { SystemContextBuiltIns } from "./system-context/builtins"
 import { SystemContextRegistry } from "./system-context/registry"
@@ -61,6 +62,7 @@ export const locationServices = LayerNode.group([
   Watcher.node,
   Pty.node,
   SkillV2.node,
+  SkillWatch.node,
   SystemContextRegistry.node,
   SystemContextBuiltIns.node,
   LocationMutation.node,
