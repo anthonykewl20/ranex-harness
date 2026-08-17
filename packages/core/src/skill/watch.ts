@@ -48,6 +48,7 @@ const layer = Layer.effect(
         if (wanted.has(directory)) continue
         subscriptions.delete(directory)
         unwatched.delete(directory)
+        warned.delete(directory)
         yield* close.pipe(Effect.ignore)
       }
       for (const directory of wanted) {
@@ -86,6 +87,10 @@ const layer = Layer.effect(
       }
       // A newly watched directory may have changed while unwatched (boot
       // registers sources after this layer starts), so schedule a refresh.
+      // When this sync runs inside the FiberHandle (startup or resync tick),
+      // trigger() interrupts it mid-flight — benign: subscriptions.set completed
+      // first, so the flush's sync sees the directory subscribed and never re-adds
+      // (no loop); one redundant refresh+sync cycle is the only cost.
       if (added) trigger()
       // Watching is unavailable for some directories, so events will never
       // arrive: degrade to interval-based revalidation (the repeating resync
@@ -113,8 +118,13 @@ const layer = Layer.effect(
     yield* Effect.addFinalizer(() =>
       Effect.forEach(subscriptions.values(), (close) => close.pipe(Effect.ignore), { discard: true }),
     )
-    yield* sync()
-    yield* sync().pipe(
+    // Both activity paths run through the single FiberHandle so at most one
+    // reconcile is ever in flight: an event flush supersedes whatever the
+    // handle holds and restarts the debounce, while a resync tick skips
+    // itself when a flush is pending or running — that flush already
+    // reconciles. Effect.repeat performs the first iteration immediately,
+    // which also covers startup.
+    yield* FiberHandle.run(pending, sync(), { onlyIfMissing: true }).pipe(
       Effect.repeat(Schedule.spaced(RESYNC_INTERVAL)),
       Effect.catchCause((cause) => Effect.logError("skill watch sync failed", { cause: Cause.pretty(cause) })),
       Effect.forkScoped,

@@ -105,8 +105,10 @@ const layer = Layer.effect(
       return skills
     })
 
-    // Cached per source until refresh(): watchers in ./watch call refresh on
-    // filesystem events so skill edits become visible without a restart.
+    // Cached per source: refresh() invalidates directory entries so skill
+    // edits become visible without a restart (watchers in ./watch call
+    // refresh on filesystem events); url and embedded entries stay cached
+    // for the process lifetime.
     const cache = new Map<string, Info[]>()
     const list = Effect.fn("SkillV2.list")(function* () {
       const skills = new Map<string, Info>()
@@ -119,11 +121,19 @@ const layer = Layer.effect(
       return Array.from(skills.values())
     })
 
-    // Clears every cached source and reloads all of them immediately: local
-    // directories are re-read from disk and HTTP sources re-pulled through
-    // discovery, so later list() calls observe current state directly.
+    // Invalidates only the cache entries a filesystem event can change —
+    // directory sources, which are re-read from disk — plus entries whose
+    // source no longer exists, then reloads so later list() calls observe
+    // current state directly. HTTP sources are not re-pulled through
+    // discovery: a local filesystem event cannot have changed them, so url
+    // and embedded entries stay cached.
     const refresh = Effect.fn("SkillV2.refresh")(function* () {
-      cache.clear()
+      const keep = new Set(
+        state.get().sources.flatMap((source) => (source.type === "directory" ? [] : [Source.key(source)])),
+      )
+      for (const key of cache.keys()) {
+        if (!keep.has(key)) cache.delete(key)
+      }
       yield* list().pipe(Effect.asVoid)
     })
 

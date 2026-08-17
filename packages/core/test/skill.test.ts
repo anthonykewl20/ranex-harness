@@ -207,6 +207,47 @@ describe("SkillV2", () => {
       ),
     ),
   )
+
+  it.live("refresh() re-reads directory sources without re-pulling URL sources", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const local = path.join(tmp.path, "local")
+          const remote = path.join(tmp.path, "remote")
+          yield* Effect.promise(async () => {
+            await fs.mkdir(path.join(remote, "deploy"), { recursive: true })
+            await write(remote, "deploy", "Deploy production")
+            await write(local, "initial", "Initial skill")
+          })
+          urls.set("https://example.test/skills/", [AbsolutePath.make(remote)])
+          pulls = 0
+
+          const skill = yield* SkillV2.Service
+          yield* skill.transform((editor) => {
+            editor.source({ type: "directory", path: AbsolutePath.make(local) })
+            editor.source({ type: "url", url: "https://example.test/skills/" })
+          })
+          expect((yield* skill.list()).map((item) => item.name).toSorted()).toEqual(["deploy", "initial"])
+          expect(pulls).toBe(1)
+
+          // Filesystem events can only change directory sources: refresh()
+          // picks up the added skill without re-pulling the URL source.
+          yield* Effect.promise(() => write(local, "added", "Added skill"))
+          yield* skill.refresh()
+          expect((yield* skill.list()).map((item) => item.name).toSorted()).toEqual(["added", "deploy", "initial"])
+          expect(pulls).toBe(1)
+
+          // A fresh refresh still serves the URL source from cache.
+          yield* skill.refresh()
+          expect((yield* skill.list()).map((item) => item.name).toSorted()).toEqual(["added", "deploy", "initial"])
+          expect(pulls).toBe(1)
+        }),
+      ),
+    ),
+  )
 })
 
 // Distinct Location refs through one LocationServiceMap exercise real
@@ -219,7 +260,7 @@ const locationIt = testEffect(
 
 describe("SkillV2 locations", () => {
   locationIt.live(
-    "refresh() re-pulls HTTP sources and leaves other locations' caches untouched",
+    "refresh() keeps HTTP sources cached and leaves other locations' caches untouched",
     () =>
       Effect.acquireRelease(
         Effect.promise(() => tmpdir()),
@@ -259,24 +300,26 @@ describe("SkillV2 locations", () => {
             )
             expect(pulls).toBe(2)
 
+            // refresh() keeps url entries cached: editing the file behind URL
+            // a (and refreshing) neither re-pulls that source nor disturbs
+            // the other location's cache.
             yield* Effect.promise(() => write(first, "deploy", "First deploy edited"))
             yield* Effect.flatMap(SkillV2.Service, (skill) => skill.refresh()).pipe(Effect.provide(firstLocation))
-            expect(pulls).toBe(3)
+            expect(pulls).toBe(2)
             expect(
               yield* Effect.flatMap(SkillV2.Service, (skill) => skill.list())
                 .pipe(Effect.map((list) => list.find((item) => item.name === "deploy")?.description))
                 .pipe(Effect.provide(firstLocation)),
-            ).toBe("First deploy edited")
-            expect(pulls).toBe(3)
+            ).toBe("First deploy")
+            expect(pulls).toBe(2)
 
-            // The other location's cache was not cleared: its list still
-            // serves from cache and the HTTP source is not pulled again.
+            // The other location's list still serves from its own cache.
             expect(
               yield* Effect.flatMap(SkillV2.Service, (skill) => skill.list())
                 .pipe(Effect.map((list) => list.find((item) => item.name === "deploy")?.description))
                 .pipe(Effect.provide(secondLocation)),
             ).toBe("Second deploy")
-            expect(pulls).toBe(3)
+            expect(pulls).toBe(2)
           }),
         ),
       ),
