@@ -1,6 +1,6 @@
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import path from "path"
-import { Effect, Layer, Context, Schema, Cause, Exit, FiberHandle, Scope, ScopedCache } from "effect"
+import { Effect, Layer, Context, Schema, Cause, FiberHandle, ScopedCache } from "effect"
 import { NamedError } from "@ranex/core/util/error"
 import type { Agent } from "@/agent/agent"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -336,28 +336,10 @@ const layer = Layer.effect(
         const context = yield* Effect.context()
         const runFork = Effect.runForkWith(context)
         const pending = yield* FiberHandle.make()
-        const subscriptions = new Map<string, Effect.Effect<void>>()
 
         const resync = Effect.gen(function* () {
-          const roots: Set<string> = new Set((yield* ScopedCache.get(discovered.cache, directory)).roots)
-          for (const [root, close] of subscriptions) {
-            if (roots.has(root)) continue
-            subscriptions.delete(root)
-            yield* close.pipe(Effect.ignore)
-          }
-          for (const root of roots) {
-            if (subscriptions.has(root)) continue
-            const entryScope = yield* Scope.make()
-            const subscribed = yield* Watcher.watchDirectory(root, trigger).pipe(
-              Scope.provide(entryScope),
-              Effect.catchCause((cause) =>
-                Effect.logError("failed to watch skill root", { root, cause: Cause.pretty(cause) }).pipe(
-                  Effect.as(false),
-                ),
-              ),
-            )
-            if (subscribed) subscriptions.set(root, Scope.close(entryScope, Exit.void))
-          }
+          const roots = (yield* ScopedCache.get(discovered.cache, directory)).roots
+          yield* watchSet.reconcile(roots)
         })
 
         const flush = Effect.gen(function* () {
@@ -376,10 +358,11 @@ const layer = Layer.effect(
         // before its initializer runs, and the annotation breaks the cycle.
         const trigger: () => void = () => runFork(FiberHandle.run(pending, flush))
 
+        const watchSet = yield* Watcher.makeWatchSet(trigger)
+        // Registered before the initial resync so disposal during that
+        // reconcile still releases whatever subscribed so far.
+        yield* Effect.addFinalizer(() => watchSet.release)
         yield* resync
-        yield* Effect.addFinalizer(() =>
-          Effect.forEach(subscriptions.values(), (close) => close.pipe(Effect.ignore), { discard: true }),
-        )
       }),
     )
 

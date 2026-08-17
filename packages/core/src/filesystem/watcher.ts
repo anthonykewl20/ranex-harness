@@ -4,7 +4,7 @@ export * as Watcher from "./watcher"
 import { createWrapper } from "@parcel/watcher/wrapper"
 import type ParcelWatcher from "@parcel/watcher"
 import { makeLocationNode } from "../effect/app-node"
-import { Cause, Context, Effect, Fiber, Layer, Scope } from "effect"
+import { Cause, Context, Effect, Exit, Fiber, Layer, Scope } from "effect"
 import { FileSystemWatcher } from "@ranex/schema/filesystem-watcher"
 import path from "path"
 import { Config } from "../config"
@@ -109,6 +109,63 @@ export const watchDirectory = (
     }),
     (tracked) => (tracked ? unsubscribeTracked(tracked) : Effect.void),
   ).pipe(Effect.map((tracked) => tracked !== undefined))
+
+// One scoped filesystem subscription per directory, reconciled against a
+// wanted set. Owns the subscription bookkeeping (per-directory entry scope,
+// release of removed directories); callers own policy — what to refresh,
+// how to classify subscribe failures, and scheduling.
+export interface WatchSet {
+  readonly reconcile: (wanted: Iterable<string>) => Effect.Effect<{
+    readonly subscribed: string[]
+    readonly failed: string[]
+    readonly removed: string[]
+  }>
+  readonly release: Effect.Effect<void>
+}
+
+export const makeWatchSet = (onEvent: (file: string) => void): Effect.Effect<WatchSet> =>
+  Effect.gen(function* () {
+    const subscriptions = new Map<string, Effect.Effect<void>>()
+
+    const reconcile = Effect.fn("Watcher.watchSet.reconcile")(function* (wanted: Iterable<string>) {
+      const wantedSet = new Set(wanted)
+      const subscribed: string[] = []
+      const failed: string[] = []
+      const removed: string[] = []
+      for (const [directory, close] of subscriptions) {
+        if (wantedSet.has(directory)) continue
+        subscriptions.delete(directory)
+        removed.push(directory)
+        yield* close.pipe(Effect.ignore)
+      }
+      for (const directory of wantedSet) {
+        if (subscriptions.has(directory)) continue
+        const entryScope = yield* Scope.make()
+        const ok = yield* watchDirectory(directory, onEvent).pipe(
+          Scope.provide(entryScope),
+          Effect.catchCause((cause) =>
+            Effect.logError("failed to watch directory", { directory, cause: Cause.pretty(cause) }).pipe(
+              Effect.as(false),
+            ),
+          ),
+        )
+        if (!ok) {
+          failed.push(directory)
+          continue
+        }
+        subscriptions.set(directory, Scope.close(entryScope, Exit.void))
+        subscribed.push(directory)
+      }
+      return { subscribed, failed, removed }
+    })
+
+    return {
+      reconcile,
+      // forEach iterates subscriptions lazily at run time, so this releases
+      // whatever is live when the finalizer fires.
+      release: Effect.forEach(subscriptions.values(), (close) => close.pipe(Effect.ignore), { discard: true }),
+    }
+  })
 
 export interface Interface {}
 

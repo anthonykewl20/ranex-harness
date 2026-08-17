@@ -1,6 +1,6 @@
 export * as SkillWatch from "./watch"
 
-import { Cause, Context, Effect, Exit, FiberHandle, Layer, Schedule, Scope } from "effect"
+import { Cause, Context, Effect, FiberHandle, Layer, Schedule } from "effect"
 import { makeLocationNode } from "../effect/app-node"
 import { truthy } from "../flag/flag"
 import { Watcher } from "../filesystem/watcher"
@@ -35,7 +35,6 @@ const layer = Layer.effect(
     const context = yield* Effect.context()
     const runFork = Effect.runForkWith(context)
     const pending = yield* FiberHandle.make()
-    const subscriptions = new Map<string, Effect.Effect<void>>()
     const unwatched = new Set<string>()
     const warned = new Set<string>()
 
@@ -43,55 +42,38 @@ const layer = Layer.effect(
       const wanted: Set<string> = new Set(
         (yield* skills.sources()).flatMap((source) => (source.type === "directory" ? [source.path] : [])),
       )
-      let added = false
-      for (const [directory, close] of subscriptions) {
-        if (wanted.has(directory)) continue
-        subscriptions.delete(directory)
+      const result = yield* watchSet.reconcile(wanted)
+      for (const directory of result.removed) {
         unwatched.delete(directory)
         warned.delete(directory)
-        yield* close.pipe(Effect.ignore)
       }
-      for (const directory of wanted) {
-        if (subscriptions.has(directory)) continue
-        const entryScope = yield* Scope.make()
-        const subscribed = yield* Watcher.watchDirectory(directory, trigger).pipe(
-          Scope.provide(entryScope),
-          Effect.catchCause((cause) =>
-            Effect.logError("failed to watch skill directory", { directory, cause: Cause.pretty(cause) }).pipe(
-              Effect.as(false),
-            ),
-          ),
-        )
-        if (!subscribed) {
-          // Only the unavailable case is a dead end (events can never
-          // arrive); transient failures (a source directory that does not
-          // exist yet) are retried on the next sync. Availability is read
-          // per call — the same seam subscribeParcel uses — so a disable
-          // flag set after this layer was built still degrades to
-          // interval-based refresh instead of being misclassified as
-          // transient.
-          if (Watcher.hasNativeBinding() && !truthy("RANEX_EXPERIMENTAL_DISABLE_FILEWATCHER")) continue
-          unwatched.add(directory)
-          // Warn once per directory — not on every 10s retry cycle.
-          if (warned.has(directory)) continue
-          warned.add(directory)
-          yield* Effect.logWarning("cannot watch skill directory; skill edits refresh only on the resync interval", {
-            directory,
-            resyncInterval: RESYNC_INTERVAL,
-          })
-          continue
-        }
-        unwatched.delete(directory)
-        subscriptions.set(directory, Scope.close(entryScope, Exit.void))
-        added = true
+      for (const directory of result.failed) {
+        // Only the unavailable case is a dead end (events can never
+        // arrive); transient failures (a source directory that does not
+        // exist yet) are retried on the next sync. Availability is read
+        // per call — the same seam subscribeParcel uses — so a disable
+        // flag set after this layer was built still degrades to
+        // interval-based refresh instead of being misclassified as
+        // transient.
+        if (Watcher.hasNativeBinding() && !truthy("RANEX_EXPERIMENTAL_DISABLE_FILEWATCHER")) continue
+        unwatched.add(directory)
+        // Warn once per directory — not on every 10s retry cycle.
+        if (warned.has(directory)) continue
+        warned.add(directory)
+        yield* Effect.logWarning("cannot watch skill directory; skill edits refresh only on the resync interval", {
+          directory,
+          resyncInterval: RESYNC_INTERVAL,
+        })
       }
+      for (const directory of result.subscribed) unwatched.delete(directory)
       // A newly watched directory may have changed while unwatched (boot
       // registers sources after this layer starts), so schedule a refresh.
       // When this sync runs inside the FiberHandle (startup or resync tick),
-      // trigger() interrupts it mid-flight — benign: subscriptions.set completed
-      // first, so the flush's sync sees the directory subscribed and never re-adds
-      // (no loop); one redundant refresh+sync cycle is the only cost.
-      if (added) trigger()
+      // trigger() interrupts it mid-flight — benign: reconcile recorded the
+      // subscription before returning, so the flush's sync sees the directory
+      // subscribed and never re-adds (no loop); one redundant refresh+sync
+      // cycle is the only cost.
+      if (result.subscribed.length > 0) trigger()
       // Watching is unavailable for some directories, so events will never
       // arrive: degrade to interval-based revalidation (the repeating resync
       // schedule below drives this same sync). Watched directories keep
@@ -115,9 +97,8 @@ const layer = Layer.effect(
     const trigger: () => void = () =>
       runFork(FiberHandle.run(pending, Effect.sleep(REFRESH_DEBOUNCE).pipe(Effect.andThen(flush))))
 
-    yield* Effect.addFinalizer(() =>
-      Effect.forEach(subscriptions.values(), (close) => close.pipe(Effect.ignore), { discard: true }),
-    )
+    const watchSet = yield* Watcher.makeWatchSet(trigger)
+    yield* Effect.addFinalizer(() => watchSet.release)
     // Both activity paths run through the single FiberHandle so at most one
     // reconcile is ever in flight: an event flush supersedes whatever the
     // handle holds and restarts the debounce, while a resync tick skips
