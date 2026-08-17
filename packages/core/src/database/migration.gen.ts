@@ -47,5 +47,6 @@ export const migrations = (
     import("./migration/20260813173227_session_blocker_cascade"),
     import("./migration/20260816064134_lowly_zemo"),
     import("./migration/20260816064239_low_old_lace"),
+    import("./migration/20260817120000_permission_request_scope"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]

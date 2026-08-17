@@ -1,7 +1,7 @@
 export * as PermissionV2 from "./permission"
 
 import { makeLocationNode } from "./effect/app-node"
-import { Context, Deferred, Effect as EffectRuntime, Layer, Schema } from "effect"
+import { Context, Deferred, Effect as EffectRuntime, Layer, Option, Schema } from "effect"
 import { Permission } from "@ranex/schema/permission"
 import { EventV2 } from "./event"
 import { Location } from "./location"
@@ -201,8 +201,10 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/v2
 interface Pending {
   readonly request: Request
   readonly agent?: AgentV2.ID
-  // The assert-time scope; restored requests predate or outlive it and stay
-  // unscoped, keeping their legacy evaluation.
+  // The assert-time scope, persisted beside the request and restored across
+  // restarts; rows without a scope restore unscoped, and a stored scope that
+  // parses but fails schema decoding restores as empty (matching nothing);
+  // malformed bytes fail boot like the `data` column.
   readonly scope?: Scope
   readonly deferred: Deferred.Deferred<void, DeclinedError | CorrectedError>
 }
@@ -230,9 +232,20 @@ const layer = Layer.effect(
       (row) =>
         EffectRuntime.gen(function* () {
           const request = yield* Schema.decodeUnknownEffect(Request)(row.data).pipe(EffectRuntime.orDie)
+          // A persisted scope is untrusted across a restart: a truthy value
+          // that parses as JSON but fails schema decoding restores as an
+          // empty scope — matching nothing, still narrowed, never widened.
+          // Malformed bytes throw in the driver's JSON.parse inside the
+          // orDie-wrapped select, failing location boot like the `data`
+          // column; a null scope (SQL NULL or JSON null) restores unscoped
+          // as a legacy row.
+          const scope = row.scope
+            ? Option.getOrElse(Schema.decodeUnknownOption(Scope)(row.scope), () => ({}))
+            : undefined
           pending.set(request.id, {
             request,
             agent: row.agent ?? undefined,
+            scope,
             deferred: yield* Deferred.make<void, DeclinedError | CorrectedError>(),
           })
         }),
@@ -324,7 +337,7 @@ const layer = Layer.effect(
                   if (!session) return false
                   yield* tx
                     .insert(PermissionRequestTable)
-                    .values({ id: request.id, session_id: request.sessionID, data: request, agent })
+                    .values({ id: request.id, session_id: request.sessionID, data: request, agent, scope })
                     .run()
                     .pipe(EffectRuntime.orDie)
                   return true

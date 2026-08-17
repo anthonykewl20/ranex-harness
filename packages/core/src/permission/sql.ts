@@ -16,6 +16,7 @@ export const PermissionRequestTable = sqliteTable("permission_request", {
     .references(() => SessionTable.id, { onDelete: "cascade" }),
   data: text({ mode: "json" }).$type<PermissionV2.Request>().notNull(),
   agent: text().$type<AgentV2.ID>(),
+  scope: text({ mode: "json" }).$type<PermissionV2.Scope>(),
   ...Timestamps,
 })
 

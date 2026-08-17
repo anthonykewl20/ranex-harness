@@ -15,7 +15,7 @@ import { AbsolutePath } from "@ranex/core/schema"
 import { SessionV2 } from "@ranex/core/session"
 import { SessionTable } from "@ranex/core/session/sql"
 import { SessionStore } from "@ranex/core/session/store"
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 
@@ -99,6 +99,41 @@ function waitForRequest(input: Partial<PermissionV2.AssertInput> = {}) {
     const fiber = yield* service.assert(assertion(input)).pipe(Effect.forkScoped)
     const request = yield* Deferred.await(asked)
     return { service, fiber, request }
+  })
+}
+
+// Stands in for a process restart: rebuilds the permission graph against the
+// same database so the layer constructor restores pending asks from the
+// persisted permission_request rows. Layer.fresh detaches the rebuild from
+// the enclosing layer builds, whose memoization would otherwise share the
+// original service instances instead of restoring from the rows. The agents
+// service is shared: its config-derived rules are stable across a restart,
+// and only the permission restore is under test.
+function restart<A, E>(effect: Effect.Effect<A, E, PermissionV2.Service | Database.Service>) {
+  return Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    const agents = yield* AgentV2.Service
+    yield* effect.pipe(
+      Effect.provide(
+        Layer.fresh(
+          AppNodeBuilder.build(
+            LayerNode.group([
+              Database.node,
+              EventV2.node,
+              SessionStore.node,
+              PermissionSaved.node,
+              AgentV2.node,
+              PermissionV2.node,
+            ]),
+            [
+              [Location.node, current],
+              [Database.node, Layer.succeed(Database.Service, { db })],
+              [AgentV2.node, Layer.succeed(AgentV2.Service, agents)],
+            ],
+          ),
+        ),
+      ),
+    )
   })
 }
 
@@ -562,6 +597,137 @@ describe("PermissionV2", () => {
       yield* service.assert(assertion({ id: PermissionV2.ID.create("per_next"), resources: ["src/next.ts"] }))
       yield* saved.remove(id)
       expect(yield* saved.list()).toEqual([])
+    }),
+  )
+
+  it.effect("restores a persisted scope across a rebuild and keeps reply-time narrowing", () =>
+    Effect.gen(function* () {
+      yield* setup()
+      const service = yield* PermissionV2.Service
+      // The scoped ask parks with an out-of-scope resource, so a restored
+      // scope must keep the remembered rule from auto-settling it after the
+      // restart — a dropped scope would silently widen the delegation.
+      expect(
+        yield* service.ask(
+          assertion({
+            action: "edit",
+            id: PermissionV2.ID.create("per_restore_scoped"),
+            resources: ["lib/keep.ts"],
+            scope: { paths: ["src/**"] },
+          }),
+        ),
+      ).toMatchObject({ effect: "ask" })
+      expect(
+        yield* service.ask(
+          assertion({
+            action: "edit",
+            id: PermissionV2.ID.create("per_restore_saver"),
+            resources: ["lib/b.ts"],
+            save: ["lib/*"],
+          }),
+        ),
+      ).toMatchObject({ effect: "ask" })
+
+      yield* restart(
+        Effect.gen(function* () {
+          const service = yield* PermissionV2.Service
+          expect((yield* service.list()).length).toBe(2)
+          yield* service.reply({ requestID: PermissionV2.ID.create("per_restore_saver"), reply: "always" })
+          // The remembered `allow edit lib/*` is saved, but the restored scope
+          // keeps the out-of-scope ask pending instead of settling it.
+          const { db } = yield* Database.Service
+          expect(
+            yield* db.select().from(PermissionTable).where(eq(PermissionTable.project_id, Project.ID.global)).all(),
+          ).toMatchObject([{ action: "edit", resource: "lib/*" }])
+          expect((yield* service.list()).map((request) => request.id)).toEqual([
+            PermissionV2.ID.create("per_restore_scoped"),
+          ])
+          yield* service.reply({ requestID: PermissionV2.ID.create("per_restore_scoped"), reply: "once" })
+        }),
+      )
+    }),
+  )
+
+  it.effect("restores a legacy row without scope as unscoped", () =>
+    Effect.gen(function* () {
+      yield* setup()
+      const service = yield* PermissionV2.Service
+      expect(
+        yield* service.ask(
+          assertion({ action: "edit", id: PermissionV2.ID.create("per_restore_legacy"), resources: ["lib/legacy.ts"] }),
+        ),
+      ).toMatchObject({ effect: "ask" })
+      expect(
+        yield* service.ask(
+          assertion({
+            action: "edit",
+            id: PermissionV2.ID.create("per_restore_legacy_saver"),
+            resources: ["lib/b.ts"],
+            save: ["lib/*"],
+          }),
+        ),
+      ).toMatchObject({ effect: "ask" })
+
+      yield* restart(
+        Effect.gen(function* () {
+          const service = yield* PermissionV2.Service
+          yield* service.reply({ requestID: PermissionV2.ID.create("per_restore_legacy_saver"), reply: "always" })
+          // Legacy evaluation survives the rebuild: the remembered rule is
+          // saved and auto-settles the unscoped restored ask.
+          const { db } = yield* Database.Service
+          expect(
+            yield* db.select().from(PermissionTable).where(eq(PermissionTable.project_id, Project.ID.global)).all(),
+          ).toMatchObject([{ action: "edit", resource: "lib/*" }])
+          expect(yield* service.list()).toEqual([])
+        }),
+      )
+    }),
+  )
+
+  it.effect("fails closed when the persisted scope cannot be decoded", () =>
+    Effect.gen(function* () {
+      yield* setup()
+      const service = yield* PermissionV2.Service
+      // The ask is admitted with an in-scope resource, then the stored scope
+      // is corrupted so restore cannot recover the original narrowing.
+      expect(
+        yield* service.ask(
+          assertion({
+            action: "edit",
+            id: PermissionV2.ID.create("per_restore_corrupt"),
+            resources: ["src/corrupt.ts"],
+            scope: { paths: ["src/**"] },
+          }),
+        ),
+      ).toMatchObject({ effect: "ask" })
+      expect(
+        yield* service.ask(
+          assertion({
+            action: "edit",
+            id: PermissionV2.ID.create("per_restore_corrupt_saver"),
+            resources: ["src/b.ts"],
+            save: ["src/*"],
+          }),
+        ),
+      ).toMatchObject({ effect: "ask" })
+      const { db } = yield* Database.Service
+      yield* db.run(
+        sql`UPDATE permission_request SET scope = ${JSON.stringify({ paths: 42 })} WHERE id = ${PermissionV2.ID.create("per_restore_corrupt")}`,
+      )
+
+      yield* restart(
+        Effect.gen(function* () {
+          const service = yield* PermissionV2.Service
+          yield* service.reply({ requestID: PermissionV2.ID.create("per_restore_corrupt_saver"), reply: "always" })
+          // Corrupted scope restores as empty — present but matching nothing —
+          // so even the originally in-scope resource stays pending instead of
+          // being auto-settled by the remembered rule.
+          expect((yield* service.list()).map((request) => request.id)).toEqual([
+            PermissionV2.ID.create("per_restore_corrupt"),
+          ])
+          yield* service.reply({ requestID: PermissionV2.ID.create("per_restore_corrupt"), reply: "once" })
+        }),
+      )
     }),
   )
 })
