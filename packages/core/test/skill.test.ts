@@ -248,6 +248,99 @@ describe("SkillV2", () => {
       ),
     ),
   )
+
+  it.live("url sources re-pull after the TTL and stay cached within it", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(async () => {
+            await fs.mkdir(path.join(tmp.path, "deploy"), { recursive: true })
+            await write(tmp.path, "deploy", "Deploy production")
+          })
+          urls.set("https://example.test/ttl/", [AbsolutePath.make(tmp.path)])
+          pulls = 0
+          process.env.RANEX_SKILL_URL_TTL_MS = "50"
+          try {
+            const skill = yield* SkillV2.Service
+            yield* skill.transform((editor) => editor.source({ type: "url", url: "https://example.test/ttl/" }))
+
+            expect((yield* skill.list()).map((item) => item.name)).toEqual(["deploy"])
+            expect(pulls).toBe(1)
+
+            // Within the TTL window the cache serves without re-pulling.
+            expect((yield* skill.list()).map((item) => item.name)).toEqual(["deploy"])
+            expect(pulls).toBe(1)
+
+            // Past the TTL the entry is stale: the read re-pulls, serves
+            // the refreshed content, and resets the freshness window.
+            yield* Effect.promise(() => write(tmp.path, "deploy", "Deploy production edited"))
+            yield* Effect.sleep(150)
+            expect((yield* skill.list()).find((item) => item.name === "deploy")?.description).toBe(
+              "Deploy production edited",
+            )
+            expect(pulls).toBe(2)
+            expect((yield* skill.list()).find((item) => item.name === "deploy")?.description).toBe(
+              "Deploy production edited",
+            )
+            expect(pulls).toBe(2)
+          } finally {
+            delete process.env.RANEX_SKILL_URL_TTL_MS
+          }
+        }),
+      ),
+    ),
+  )
+
+  it.live("an empty revalidation retains the last non-empty url result", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const url = "https://example.test/retain/"
+          yield* Effect.promise(async () => {
+            await fs.mkdir(path.join(tmp.path, "deploy"), { recursive: true })
+            await write(tmp.path, "deploy", "Deploy production")
+          })
+          urls.set(url, [AbsolutePath.make(tmp.path)])
+          pulls = 0
+          process.env.RANEX_SKILL_URL_TTL_MS = "50"
+          try {
+            const skill = yield* SkillV2.Service
+            yield* skill.transform((editor) => editor.source({ type: "url", url }))
+
+            // Pull 1: the skill serves normally.
+            expect((yield* skill.list()).map((item) => item.name)).toEqual(["deploy"])
+            expect(pulls).toBe(1)
+
+            // The remote comes back empty (e.g. transient network failure):
+            // the stale revalidation retains the last non-empty result
+            // instead of blanking the cache.
+            urls.set(url, [])
+            yield* Effect.sleep(150)
+            expect((yield* skill.list()).map((item) => item.name)).toEqual(["deploy"])
+            expect(pulls).toBe(2)
+
+            // Recovery: once the remote serves again, the next window's
+            // revalidation picks up refreshed content.
+            yield* Effect.promise(() => write(tmp.path, "deploy", "Deploy production edited"))
+            urls.set(url, [AbsolutePath.make(tmp.path)])
+            yield* Effect.sleep(150)
+            expect((yield* skill.list()).find((item) => item.name === "deploy")?.description).toBe(
+              "Deploy production edited",
+            )
+            expect(pulls).toBe(3)
+          } finally {
+            delete process.env.RANEX_SKILL_URL_TTL_MS
+          }
+        }),
+      ),
+    ),
+  )
 })
 
 // Distinct Location refs through one LocationServiceMap exercise real

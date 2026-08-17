@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { Global } from "@ranex/core/global"
 import { Heap } from "@/cli/heap"
@@ -11,7 +12,7 @@ const INTERVAL = "RANEX_HEAP_SNAPSHOT_INTERVAL_MS"
 // Real snapshot writes run in child bun processes (see
 // heap-snapshot-driver.ts): writeHeapSnapshot inside the shared full-suite
 // test process segfaults Bun 1.3.14, while the module itself is correct in a
-// fresh process. Pure tests (config parsing, claim, gate-off, EACCES before
+// fresh process. Pure tests (config parsing, claim, gate-off, ENOENT before
 // any write) stay in-process.
 const driver = path.join(import.meta.dir, "heap-snapshot-driver.ts")
 
@@ -185,34 +186,51 @@ describe("auto heap snapshot watcher", () => {
     expect(line).toContain(file)
   }, 180_000)
 
-  // The claim inside run() throws EACCES before writeHeapSnapshot is ever
-  // reached, so this failure path stays safely in-process. Skipped as root:
-  // root bypasses the chmod-0500 directory permissions (CAP_DAC_OVERRIDE),
-  // so claim() would succeed and fire a real writeHeapSnapshot inside this
-  // shared test process — the exact crash class this suite avoids.
-  test.skipIf(process.getuid?.() === 0)("write failure is logged and non-fatal", async () => {
-    process.env[GATE] = "1"
-    process.env[RSS] = "1"
-    process.env[INTERVAL] = "50"
+  // The failure is injected by pointing Global.Path.log at a nonexistent
+  // directory, so claim() fails with ENOENT before writeHeapSnapshot is ever
+  // reached. ENOENT cannot be bypassed by root capabilities (there is no
+  // directory to override permissions on), making the test safe under any uid
+  // while still never reaching writeHeapSnapshot in this shared test process.
+  // Waiting for the "armed" line first pins the memoized AppRuntime's
+  // file-logger fd to the real log file before the repoint, so the later
+  // failure line still lands in the readable real file.
+  test("write failure is logged and non-fatal", async () => {
+    const realLog = path.join(Global.Path.log, "opencode.log")
+    const original = Global.Path.log
 
-    // Seed the log file before the directory goes read-only: the file logger
-    // appends by path (`flag: "a"`), so with the file already present it
-    // needs no directory write permission. Without this the test would depend
-    // on an earlier test having created opencode.log.
-    await Bun.write(path.join(Global.Path.log, "opencode.log"), "")
+    process.env[GATE] = "1"
+    process.env[RSS] = String(Number.MAX_SAFE_INTEGER)
+    process.env[INTERVAL] = "50"
 
     const baseline = await logBaseline()
     Heap.start()
-    // A read-only log directory makes the exclusive claim fail with EACCES.
-    fs.chmodSync(Global.Path.log, 0o500)
+    // nextLogLine resolves the file from Global.Path.log at call time, which
+    // is about to be repointed — poll the captured real path directly.
+    const pollRealLog = async (message: string) => {
+      for (let elapsed = 0; elapsed < 15_000; elapsed += 100) {
+        const text = await Bun.file(realLog).text().catch(() => "")
+        const line = text.slice(baseline.length).split("\n").find((entry) => entry.includes(message))
+        if (line !== undefined) return line
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      throw new Error(`timed out waiting for log line: ${message}`)
+    }
+    await pollRealLog("auto heap snapshot armed")
 
-    const line = await nextLogLine(baseline, "auto heap snapshot failed")
-    expect(line).toContain("rss=")
-    expect(line).toContain("EACCES")
+    try {
+      Global.Path.log = path.join(os.tmpdir(), `ranex-missing-log-${process.pid}-${Date.now()}`)
+      process.env[RSS] = "1"
 
-    // The watcher survives the failure.
-    expect(Heap.running()).toBe(true)
-  }, 30_000)
+      const line = await pollRealLog("auto heap snapshot failed")
+      expect(line).toContain("rss=")
+      expect(line).toContain("ENOENT")
+
+      // The watcher survives the failure.
+      expect(Heap.running()).toBe(true)
+    } finally {
+      Global.Path.log = original
+    }
+  }, 45_000)
 
   test("re-arm is logged when rss falls back below threshold", async () => {
     const baseline = await logBaseline()

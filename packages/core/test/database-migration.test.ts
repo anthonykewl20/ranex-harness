@@ -16,6 +16,7 @@ import contextEpochAgentMigration from "@ranex/core/database/migration/202606050
 import simplifyIntegrationCredentialsMigration from "@ranex/core/database/migration/20260611192811_lush_chimera"
 import simplifySessionInputMigration from "@ranex/core/database/migration/20260622202450_simplify_session_input"
 import sessionBlockerCascadeMigration from "@ranex/core/database/migration/20260813173227_session_blocker_cascade"
+import permissionRequestScopeMigration from "@ranex/core/database/migration/20260817120000_permission_request_scope"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { EventV2 } from "@ranex/core/event"
@@ -176,6 +177,36 @@ describe("DatabaseMigration", () => {
 
         expect(yield* db.all(sql`SELECT id FROM permission_request`)).toEqual([])
         expect(yield* db.all(sql`SELECT id FROM question_request`)).toEqual([])
+      }),
+    )
+  })
+
+  test("adds the permission request scope column to a legacy database", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY)`)
+        yield* db.run(
+          sql`CREATE TABLE permission_request (id text PRIMARY KEY, session_id text NOT NULL, data text NOT NULL, agent text, time_created integer NOT NULL, time_updated integer NOT NULL)`,
+        )
+        yield* db.run(sql`INSERT INTO session (id) VALUES ('session')`)
+        yield* db.run(
+          sql`INSERT INTO permission_request (id, session_id, data, agent, time_created, time_updated) VALUES ('permission', 'session', '{}', 'agent', 1, 1)`,
+        )
+
+        yield* DatabaseMigration.applyOnly(db, [permissionRequestScopeMigration])
+
+        expect((yield* db.all<{ name: string }>(sql`PRAGMA table_info(permission_request)`)).map((column) => column.name)).toEqual([
+          "id",
+          "session_id",
+          "data",
+          "agent",
+          "time_created",
+          "time_updated",
+          "scope",
+        ])
+        expect(yield* db.all(sql`SELECT id, scope FROM permission_request`)).toEqual([{ id: "permission", scope: null }])
+        expect(yield* db.all(sql`SELECT id FROM migration`)).toEqual([{ id: "20260817120000_permission_request_scope" }])
       }),
     )
   })

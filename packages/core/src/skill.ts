@@ -54,6 +54,18 @@ export interface Interface extends State.Transformable<Draft> {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Skill") {}
 
+// URL cache entries revalidate on read once older than this TTL (default
+// 10 minutes); read from the environment per call so changes apply without
+// a restart.
+const DEFAULT_URL_TTL_MS = 600_000
+
+function ttl() {
+  const value = process.env.RANEX_SKILL_URL_TTL_MS
+  if (value === undefined || !/^\d+$/.test(value)) return DEFAULT_URL_TTL_MS
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_URL_TTL_MS
+}
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -107,16 +119,33 @@ const layer = Layer.effect(
 
     // Cached per source: refresh() invalidates directory entries so skill
     // edits become visible without a restart (watchers in ./watch call
-    // refresh on filesystem events); url and embedded entries stay cached
-    // for the process lifetime.
+    // refresh on filesystem events); url entries revalidate on read once
+    // older than the TTL (default 10 minutes, tunable via
+    // RANEX_SKILL_URL_TTL_MS) and embedded entries stay cached for the
+    // process lifetime.
     const cache = new Map<string, Info[]>()
+    const pulledAt = new Map<string, number>()
     const list = Effect.fn("SkillV2.list")(function* () {
       const skills = new Map<string, Info>()
       for (const source of state.get().sources) {
         const key = Source.key(source)
-        const loaded = cache.get(key) ?? (yield* load(source))
-        cache.set(key, loaded)
-        for (const skill of loaded) skills.set(skill.name, skill)
+        const cached = cache.get(key)
+        // url entries revalidate on read once older than the TTL; a
+        // revalidation that comes back EMPTY while a non-empty entry is
+        // cached retains the last result and retries next window (network
+        // failures degrade to one-window-old content instead of vanishing
+        // skills). Directory entries are invalidated by refresh() and
+        // embedded entries never age.
+        const stale = source.type === "url" && Date.now() - (pulledAt.get(key) ?? 0) >= ttl()
+        const loaded = cached !== undefined && !stale ? cached : (yield* load(source))
+        // discovery.pull returns [] on transient network failure, so an
+        // empty stale revalidation keeps the previous skills serving; a
+        // genuinely emptied registry propagates after at most one window.
+        const effective =
+          stale && cached !== undefined && cached.length > 0 && loaded.length === 0 ? cached : loaded
+        cache.set(key, effective)
+        if (source.type === "url" && (stale || cached === undefined)) pulledAt.set(key, Date.now())
+        for (const skill of effective) skills.set(skill.name, skill)
       }
       return Array.from(skills.values())
     })
@@ -126,13 +155,18 @@ const layer = Layer.effect(
     // source no longer exists, then reloads so later list() calls observe
     // current state directly. HTTP sources are not re-pulled through
     // discovery: a local filesystem event cannot have changed them, so url
-    // and embedded entries stay cached.
+    // and embedded entries stay cached here; a stale url entry still
+    // re-pulls at most once per TTL window, including on the list() this
+    // refresh performs (bounded churn).
     const refresh = Effect.fn("SkillV2.refresh")(function* () {
       const keep = new Set(
         state.get().sources.flatMap((source) => (source.type === "directory" ? [] : [Source.key(source)])),
       )
       for (const key of cache.keys()) {
         if (!keep.has(key)) cache.delete(key)
+      }
+      for (const key of pulledAt.keys()) {
+        if (!keep.has(key)) pulledAt.delete(key)
       }
       yield* list().pipe(Effect.asVoid)
     })

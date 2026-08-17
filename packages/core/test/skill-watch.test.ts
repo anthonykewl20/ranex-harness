@@ -6,6 +6,7 @@ import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { AbsolutePath } from "@ranex/core/schema"
 import { FSUtil } from "@ranex/core/fs-util"
+import { Watcher } from "@ranex/core/filesystem/watcher"
 import { SkillV2 } from "@ranex/core/skill"
 import { SkillWatch } from "@ranex/core/skill/watch"
 import { SkillDiscovery } from "@ranex/core/skill/discovery"
@@ -53,6 +54,13 @@ const itCounting = testEffect(
     [FSUtil.node, counting],
   ]),
 )
+
+// Real watcher events need the native @parcel/watcher binding, and CI hosts
+// lack predictable event delivery — the concurrent-events proof runs only
+// where native events can actually fire. (Equivalent of
+// test.skipIf(!Watcher.hasNativeBinding() || !!process.env.CI), which the
+// testEffect fixture does not expose.)
+const itCountingNative = Watcher.hasNativeBinding() && !process.env.CI ? itCounting.live : itCounting.live.skip
 
 function write(directory: string, name: string, description: string) {
   const file = path.join(directory, name, "SKILL.md")
@@ -193,6 +201,92 @@ describe("SkillWatch", () => {
             "charlie",
             "delta",
             "echo",
+            "initial",
+          ])
+        }),
+      ),
+    ),
+    30_000,
+  )
+
+  // The counting test above pins the single-reconcile guarantee for ONE
+  // trigger (one explicit sync() → one flush). This one pins the
+  // multi-trigger invariant: N REAL filesystem events racing through the
+  // debounced FiberHandle must still collapse into ONE directory re-load —
+  // FiberHandle.run replaces the pending debounce (restart, not stack), so
+  // however many parcel callbacks land inside the window, only the last
+  // debounce survives to flush.
+  itCountingNative("coalesces concurrent watcher events into one directory re-load", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const local = path.join(tmp.path, "local")
+          yield* Effect.promise(() => write(local, "initial", "Initial skill"))
+
+          watchedDirectory = local
+          directoryLoads = 0
+          const skill = yield* SkillV2.Service
+          yield* skill.transform((editor) => {
+            editor.source({ type: "directory", path: AbsolutePath.make(local) })
+          })
+          expect((yield* skill.list()).map((item) => item.name)).toEqual(["initial"])
+          const baseline = directoryLoads
+
+          // Liveness proof: ONE explicit sync() installs the subscription
+          // and fires its `if (added) trigger()` flush. Waiting for that
+          // flush to land proves the subscription is LIVE and the event
+          // path works before the burst is generated — otherwise a silent
+          // subscription failure would masquerade as coalescing.
+          yield* (yield* SkillWatch.Service).sync()
+          const subscribed = yield* Effect.gen(function* () {
+            const deadline = Date.now() + 15_000
+            while (Date.now() < deadline) {
+              if (directoryLoads >= baseline + 1) return true
+              yield* Effect.sleep(100)
+            }
+            return false
+          })
+          expect(subscribed).toBe(true)
+
+          // Burst: five rapid REAL events with no sync()/list() involved —
+          // each subdirectory skill fires a parcel callback → trigger(),
+          // and every trigger restarts the pending 1s debounce. (Events may
+          // also arrive for the directory creations inside the watched
+          // root; the invariant is on flushes, not event count.)
+          yield* Effect.promise(async () => {
+            for (const name of ["b1", "b2", "b3", "b4", "b5"]) {
+              await write(local, name, `Burst ${name}`)
+            }
+          })
+
+          // Poll the counter only, never list(): a list() landing in the
+          // flush's cache-drop window would itself re-load and pollute the
+          // count. Wait for the single coalesced flush.
+          const flushed = yield* Effect.gen(function* () {
+            const deadline = Date.now() + 15_000
+            while (Date.now() < deadline) {
+              if (directoryLoads >= baseline + 2) return true
+              yield* Effect.sleep(100)
+            }
+            return false
+          })
+          expect(flushed).toBe(true)
+
+          // Multi-trigger invariant: quiet past the 1s debounce — the five
+          // (or more) racing triggers produced EXACTLY one re-load. A
+          // second flush here would mean the debounce stacked instead of
+          // replacing.
+          yield* Effect.sleep(2500)
+          expect(directoryLoads).toBe(baseline + 2)
+          expect((yield* skill.list()).map((item) => item.name).toSorted()).toEqual([
+            "b1",
+            "b2",
+            "b3",
+            "b4",
+            "b5",
             "initial",
           ])
         }),
