@@ -51,7 +51,9 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 // a caller-supplied messageID that already belongs to a persisted user
 // message must never be reused by the optimistic echo (clobber on update,
 // permanent deletion on template failure), while a free messageID is still
-// adopted.
+// adopted. Also pins the failure-path compare-and-delete: a real message
+// raced into an adopted free ID during the template window must survive
+// template failure.
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -296,6 +298,21 @@ echoGuard.instance(
         .pipe(Effect.exit)
       expect(Exit.isFailure(exit)).toBe(true)
       expect(yield* llm.calls).toBe(0)
+      // Post-failure projection lag: the echo cleanup (removeMessage on the
+      // fresh-ID echo, removePart on the placeholder) is projected
+      // asynchronously, so gate the assertions on it being durable.
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const msgs = yield* sessions.messages({ sessionID: chat.id })
+          return msgs.filter((msg) => msg.info.role === "user").length === 1 &&
+            !msgs.some((msg) =>
+              msg.parts.some((part) => part.type === "text" && part.text.includes(`Loading "/slow:review"`)),
+            )
+            ? true
+            : undefined
+        }),
+        "echo cleanup was never projected",
+      )
 
       const msgs = yield* sessions.messages({ sessionID: chat.id })
       // The caller's message survived intact: same row, same agent, same part.
@@ -467,6 +484,120 @@ echoGuard.instance(
       ).toBe(false)
       // Two-row semantics: the caller's message plus the landed template.
       expect(msgs.filter((msg) => msg.info.role === "user")).toHaveLength(2)
+    }),
+  30_000,
+)
+
+echoGuard.instance(
+  "failure path never deletes an adopted message that a caller took over",
+  () =>
+    Effect.gen(function* () {
+      yield* resetStub
+      stub.template = undefined
+      // Park getPrompt so the takeover race is deterministic: the echo is
+      // already durable under the caller's free ID while the template is
+      // still unresolved.
+      let release!: () => void
+      stub.gate = new Promise<void>((done) => {
+        release = done
+      })
+
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+
+      const freshID = MessageID.ascending()
+      const command = yield* prompt
+        .command({ sessionID: chat.id, command: "slow:review", arguments: "the-topic", messageID: freshID })
+        .pipe(Effect.forkChild)
+
+      // The optimistic echo adopted the caller's free messageID with the
+      // placeholder part on it.
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const msgs = yield* sessions.messages({ sessionID: chat.id })
+          return msgs.some(
+            (msg) =>
+              msg.info.id === freshID &&
+              msg.parts.some((part) => part.type === "text" && part.text.includes(`Loading "/slow:review"`)),
+          )
+            ? true
+            : undefined
+        }),
+        "echo never adopted the caller's messageID",
+      )
+
+      // Simulate the projection-lag takeover race: a caller writes a real
+      // message into the adopted free ID while the template is unresolved.
+      yield* sessions.updateMessage({
+        id: freshID,
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: ref,
+        time: { created: Date.now() + 1 },
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: freshID,
+        sessionID: chat.id,
+        type: "text",
+        text: "caller takeover payload",
+      })
+      // Projection visibility gate: the failure path's MessageV2.get reads
+      // the projected table, so wait until the takeover is actually durable
+      // before releasing the gate — otherwise a stale echo-shaped read could
+      // still satisfy stillEcho and the delete would race the projector.
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const msgs = yield* sessions.messages({ sessionID: chat.id })
+          return msgs.some(
+            (msg) =>
+              msg.info.id === freshID &&
+              msg.parts.some((part) => part.type === "text" && part.text === "caller takeover payload"),
+          )
+            ? true
+            : undefined
+        }),
+        "takeover was never projected onto the adopted messageID",
+      )
+
+      release()
+      const exit = yield* Fiber.await(command)
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(yield* llm.calls).toBe(0)
+      // Post-failure projection lag: the placeholder removal is projected
+      // asynchronously, so gate the assertions on it being durable — the
+      // takeover row itself must remain throughout.
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const msgs = yield* sessions.messages({ sessionID: chat.id })
+          return msgs.some((msg) =>
+            msg.parts.some((part) => part.type === "text" && part.text.includes(`Loading "/slow:review"`)),
+          )
+            ? undefined
+            : true
+        }),
+        "placeholder removal was never projected",
+      )
+
+      const msgs = yield* sessions.messages({ sessionID: chat.id })
+      // The takeover survived the failure path: same row, caller's part
+      // intact — compare-and-delete refused to drop the adopted row.
+      const taken = msgs.find((msg) => msg.info.id === freshID)
+      expect(taken).toBeDefined()
+      expect(taken?.info.role).toBe("user")
+      expect(taken?.info.agent).toBe("build")
+      expect(taken?.parts.some((part) => part.type === "text" && part.text === "caller takeover payload")).toBe(true)
+      // The placeholder was still removed even though the message was not.
+      expect(
+        msgs.some((msg) =>
+          msg.parts.some((part) => part.type === "text" && part.text.includes(`Loading "/slow:review"`)),
+        ),
+      ).toBe(false)
+      // Exactly one user row: the takeover, with no orphaned echo.
+      expect(msgs.filter((msg) => msg.info.role === "user")).toHaveLength(1)
     }),
   30_000,
 )

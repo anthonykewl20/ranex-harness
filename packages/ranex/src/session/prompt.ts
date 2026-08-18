@@ -1408,9 +1408,19 @@ const layer = Layer.effect(
       const exit = yield* Effect.exit(Effect.promise(() => pending))
       yield* sessions.removePart({ sessionID: input.sessionID, messageID: echo.id, partID: placeholder.id })
       if (Exit.isSuccess(exit)) return { template: exit.value, messageID: echo.id }
-      // The optimistic echo is orphaned on failure: drop the echo message so
-      // neither the transcript nor model history keeps it.
-      yield* sessions.removeMessage({ sessionID: input.sessionID, messageID: echo.id })
+      // The optimistic echo is orphaned on failure. Delete only when the row
+      // still looks like the echo we created — same creation time and no parts
+      // besides our (already removed) placeholder: a caller may have raced a
+      // real message into an adopted free ID, and that message must survive.
+      const row = yield* MessageV2.get({ sessionID: input.sessionID, messageID: echo.id }).pipe(
+        Effect.option,
+        Effect.provideService(Database.Service, database),
+      )
+      const stillEcho =
+        Option.isSome(row) &&
+        row.value.info.time.created === echo.time.created &&
+        row.value.parts.every((part) => part.id === placeholder.id)
+      if (stillEcho) yield* sessions.removeMessage({ sessionID: input.sessionID, messageID: echo.id })
       const reason = Cause.squash(exit.cause)
       const error = new NamedError.Unknown({
         message: `Failed to load "/${input.command}" template: ${
