@@ -1370,8 +1370,21 @@ const layer = Layer.effect(
       if (typeof pending === "string") return { template: pending, messageID: input.messageID }
       const echoAgent = cmd.agent ?? input.agent ?? (yield* agents.defaultInfo()).name
       const echoModel = input.model ? Provider.parseModel(input.model) : yield* currentModel(input.sessionID)
+      // A caller-supplied messageID may already be owned by a persisted user
+      // message; reuse would clobber it and failure-path removal would delete
+      // it. Adopt only on a definite NotFound — other read failures mint a
+      // fresh echo ID (fail-closed); DB defects die via orDie before any write.
+      const callerID = input.messageID
+      const taken =
+        callerID !== undefined &&
+        (yield* MessageV2.get({ sessionID: input.sessionID, messageID: callerID }).pipe(
+          Effect.as(true),
+          Effect.catchTag("NotFoundError", () => Effect.succeed(false)),
+          Effect.orElseSucceed(() => true),
+          Effect.provideService(Database.Service, database),
+        ))
       const echo: SessionV1.User = {
-        id: input.messageID ?? MessageID.ascending(),
+        id: callerID !== undefined && !taken ? callerID : MessageID.ascending(),
         role: "user",
         sessionID: input.sessionID,
         time: { created: Date.now() },
