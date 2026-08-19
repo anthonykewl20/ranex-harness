@@ -1,0 +1,14 @@
+# Fixture gate catalog for the fake kernel (PM-5, issue #91). Mirrors the
+# kernel's governance/gates.yaml shape: gates[].required_claims[].claim_id
+# binds a claim to the argv that satisfies it. The bridge only checks claim
+# membership; the argv binding (and its command digest) is enforced
+# kernel-side (SLICE-003) and passes through as evidence failure.
+gates:
+  - gate_id: landing
+    rule_id: TESTS_EXECUTED
+    blocking: true
+    required_claims:
+      - claim_id: fixture-tests-executed
+        command: ["true"]
+      - claim_id: fixture-failing-claim
+        command: ["false"]

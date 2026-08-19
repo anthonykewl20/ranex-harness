@@ -1,0 +1,11 @@
+# Fixture producer keyring for the fake kernel (PM-5, issue #91). Mirrors the
+# kernel's governance/producers.yaml shape (producers map plus the single
+# trusted verdict_signer). These placeholder keys are deterministic fixture
+# data: tests overwrite verdict_signer with the public half of the Ed25519
+# keypair they generate in-test via node:crypto, so the valid-read state is
+# reachable only through real signature verification (contract C-6).
+producers:
+  fixture-producer: ed25519:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+verdict_signer:
+  id: fixture-verdict-signer
+  public_key: ed25519:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
