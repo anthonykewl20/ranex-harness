@@ -24,7 +24,6 @@ import type { GlobTool } from "@/tool/glob"
 import type { GrepTool } from "@/tool/grep"
 import type { InvalidTool } from "@/tool/invalid"
 import type { LspTool } from "@/tool/lsp"
-import type { PlanExitTool } from "@/tool/plan"
 import type { QuestionTool } from "@/tool/question"
 import type { ReadTool } from "@/tool/read"
 import type { SkillTool } from "@/tool/skill"
@@ -109,7 +108,6 @@ type ToolDefs = {
   webfetch: typeof WebFetchTool
   websearch: typeof WebSearchTool
   skill: typeof SkillTool
-  plan_exit: typeof PlanExitTool
 }
 
 type ToolName = keyof ToolDefs
@@ -467,15 +465,6 @@ function runLsp(p: ToolProps<typeof LspTool>): ToolInline {
   return {
     icon: "→",
     title: text(p.frame.state.title) || lspTitle(p.input),
-  }
-}
-
-function runPlanExit(p: ToolProps<typeof PlanExitTool>): ToolInline {
-  return {
-    icon: "→",
-    title: text(p.frame.state.title) || "Switching to build agent",
-    mode: "block",
-    body: p.frame.status === "completed" ? text(p.frame.state.output) : undefined,
   }
 }
 
@@ -1217,16 +1206,6 @@ const TOOL_RULES = {
     run: runSkill,
     scroll: {
       start: scrollSkillStart,
-    },
-  },
-  plan_exit: {
-    view: {
-      output: true,
-      final: false,
-    },
-    run: runPlanExit,
-    scroll: {
-      start: () => "",
     },
   },
 } as const satisfies ToolRegistry

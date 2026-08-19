@@ -2,12 +2,7 @@ import { describe, expect } from "bun:test"
 import { Effect, Exit, Scope } from "effect"
 import { AgentV2 } from "@ranex/core/agent"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
-import { Location } from "@ranex/core/location"
-import { AgentPlugin } from "@ranex/core/plugin/agent"
-import { AbsolutePath } from "@ranex/core/schema"
-import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
-import { agentHost, host } from "./plugin/host"
 
 const it = testEffect(AppNodeBuilder.build(AgentV2.node))
 
@@ -96,39 +91,6 @@ describe("AgentV2", () => {
 
       yield* agent.transform((editor) => editor.remove(id))
       expect(yield* agent.get(id)).toBeUndefined()
-    }),
-  )
-
-  it.effect("keeps bash opt-in explicit: only plan mode carries a bash policy", () =>
-    Effect.gen(function* () {
-      const agent = yield* AgentV2.Service
-      yield* AgentPlugin.Plugin.effect(
-        host({
-          agent: agentHost(agent),
-        }),
-      ).pipe(
-        Effect.provideService(
-          Location.Service,
-          Location.Service.of(location({ directory: AbsolutePath.make("/project") })),
-        ),
-      )
-
-      const agents = yield* agent.all()
-      expect(agents.map((item) => String(item.id)).sort()).toEqual([
-        "build",
-        "compaction",
-        "explore",
-        "general",
-        "plan",
-        "summary",
-        "title",
-      ])
-      for (const item of agents.filter((item) => String(item.id) !== "plan")) {
-        expect(item.permissions.some((rule) => rule.action === "bash")).toBe(false)
-      }
-      const plan = agents.find((item) => String(item.id) === "plan")!
-      expect(plan.permissions.some((rule) => rule.action === "bash" && rule.resource === "*" && rule.effect === "ask"))
-        .toBe(true)
     }),
   )
 })

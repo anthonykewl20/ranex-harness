@@ -44,7 +44,6 @@ export class Service extends ConfigService.Service<Service>()("@opencode/Runtime
   experimentalLspTy: bool("RANEX_EXPERIMENTAL_LSP_TY"),
   experimentalLspTool: enabledByExperimental("RANEX_EXPERIMENTAL_LSP_TOOL"),
   experimentalOxfmt: enabledByExperimental("RANEX_EXPERIMENTAL_OXFMT"),
-  experimentalPlanMode: enabledByExperimental("RANEX_EXPERIMENTAL_PLAN_MODE"),
   experimentalEventSystem: enabledByExperimental("RANEX_EXPERIMENTAL_EVENT_SYSTEM"),
   experimentalWorkspaces: enabledByExperimental("RANEX_EXPERIMENTAL_WORKSPACES"),
   experimentalIconDiscovery: enabledByExperimental("RANEX_EXPERIMENTAL_ICON_DISCOVERY"),
