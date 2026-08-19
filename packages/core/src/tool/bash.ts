@@ -11,6 +11,7 @@ import { LocationMutation } from "../location-mutation"
 import { AppProcess } from "../process"
 import { PermissionV2 } from "../permission"
 import { PositiveInt } from "../schema"
+import { ToolOutputStore } from "../tool-output-store"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -59,6 +60,24 @@ const modelOutput = (output: Output) => {
 const isTimeout = (error: AppProcess.AppProcessError) =>
   error.cause instanceof Error && error.cause.message === "Timed out"
 
+const LOSSY_RETENTION_NOTICE =
+  "[full-output retention failed; the output above is lossy and no out_ reference is available]"
+
+const joinedOutput = (output: string, retention: ToolOutputStore.SinkSettlement, notice?: string) =>
+  [output, notice, retention._tag === "Lossy" ? LOSSY_RETENTION_NOTICE : undefined]
+    .filter((part) => part !== undefined)
+    .join("\n\n")
+
+const retentionWarnings = (warnings: string[], retention: ToolOutputStore.SinkSettlement) => {
+  if (retention._tag !== "Lossy") return warnings.length ? { warnings } : {}
+  return {
+    warnings: [
+      ...warnings,
+      `Full command output retention failed (${retention.reason}); this output is explicitly lossy.`,
+    ],
+  }
+}
+
 /**
  * Minimal V2 core shell boundary. Keep parity debt visible without pulling the
  * legacy shell runtime into core.
@@ -74,7 +93,11 @@ const isTimeout = (error: AppProcess.AppProcessError) =>
 // TODO: Add HTTP background-job observation only after durable status, restart recovery, and authorization are defined.
 // TODO: Revisit process-group cleanup and platform coverage with shell-specific tests if current AppProcess semantics do not fully cover it.
 // TODO: Revisit binary output handling if stdout/stderr decoding is text-only.
-// TODO: Stream full shell output into managed storage while retaining only a bounded in-memory preview.
+// Full shell output streams into managed storage while the command runs (via
+// AppProcess.onOutputChunk and ToolOutputStore.openSink); the in-memory capture below stays a
+// bounded preview. A retention write failure keeps a completed command successful with an
+// explicitly lossy preview (CONTEXT.md), and the artifact is referenced only when the sink
+// observed the whole stream — a process layer that does not tap degrades to preview-only.
 
 const shellTokens = (command: string) => command.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? []
 const unquote = (value: string) => value.replace(/^(['"])(.*)\1$/, "$2")
@@ -102,6 +125,7 @@ const layer = Layer.effectDiscard(
     const appProcess = yield* AppProcess.Service
     const config = yield* Config.Service
     const permission = yield* PermissionV2.Service
+    const outputStore = yield* ToolOutputStore.Service
 
     yield* tools
       .register({
@@ -155,6 +179,20 @@ const layer = Layer.effectDiscard(
               const shell =
                 Object.assign({}, ...entries.flatMap((entry) => (entry.type === "document" ? [entry.info] : [])))
                   .shell ?? defaultShell()
+
+              // Sink-open failure before spawn fails the call: without managed retention the full
+              // output would be silently lost, which is never a silent fallback we accept.
+              const sink = yield* outputStore
+                .openSink({ toolCallID: context.toolCallID, command: input.command })
+                .pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new ToolFailure({
+                        message: `Unable to open managed tool-output sink for full-output retention: ${error.message}`,
+                      }),
+                  ),
+                )
+
               const command = ChildProcess.make(input.command, [], {
                 cwd: target.canonical,
                 shell,
@@ -168,6 +206,7 @@ const layer = Layer.effectDiscard(
                   combineOutput: true,
                   timeout: Duration.millis(timeout),
                   maxOutputBytes: MAX_CAPTURE_BYTES,
+                  onOutputChunk: sink.write,
                 })
                 .pipe(
                   Effect.catchTag("AppProcessError", (error) =>
@@ -175,25 +214,40 @@ const layer = Layer.effectDiscard(
                   ),
                 )
               if (!result) {
+                // Timed out mid-stream: whatever the sink already observed stays fetchable.
+                const retention = yield* sink.settle({ capturedBytes: 0, timedOut: true })
                 return {
-                  output: `Command exceeded timeout of ${timeout} ms. Retry with a larger timeout if the command is expected to take longer.`,
+                  output: joinedOutput(
+                    `Command exceeded timeout of ${timeout} ms. Retry with a larger timeout if the command is expected to take longer.`,
+                    retention,
+                  ),
                   truncated: false,
                   timeout: true,
-                  ...(warnings.length ? { warnings } : {}),
+                  ...retentionWarnings(warnings, retention),
                 }
               }
 
+              const retention = yield* sink.settle({
+                capturedBytes: result.output?.byteLength ?? 0,
+                timedOut: false,
+              })
               const output = result.output?.toString("utf8") || "(no output)"
               const notice = result.outputTruncated
                 ? "[output capture truncated at the in-memory safety limit]"
                 : undefined
               return {
                 exit: result.exitCode,
-                output: notice ? `${output}\n\n${notice}` : output,
+                output: joinedOutput(output, retention, notice),
                 truncated: result.outputTruncated === true,
-                ...(warnings.length ? { warnings } : {}),
+                ...retentionWarnings(warnings, retention),
               }
-            }).pipe(Effect.mapError(() => new ToolFailure({ message: `Unable to execute command: ${input.command}` }))),
+            }).pipe(
+              Effect.mapError((error) =>
+                error instanceof ToolFailure
+                  ? error
+                  : new ToolFailure({ message: `Unable to execute command: ${input.command}` }),
+              ),
+            ),
         }),
       })
       .pipe(Effect.orDie)
@@ -203,5 +257,13 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/bash",
   layer,
-  deps: [ToolRegistry.node, LocationMutation.node, FSUtil.node, AppProcess.node, Config.node, PermissionV2.node],
+  deps: [
+    ToolRegistry.node,
+    ToolOutputStore.node,
+    LocationMutation.node,
+    FSUtil.node,
+    AppProcess.node,
+    Config.node,
+    PermissionV2.node,
+  ],
 })
