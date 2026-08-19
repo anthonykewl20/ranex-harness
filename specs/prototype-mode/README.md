@@ -110,7 +110,7 @@ owner, 2026-08-19).
 
 ## Upstream verification
 
-All citations OBSERVED 2026-08-19 at kernel commit `e877f81bb` (local checkout
+All citations OBSERVED 2026-08-19 at kernel commit `55a01518e867bc5630fc099a4c37cf30f9ff72a0` (local checkout
 `~/devtony/ranex`) and harness baseline `dc728e77`. What was verified, per source:
 
 - OBSERVED — Kernel ADR format: 16 sections, fixed order, per-section budgets,

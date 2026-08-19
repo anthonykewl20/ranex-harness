@@ -14,7 +14,7 @@ TypeScript. Importing kernel code is banned for the same reason the kernel
 invokes its own confinement session as a subprocess (`docs/adr/ADR-023`):
 import dissolves the process boundary.
 
-The surfaces to wrap, observed at kernel commit `e877f81bb`: `run --claim C
+The surfaces to wrap, observed at kernel commit `55a01518e867bc5630fc099a4c37cf30f9ff72a0`: `run --claim C
 --producer P -- <cmd>` (`main.py:2686-2690`; both flags required, no `--ref` —
 the subject is always HEAD); the committed catalog `governance/gates.yaml`
 binding claim to exact argv (SLICE-003); and ADR-019's signed verdict files
