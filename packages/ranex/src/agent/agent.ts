@@ -357,11 +357,10 @@ const layer = Layer.effect(
         const get = Effect.fnUntraced(function* (agent: string) {
           const registered = agents[agent]
           if (registered) return registered
-          // Any name absent from the registry — a persisted "plan" message
-          // from before this agent existed, an agent removed or disabled by
-          // config, or any unknown name — resolves to the default agent so
-          // historical sessions keep loading; their transcript names stay
-          // inert data.
+          // Any name absent from the registry — a message persisted by a
+          // retired agent, an agent removed or disabled by config, or any
+          // unknown name — resolves to the default agent so historical
+          // sessions keep loading; their transcript names stay inert data.
           return yield* defaultInfo()
         })
 
