@@ -28,15 +28,15 @@ function testAgent(input: {
 
 it.instance("subagent permissions take precedence over parent agent restrictions", () =>
   Effect.gen(function* () {
-    const planAgent = yield* Agent.use.get("plan")
+    const prototypeAgent = yield* Agent.use.get("prototype")
     const generalAgent = yield* Agent.use.get("general")
 
-    expect(planAgent).toBeDefined()
+    expect(prototypeAgent).toBeDefined()
     expect(generalAgent).toBeDefined()
-    // Sanity: the plan agent itself blocks edit. (Note: `write` and
-    // `apply_patch` route through the `edit` permission at the runtime
-    // tool layer — see Permission.disabled / EDIT_TOOLS.)
-    expect(Permission.evaluate("edit", "/some/file.ts", planAgent!.permission).action).toBe("deny")
+    // Sanity: the prototype agent itself blocks publishing mutation by name.
+    // (The parent agent's own restrictions govern only that agent — they must
+    // not silently cascade into subagent sessions.)
+    expect(Permission.evaluate("bash", "git push origin main", prototypeAgent!.permission).action).toBe("deny")
 
     const parentSessionPermission: PermissionV1.Ruleset = []
 
@@ -49,7 +49,7 @@ it.instance("subagent permissions take precedence over parent agent restrictions
     //   ruleset: Permission.merge(agent.permission, session.permission ?? [])
     const effective = Permission.merge(generalAgent!.permission, subagentSessionPermission)
 
-    expect(Permission.evaluate("edit", "/some/file.ts", effective).action).not.toBe("deny")
+    expect(Permission.evaluate("bash", "git push origin main", effective).action).not.toBe("deny")
     expect(Permission.disabled(["edit", "write", "apply_patch"], effective)).toEqual(new Set())
   }),
 )
@@ -74,9 +74,9 @@ it.instance(
   "custom subagent can explicitly enable edits denied to its parent agent",
   () =>
     Effect.gen(function* () {
-      const planAgent = yield* Agent.use.get("plan")
+      const prototypeAgent = yield* Agent.use.get("prototype")
       const my = yield* Agent.use.get("my_subagent")
-      expect(planAgent).toBeDefined()
+      expect(prototypeAgent).toBeDefined()
       expect(my).toBeDefined()
 
       const parentSessionPermission: PermissionV1.Ruleset = []
@@ -86,13 +86,20 @@ it.instance(
       })
       const effective = Permission.merge(my!.permission, subagentSessionPermission)
 
-      expect(Permission.evaluate("edit", "/some/file.ts", planAgent!.permission).action).toBe("deny")
+      // The parent prototype agent is configured to deny edits; the custom
+      // subagent's own allow still governs its session.
+      expect(Permission.evaluate("edit", "/some/file.ts", prototypeAgent!.permission).action).toBe("deny")
       expect(Permission.evaluate("edit", "/some/file.ts", effective).action).toBe("allow")
       expect(Permission.disabled(["edit", "write", "apply_patch"], effective)).toEqual(new Set())
     }),
   {
     config: {
       agent: {
+        prototype: {
+          permission: {
+            edit: "deny",
+          },
+        },
         my_subagent: {
           description: "A user-defined subagent",
           mode: "subagent",

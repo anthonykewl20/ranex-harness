@@ -12,6 +12,7 @@ import { ProviderTransform } from "@/provider/transform"
 import PROMPT_GENERATE from "./generate.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
+import PROMPT_PROTOTYPE from "./prompt/prototype.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
 import { Permission } from "@/permission"
@@ -132,8 +133,6 @@ const layer = Layer.effect(
             ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
           },
           question: "deny",
-          plan_enter: "deny",
-          plan_exit: "deny",
           // mirrors github.com/github/gitignore Node.gitignore pattern for .env files
           read: {
             "*": "allow",
@@ -154,98 +153,46 @@ const layer = Layer.effect(
               defaults,
               Permission.fromConfig({
                 question: "allow",
-                plan_enter: "allow",
               }),
               user,
             ),
             mode: "primary",
             native: true,
           },
-          plan: {
-            name: "plan",
+          prototype: {
+            name: "prototype",
             description:
-              "Plan mode. Disallows edit tools and prompts on shell commands by default; known mutating gh/git commands are denied and built-in GitHub writes are blocked. Best-effort permission enforcement, not a sandbox — shell expansion/indirection may bypass it.",
+              "Prototype mode. Governed idea-to-evidence pipeline: research, spec (ADRs plus contract-grade GitHub issues in a milestone), implementation against frozen contracts, independent review, and evidence-gated completion. Build-like permissions plus GitHub issue/milestone write; git push/merge, gh pr merge, and gh release/repo mutation are denied by name. Best-effort policy guardrails, not a sandbox — shell expansion/indirection may bypass them.",
             options: {},
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
                 question: "allow",
-                plan_exit: "allow",
-                task: {
-                  general: "deny",
-                },
+                kernel_run: "allow",
+                kernel_verdict: "allow",
                 github: {
-                  "*:write:*": "deny",
+                  "issues:write:*": "allow",
+                  "milestones:write:*": "allow",
                 },
                 bash: {
-                  // baseline: prompt for any bash command not explicitly allowlisted below
-                  "*": "ask",
-                  // read-only allows (no prompt)
-                  "gh issue list *": "allow",
-                  "gh issue view *": "allow",
-                  "gh pr list *": "allow",
-                  "gh pr view *": "allow",
-                  "gh pr diff *": "allow",
-                  "git status *": "allow",
-                  "git log *": "allow",
-                  "git diff *": "allow",
-                  "git show *": "allow",
-                  "ls *": "allow",
-                  "cat *": "allow",
-                  "grep *": "allow",
-                  "rg *": "allow",
-                  "find *": "allow",
-                  "head *": "allow",
-                  "tail *": "allow",
-                  pwd: "allow",
-                  "echo *": "allow",
-                  "wc *": "allow",
-                  "which *": "allow",
-                  "file *": "allow",
-                  // mutating gh/git: flat deny (no prompt)
-                  "gh issue comment *": "deny",
-                  "gh issue create *": "deny",
-                  "gh issue close *": "deny",
-                  "gh issue edit *": "deny",
-                  "gh issue delete *": "deny",
-                  "gh issue reopen *": "deny",
-                  "gh pr create *": "deny",
+                  // name-based guardrails: publishing, merging, and repo
+                  // mutation stay human-side (policy, not security)
+                  "git push *": "deny",
+                  "git merge *": "deny",
                   "gh pr merge *": "deny",
-                  "gh pr close *": "deny",
-                  "gh pr edit *": "deny",
-                  "gh pr review *": "deny",
                   "gh release create *": "deny",
                   "gh release delete *": "deny",
                   "gh release edit *": "deny",
                   "gh repo create *": "deny",
                   "gh repo delete *": "deny",
-                  "gh label create *": "deny",
-                  "gh label delete *": "deny",
-                  "gh label edit *": "deny",
-                  "gh workflow run *": "deny",
-                  "gh workflow disable *": "deny",
-                  "gh run cancel *": "deny",
-                  "gh run rerun *": "deny",
-                  "git push *": "deny",
-                  "git commit *": "deny",
-                  "git merge *": "deny",
-                  "git rebase *": "deny",
-                  "git reset *": "deny",
-                  "git cherry-pick *": "deny",
-                },
-                external_directory: {
-                  [path.join(Global.Path.data, "plans", "*")]: "allow",
-                },
-                edit: {
-                  "*": "deny",
-                  [path.join(".opencode", "plans", "*.md")]: "allow",
-                  [path.relative(ctx.worktree, path.join(Global.Path.data, path.join("plans", "*.md")))]: "allow",
+                  "gh repo edit *": "deny",
                 },
               }),
               user,
             ),
             mode: "primary",
             native: true,
+            prompt: PROMPT_PROTOTYPE,
           },
           general: {
             name: "general",
@@ -377,10 +324,6 @@ const layer = Layer.effect(
           )
         }
 
-        const get = Effect.fnUntraced(function* (agent: string) {
-          return agents[agent]
-        })
-
         const list = Effect.fnUntraced(function* () {
           const cfg = yield* config.get()
           return pipe(
@@ -409,6 +352,17 @@ const layer = Layer.effect(
 
         const defaultAgent = Effect.fnUntraced(function* () {
           return (yield* defaultInfo()).name
+        })
+
+        const get = Effect.fnUntraced(function* (agent: string) {
+          const registered = agents[agent]
+          if (registered) return registered
+          // Any name absent from the registry — a persisted "plan" message
+          // from before this agent existed, an agent removed or disabled by
+          // config, or any unknown name — resolves to the default agent so
+          // historical sessions keep loading; their transcript names stay
+          // inert data.
+          return yield* defaultInfo()
         })
 
         return {

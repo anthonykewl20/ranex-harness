@@ -49,12 +49,13 @@ it.instance("returns default native agents when no config", () =>
     const agents = yield* load((svc) => svc.list())
     const names = agents.map((a) => a.name)
     expect(names).toContain("build")
-    expect(names).toContain("plan")
+    expect(names).toContain("prototype")
     expect(names).toContain("general")
     expect(names).toContain("explore")
     expect(names).toContain("compaction")
     expect(names).toContain("title")
     expect(names).toContain("summary")
+    expect(names).not.toContain("plan")
   }),
 )
 
@@ -69,66 +70,88 @@ it.instance("build agent has correct default properties", () =>
   }),
 )
 
-it.instance("plan agent denies edits except .opencode/plans/*", () =>
+it.instance("prototype agent is a primary native agent with a build-like base", () =>
   Effect.gen(function* () {
-    const plan = yield* load((svc) => svc.get("plan"))
-    expect(plan).toBeDefined()
-    // Wildcard is denied
-    expect(evalPerm(plan, "edit")).toBe("deny")
-    // But specific path is allowed
-    expect(Permission.evaluate("edit", ".opencode/plans/foo.md", plan!.permission).action).toBe("allow")
+    const prototype = yield* load((svc) => svc.get("prototype"))
+    expect(prototype).toBeDefined()
+    expect(prototype?.mode).toBe("primary")
+    expect(prototype?.native).toBe(true)
+    expect(prototype?.prompt).toBeDefined()
+    // Build-like base: edits, shell, and subagents are allowed (the retired
+    // plan agent denied edits and the general subagent).
+    expect(evalPerm(prototype, "edit")).toBe("allow")
+    expect(evalPerm(prototype, "bash")).toBe("allow")
+    expect(Permission.evaluate("task", "general", prototype!.permission).action).toBe("allow")
   }),
 )
 
-it.instance("plan agent denies the general subagent by default", () =>
+it.instance("prototype agent allows GitHub issue and milestone writes", () =>
   Effect.gen(function* () {
-    const plan = yield* load((svc) => svc.get("plan"))
-    expect(plan).toBeDefined()
-    expect(Permission.evaluate("task", "general", plan!.permission).action).toBe("deny")
-    expect(Permission.evaluate("task", "explore", plan!.permission).action).toBe("allow")
-    expect(Permission.evaluate("task", "custom", plan!.permission).action).toBe("allow")
+    const prototype = yield* load((svc) => svc.get("prototype"))
+    expect(prototype).toBeDefined()
+    const permission = prototype!.permission
+    expect(Permission.evaluate("github", "issues:write:owner/repo", permission).action).toBe("allow")
+    expect(Permission.evaluate("github", "issues:read:owner/repo", permission).action).toBe("allow")
+    expect(Permission.evaluate("github", "milestones:write:owner/repo", permission).action).toBe("allow")
+    expect(Permission.evaluate("github", "milestones:read:owner/repo", permission).action).toBe("allow")
   }),
 )
 
-it.instance("plan agent guards shell and GitHub mutations", () =>
+it.instance("prototype agent allows the kernel tools per the permission partition", () =>
   Effect.gen(function* () {
-    const plan = yield* load((svc) => svc.get("plan"))
-    expect(plan).toBeDefined()
-    const permission = plan!.permission
+    const prototype = yield* load((svc) => svc.get("prototype"))
+    expect(prototype).toBeDefined()
+    const permission = prototype!.permission
+    // Explicit allow rows (pattern "*") for the exact kernel actions — the
+    // tools themselves are registered by the kernel-tools issue.
+    expect(Permission.evaluate("kernel_run", "*", permission).action).toBe("allow")
+    expect(Permission.evaluate("kernel_verdict", "*", permission).action).toBe("allow")
+    expect(permission.some((r) => r.permission === "kernel_run" && r.pattern === "*" && r.action === "allow")).toBe(
+      true,
+    )
+    expect(
+      permission.some((r) => r.permission === "kernel_verdict" && r.pattern === "*" && r.action === "allow"),
+    ).toBe(true)
+  }),
+)
 
-    expect(Permission.evaluate("bash", "gh issue comment 123", permission).action).toBe("deny")
-    expect(Permission.evaluate("bash", "gh issue create --title x", permission).action).toBe("deny")
-    expect(Permission.evaluate("bash", "gh pr merge 5", permission).action).toBe("deny")
+it.instance("prototype agent guards publishing and repo mutation by name", () =>
+  Effect.gen(function* () {
+    const prototype = yield* load((svc) => svc.get("prototype"))
+    expect(prototype).toBeDefined()
+    const permission = prototype!.permission
+
+    // git push/merge, gh pr merge, gh release/repo mutation: flat deny
+    expect(Permission.evaluate("bash", "git push", permission).action).toBe("deny")
     expect(Permission.evaluate("bash", "git push origin main", permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "git merge feature", permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "gh pr merge 5", permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "gh release create v1", permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "gh release delete v1", permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "gh repo create o/r", permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "gh repo delete o/r", permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "gh repo edit o/r", permission).action).toBe("deny")
+    // Build-like base: everything else stays allowed
     expect(Permission.evaluate("bash", "git status", permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "bun test", permission).action).toBe("allow")
     expect(Permission.evaluate("bash", "gh issue list", permission).action).toBe("allow")
-    expect(Permission.evaluate("bash", "ls -la", permission).action).toBe("allow")
-    expect(Permission.evaluate("bash", "rg foo", permission).action).toBe("allow")
-    expect(Permission.evaluate("bash", "rm -rf /tmp", permission).action).toBe("ask")
-    expect(Permission.evaluate("bash", "npm publish", permission).action).toBe("ask")
-    expect(Permission.evaluate("bash", "git branch -D topic", permission).action).toBe("ask")
-    expect(Permission.evaluate("bash", "gh --repo o/r issue comment 123", permission).action).toBe("ask")
-    expect(Permission.evaluate("bash", "bun test", permission).action).toBe("ask")
-    expect(Permission.evaluate("bash", "gh api repos/o/r", permission).action).toBe("ask")
-    expect(Permission.evaluate("bash", "curl -s https://x", permission).action).toBe("ask")
-    expect(Permission.evaluate("github", "issues:write:o/r", permission).action).toBe("deny")
-    expect(Permission.evaluate("github", "issues:read:o/r", permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "git commit -m x", permission).action).toBe("allow")
   }),
 )
 
 it.instance(
-  "user permission can allow the general subagent from plan mode",
+  "user permission can deny GitHub writes for the prototype agent",
   () =>
     Effect.gen(function* () {
-      const plan = yield* load((svc) => svc.get("plan"))
-      expect(plan).toBeDefined()
-      expect(Permission.evaluate("task", "general", plan!.permission).action).toBe("allow")
+      const prototype = yield* load((svc) => svc.get("prototype"))
+      expect(prototype).toBeDefined()
+      expect(Permission.evaluate("github", "issues:write:owner/repo", prototype!.permission).action).toBe("deny")
     }),
   {
     config: {
       permission: {
-        task: {
-          general: "allow",
+        github: {
+          "issues:write:*": "deny",
         },
       },
     },
@@ -267,7 +290,8 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const explore = yield* load((svc) => svc.get("explore"))
-      expect(explore).toBeUndefined()
+      // Disabled agents fall back to the default agent on lookup (C-5).
+      expect(explore?.name).toBe("build")
       const agents = yield* load((svc) => svc.list())
       const names = agents.map((a) => a.name)
       expect(names).not.toContain("explore")
@@ -329,15 +353,15 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const build = yield* load((svc) => svc.get("build"))
-      const plan = yield* load((svc) => svc.get("plan"))
+      const prototype = yield* load((svc) => svc.get("prototype"))
       expect(build?.steps).toBe(50)
-      expect(plan?.steps).toBe(100)
+      expect(prototype?.steps).toBe(100)
     }),
   {
     config: {
       agent: {
         build: { steps: 50 },
-        plan: { maxSteps: 100 },
+        prototype: { maxSteps: 100 },
       },
     },
   },
@@ -465,12 +489,12 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const names = (yield* load((svc) => svc.list())).map((a) => a.name)
-      expect(names[0]).toBe("plan")
+      expect(names[0]).toBe("prototype")
       expect(names.slice(1)).toEqual(names.slice(1).toSorted((a, b) => a.localeCompare(b)))
     }),
   {
     config: {
-      default_agent: "plan",
+      default_agent: "prototype",
       agent: {
         zebra: {
           description: "Zebra",
@@ -485,10 +509,11 @@ it.instance(
   },
 )
 
-it.instance("Agent.get returns undefined for non-existent agent", () =>
+it.instance("Agent.get resolves non-existent agent names to the default agent", () =>
   Effect.gen(function* () {
     const nonExistent = yield* load((svc) => svc.get("does_not_exist"))
-    expect(nonExistent).toBeUndefined()
+    const fallback = yield* load((svc) => svc.defaultInfo())
+    expect(nonExistent?.name).toBe(fallback.name)
   }),
 )
 
@@ -688,15 +713,15 @@ it.instance("defaultInfo returns resolved build agent when no default_agent conf
 )
 
 it.instance(
-  "defaultAgent respects default_agent config set to plan",
+  "defaultAgent respects default_agent config set to prototype",
   () =>
     Effect.gen(function* () {
       const agent = yield* load((svc) => svc.defaultAgent())
-      expect(agent).toBe("plan")
+      expect(agent).toBe("prototype")
     }),
   {
     config: {
-      default_agent: "plan",
+      default_agent: "prototype",
     },
   },
 )
@@ -751,12 +776,12 @@ it.instance(
 )
 
 it.instance(
-  "defaultAgent returns plan when build is disabled and default_agent not set",
+  "defaultAgent returns prototype when build is disabled and default_agent not set",
   () =>
     Effect.gen(function* () {
       const agent = yield* load((svc) => svc.defaultAgent())
-      // build is disabled, so it should return plan (next primary agent)
-      expect(agent).toBe("plan")
+      // build is disabled, so it should return prototype (next primary agent)
+      expect(agent).toBe("prototype")
     }),
   {
     config: {
@@ -774,7 +799,7 @@ it.instance(
     config: {
       agent: {
         build: { disable: true },
-        plan: { disable: true },
+        prototype: { disable: true },
       },
     },
   },
