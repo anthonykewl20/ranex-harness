@@ -99,6 +99,17 @@ export function sanitizeProjectConfig(info: Info): { info: Info; stripped: strin
   if (info.mcp !== undefined) next = { ...next, mcp: sanitizeProjectMcp(info.mcp, stripped) }
   if (info.experimental !== undefined)
     next = { ...next, experimental: sanitizeProjectExperimental(info.experimental, stripped) }
+  // `kernel.path` selects which repository judges the session's evidence —
+  // permission-adjacent, like experimental.policies. A project source must
+  // not choose its own judge: kernel discovery stays honored only from
+  // trusted layers (global config, RANEX_CONFIG/RANEX_CONFIG_CONTENT, and
+  // the RANEX_KERNEL env var).
+  if (info.kernel !== undefined) {
+    const copy = { ...next }
+    stripped.push("kernel")
+    delete copy.kernel
+    next = copy
+  }
   return { info: next, stripped }
 }
 
@@ -520,7 +531,7 @@ const layer = Layer.effect(
           }
           const sanitized = sanitizeProjectConfig(next)
           if (sanitized.stripped.length) {
-            yield* Effect.logWarning("stripped credential-bearing provider options from untrusted project config", {
+            yield* Effect.logWarning("stripped untrusted fields from project config", {
               source,
               stripped: sanitized.stripped,
             })

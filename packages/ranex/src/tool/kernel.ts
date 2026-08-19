@@ -10,7 +10,9 @@
 // parses its output (contract C-5), and the harness writes nothing to the
 // kernel repository.
 //
-// Kernel discovery (contract C-1): explicit config `kernel.path`, else the
+// Kernel discovery (contract C-1): explicit config `kernel.path` from trusted
+// layers only (global config, RANEX_CONFIG/RANEX_CONFIG_CONTENT — project
+// configs are sanitized, see config.ts sanitizeProjectConfig), else the
 // RANEX_KERNEL env var. The resolved path must be absolute, must exist, and
 // must resolve OUTSIDE both the current session worktree and the harness repo —
 // a kernel the observed session can edit would judge its own editor. Absence
@@ -112,23 +114,199 @@ function sha256Hex(text: string) {
   return createHash("sha256").update(text, "utf8").digest("hex")
 }
 
-async function exec(cmd: string[], cwd: string, env: Record<string, string | undefined>, abort?: AbortSignal) {
-  const proc = Bun.spawn({ cmd, cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
-  const done = Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]).then(
-    async ([stdout, stderr]) => ({ exitCode: await proc.exited, stdout, stderr }),
-  )
-  if (!abort) return done
-  // A session abort must not leave the kernel subprocess running unowned.
-  if (abort.aborted) {
-    proc.kill()
-    return done
+// Output capture is byte-capped, mirroring the shell tool's truncation
+// discipline (truncate.ts MAX_BYTES): a kernel subprocess that floods stdout
+// or stderr can never grow harness memory without bound. Like shell.ts, the
+// retained window is the TAIL (the kernel prints its RECORDED summary after
+// the measured command's output, so the newest bytes carry the evidence).
+// The stream keeps being consumed past the cap (retaining nothing) so a full
+// pipe can never block or SIGPIPE the subprocess mid-run.
+const MAX_OUTPUT_BYTES = 50 * 1024
+
+function readCapped(stream: ReadableStream<Uint8Array>) {
+  const reader = stream.getReader()
+  const chunks: Buffer[] = []
+  let used = 0
+  let truncated = false
+  const result = (async () => {
+    for (;;) {
+      const next = await reader.read()
+      if (next.done) break
+      chunks.push(Buffer.from(next.value))
+      used += next.value.byteLength
+      if (used <= MAX_OUTPUT_BYTES) continue
+      truncated = true
+      // Drop the oldest chunks until the window fits again; a single chunk
+      // larger than the whole cap keeps only its tail.
+      while (used > MAX_OUTPUT_BYTES && chunks.length > 1) {
+        const dropped = chunks.shift()
+        if (!dropped) break
+        used -= dropped.byteLength
+      }
+      if (used > MAX_OUTPUT_BYTES && chunks.length === 1) {
+        chunks[0] = chunks[0]!.subarray(used - MAX_OUTPUT_BYTES)
+        used = MAX_OUTPUT_BYTES
+      }
+    }
+    return { text: Buffer.concat(chunks).toString("utf8"), truncated }
+  })()
+  const handle = {
+    result,
+    released: false,
+    // Force-close the read side. Whether late bytes would have followed is
+    // unknowable afterwards, so a release conservatively marks the capture
+    // truncated.
+    release: () => {
+      handle.released = true
+      reader.cancel().catch(() => {})
+    },
   }
-  const kill = () => proc.kill()
-  abort.addEventListener("abort", kill, { once: true })
+  return handle
+}
+
+// After the direct child exits, its streams normally close at once. A
+// descendant that inherited the pipe can hold it open; this grace bounds how
+// long exec waits for the drain before releasing the pipes — a stuck
+// descendant never hangs the tool and never misreports a finished run as a
+// timeout. The release marks the capture truncated (conservative: whether
+// late bytes would have arrived is unknowable).
+const DRAIN_GRACE_MS = 3000
+
+async function settleOutputs(stdout: ReturnType<typeof readCapped>, stderr: ReturnType<typeof readCapped>) {
+  const drained = Promise.all([stdout.result, stderr.result])
+  const grace = new Promise((resolve) => setTimeout(resolve, DRAIN_GRACE_MS).unref())
+  if (await Promise.race([drained.then(() => true), grace.then(() => false)])) return drained
+  stdout.release()
+  stderr.release()
+  const [out, err] = await drained
+  return [
+    { ...out, truncated: out.truncated || stdout.released },
+    { ...err, truncated: err.truncated || stderr.released },
+  ] as const
+}
+
+const DEFAULT_TIMEOUT_MS = 2 * 60 * 1000
+
+// RANEX_KERNEL_TIMEOUT_MS overrides the default (which mirrors the shell
+// tool's two minutes). A value that is not a finite positive number falls
+// back to the default rather than silently disabling the cap.
+function kernelTimeoutMs() {
+  const raw = process.env.RANEX_KERNEL_TIMEOUT_MS
+  if (raw === undefined || raw.trim() === "") return DEFAULT_TIMEOUT_MS
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_TIMEOUT_MS
+  // setTimeout coerces its delay to a signed 32-bit int; anything above
+  // 2^31-1 would fire after ~1 ms instead of extending the cap.
+  return Math.min(parsed, 2 ** 31 - 1)
+}
+
+// The kernel subprocess is spawned detached, so it leads its own process
+// group and a kill reaches every descendant it spawned (the measured command
+// included), not just the direct child. SIGTERM first, escalating to SIGKILL
+// after a 3 s grace — the same escalation the shell tool uses. exec settles
+// as soon as the direct child is gone, so a stubborn descendant can never
+// hang the tool; the escalation timer finishes the group behind it, probing
+// first so a dead group's id can never be signalled after recycling.
+function killProcessGroup(proc: Bun.Subprocess) {
+  if (process.platform === "win32") {
+    // No process groups on Windows; taskkill /T /F is the harness's
+    // established tree-kill there (core/shell.ts, util/process.ts). If
+    // taskkill itself fails or reports a non-zero exit, fall back to
+    // killing the direct child — mirroring util/process.ts stop(). The
+    // destroyer's exit is consumed so it can never linger as an unowned
+    // zombie child itself.
+    const killDirect = () => {
+      try {
+        proc.kill()
+      } catch {}
+    }
+    try {
+      const killer = Bun.spawn({ cmd: ["taskkill", "/pid", String(proc.pid), "/T", "/F"], stdin: "ignore", stdout: "ignore", stderr: "ignore" })
+      killer.exited.then(
+        (code) => {
+          if (code !== 0) killDirect()
+        },
+        () => killDirect(),
+      )
+    } catch {
+      killDirect()
+    }
+    return
+  }
+  const signal = (name: NodeJS.Signals) => {
+    try {
+      process.kill(-proc.pid, name)
+    } catch {
+      try {
+        proc.kill(name)
+      } catch {}
+    }
+  }
+  signal("SIGTERM")
+  setTimeout(() => {
+    try {
+      // Signal 0 probes existence: skip the SIGKILL when the group is gone.
+      process.kill(-proc.pid, 0)
+    } catch {
+      return
+    }
+    signal("SIGKILL")
+  }, 3000).unref()
+}
+
+// Liveness contract: exec settles as soon as the DIRECT child exits — the
+// default 2-minute timeout (RANEX_KERNEL_TIMEOUT_MS) bounds even a kernel
+// that never returns, killing its whole process group and refusing with the
+// typed KERNEL_TIMEOUT code. Never a hang.
+async function exec(cmd: string[], cwd: string, env: Record<string, string | undefined>, abort?: AbortSignal) {
+  const proc = Bun.spawn({ cmd, cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: process.platform !== "win32" })
+  const stdout = readCapped(proc.stdout)
+  const stderr = readCapped(proc.stderr)
+  // On spawn failure `proc.exited` rejects before settleOutputs attaches any
+  // handler; these no-op catches keep the capture promises from surfacing as
+  // unhandled rejections (the real error propagates via proc.exited below).
+  stdout.result.catch(() => {})
+  stderr.result.catch(() => {})
+  let timedOut = false
+  const timer = setTimeout(() => {
+    // The child may have exited inside the timeout with its exit event
+    // still queued behind this callback — including a signal death, which
+    // leaves exitCode null — so skip the kill then (util/process.ts uses
+    // the same two-field guard).
+    if (proc.exitCode !== null || proc.signalCode !== null) return
+    timedOut = true
+    killProcessGroup(proc)
+  }, kernelTimeoutMs())
+  // A session abort must not leave the kernel subprocess running unowned;
+  // it takes the same group-kill path as the timeout, and the result carries
+  // an aborted marker so an aborted run is never presented as clean
+  // evidence.
+  let aborted = false
+  const kill = () => {
+    aborted = true
+    killProcessGroup(proc)
+  }
+  if (abort?.aborted) kill()
+  else abort?.addEventListener("abort", kill, { once: true })
   try {
-    return await done
+    const exitCode = await proc.exited
+    // The timeout bounds the CHILD. Disarm it the moment the child is gone:
+    // a slow pipe drain afterwards (settleOutputs) must never mislabel a
+    // finished run as timed out.
+    clearTimeout(timer)
+    const [out, err] = await settleOutputs(stdout, stderr)
+    if (timedOut) {
+      throw new KernelRefusedError(
+        "KERNEL_TIMEOUT",
+        `the kernel subprocess did not exit within ${kernelTimeoutMs()} ms and its process ${
+          process.platform === "win32" ? "tree was killed (taskkill /T /F)" : "group was killed (SIGTERM, escalating to SIGKILL after 3 s)"
+        }; raise RANEX_KERNEL_TIMEOUT_MS if the kernel legitimately runs longer`,
+      )
+    }
+    return { exitCode, stdout: out.text, stderr: err.text, truncated: out.truncated || err.truncated, aborted }
   } finally {
-    abort.removeEventListener("abort", kill)
+    clearTimeout(timer)
+    abort?.removeEventListener("abort", kill)
   }
 }
 
@@ -139,7 +317,11 @@ async function exec(cmd: string[], cwd: string, env: Record<string, string | und
 // tool-side path the reader uses (contract AC-3).
 export async function deriveSubjectDigest(kernelDir: string) {
   const result = await exec(["git", "rev-parse", "HEAD^{tree}"], kernelDir, process.env)
-  if (result.exitCode !== 0) throw new Error(`cannot resolve HEAD^{tree} in kernel repo: ${result.stderr.trim()}`)
+  if (result.exitCode !== 0)
+    throw new KernelRefusedError(
+      "SUBJECT_DERIVE_FAILED",
+      `cannot derive the worktree subject digest (git rev-parse HEAD^{tree}) in the kernel repo ${kernelDir}: ${result.stderr.trim()}`,
+    )
   return "sha256:" + sha256Hex(canonicalJson({ tree: result.stdout.trim() }))
 }
 
@@ -148,8 +330,17 @@ export async function deriveSubjectDigest(kernelDir: string) {
 // root instead — refusing a kernel inside it is still the right check.
 const harnessRoot = path.resolve(import.meta.dir, "../../../..")
 
+// The first value that is present and non-blank: a blank (empty or
+// whitespace) kernel.path — and likewise a blank RANEX_KERNEL — counts as
+// unset, so an operator can blank the trusted config and let the env var
+// take over (or vice versa). Only a genuinely-empty config AND empty env
+// refuses as UNSET.
+function firstSetPath(...values: Array<string | undefined>) {
+  return values.find((value) => value !== undefined && value.trim() !== "")
+}
+
 const resolveKernel = Effect.fn("KernelTool.resolveKernel")(function* (kernelPath: string | undefined, envPath: string | undefined, ins: InstanceContext) {
-  const configured = kernelPath ?? envPath
+  const configured = firstSetPath(kernelPath, envPath)
   if (!configured) {
     return yield* refuse("KERNEL_PATH_UNSET", "kernel discovery failed: neither config kernel.path nor the RANEX_KERNEL env var is set; absence blocks")
   }
@@ -308,9 +499,15 @@ function classifyVerdict(file: Buffer, signer: { id: string; publicKey: string }
   if (record.record_digest !== "sha256:" + sha256Hex(canonicalJson(content))) {
     return { state: "unverified", reason: "bad-signature" }
   }
-  const signatureBytes = decodeEd25519(signature.signature, 64)
+  // A keyring entry whose key string does not decode means the key is
+  // unavailable — missing-key, matching the loader's contract above. This is
+  // checked before the signature: without a key, verification cannot even be
+  // attempted. A malformed SIGNATURE is an attack on the envelope, not a
+  // missing key.
   const publicKeyBytes = decodeEd25519(signer.publicKey, 32)
-  if (signatureBytes === undefined || publicKeyBytes === undefined) return { state: "unverified", reason: "bad-signature" }
+  if (publicKeyBytes === undefined) return { state: "unverified", reason: "missing-key" }
+  const signatureBytes = decodeEd25519(signature.signature, 64)
+  if (signatureBytes === undefined) return { state: "unverified", reason: "bad-signature" }
   const message = Buffer.from(VERDICT_DOMAIN + canonicalJson(content), "utf8")
   if (!verifyEd25519(message, signatureBytes, publicKeyBytes)) return { state: "unverified", reason: "bad-signature" }
   if (record.subject_digest !== subject) {
@@ -329,6 +526,15 @@ function renderRecord(record: Record<string, unknown>) {
     .sort()
     .map((key) => `  ${key}: ${JSON.stringify(record[key])}`)
     .join("\n")
+}
+
+function renderField(value: unknown) {
+  // Strings print bare for readability, but control characters are escaped
+  // so a signed record cannot inject lines or terminal escapes into the
+  // tool output — these fields are rendered precisely because they are NOT
+  // independently verified.
+  if (typeof value === "string" && !/[\u0000-\u001f\u007f]/.test(value)) return value
+  return JSON.stringify(value)
 }
 
 // No default arm: the switch is exhaustive over VerdictRead, and absence
@@ -378,6 +584,10 @@ function renderVerdict(read: VerdictRead, subject: string) {
       return [
         "kernel verdict: freshness-unproven (signature verified)",
         `subject: ${subject}`,
+        `gate: ${renderField(read.record.gate_id)}`,
+        `catalog: ${renderField(read.record.catalog_digest)}`,
+        `approver: ${renderField(read.record.approver_id)}`,
+        "Verified so far: the signature and the subject digest. gate, catalog, and approver above are the verdict's own signed claims about itself — this session has NOT confirmed they match the gate being evaluated.",
         "verdict record:",
         renderRecord(read.record),
         "Note: verification proves the verdict is about this subject's tree, not that it is current.",
@@ -454,14 +664,20 @@ export const KernelRunTool = Tool.define(
             ),
           )
 
-          const exit = result.stdout.match(/^RECORDED.*\bexit=(-?\d+)/m)?.[1]
-          const subject = result.stdout.match(/^\s*subject=(sha256:[0-9a-f]{64})/m)?.[1]
+          // Anchor on the LAST RECORDED/subject match, not the first: the
+          // kernel prints its summary after the measured command's output, so
+          // a measured command printing kernel-shaped lines cannot poison the
+          // parsed evidence fields with earlier matches.
+          const exit = lastMatch(result.stdout, /^RECORDED.*\bexit=(-?\d+)/gm)
+          const subject = lastMatch(result.stdout, /^\s*subject=(sha256:[0-9a-f]{64})/gm)
           const header = kernelRunHeader(params.claim, result, exit, subject)
           const output = [
             ...header,
             `evidence: ${evidencePath}`,
             "",
             result.stdout.trim() || "(no kernel stdout)",
+            ...(result.truncated ? ["", `(kernel output truncated at the ${MAX_OUTPUT_BYTES}-byte capture cap; earliest output was dropped)`] : []),
+            ...(result.aborted ? ["", "(session aborted: the kernel process group was killed — any kernel output above predates the abort)"] : []),
             ...(result.stderr.trim() ? ["", "--- kernel stderr ---", result.stderr.trim()] : []),
           ].join("\n")
           return {
@@ -471,6 +687,8 @@ export const KernelRunTool = Tool.define(
               exitCode: result.exitCode,
               ...(subject ? { subjectDigest: subject } : {}),
               evidencePath,
+              ...(result.truncated ? { truncated: true } : {}),
+              ...(result.aborted ? { aborted: true } : {}),
             },
             output,
           }
@@ -478,6 +696,13 @@ export const KernelRunTool = Tool.define(
     }
   }),
 )
+
+// First capture group of the LAST regex match in `text` (patterns are /g).
+function lastMatch(text: string, pattern: RegExp) {
+  let last: string | undefined
+  for (const match of text.matchAll(pattern)) last = match[1]
+  return last
+}
 
 // The kernel's refusal contract is an `ERROR  ...` line on stderr and no
 // RECORDED line; output unusable in some other way is malformed evidence.

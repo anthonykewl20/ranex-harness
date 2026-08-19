@@ -7,6 +7,7 @@
 // actually-derived subject digest.
 
 import { generateKeyPairSync, sign, createHash } from "node:crypto"
+import { readdirSync, readFileSync } from "node:fs"
 import { chmod, cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "os"
 import path from "path"
@@ -14,7 +15,7 @@ import { $ } from "bun"
 import { expect } from "bun:test"
 import { PermissionV1 } from "@ranex/core/v1/permission"
 import { LayerNode } from "@ranex/core/effect/layer-node"
-import { Cause, Effect, Exit, Layer } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer } from "effect"
 import { Config } from "@/config/config"
 import { Agent } from "../../src/agent/agent"
 import * as Truncate from "../../src/tool/truncate"
@@ -53,10 +54,11 @@ const baseCtx: Omit<Tool.Context, "ask"> = {
   metadata: () => Effect.void,
 }
 
-function makeCtx() {
+function makeCtx(abort?: AbortSignal) {
   const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
   const ctx: Tool.Context = {
     ...baseCtx,
+    abort: abort ?? baseCtx.abort,
     ask: (req) =>
       Effect.sync(() => {
         requests.push(req)
@@ -117,6 +119,13 @@ const setEnv = (name: string, value: string | undefined) =>
 
 const writeConfig = (dir: string, kernelPath: string) =>
   Effect.promise(() => writeFile(path.join(dir, "ranex.json"), JSON.stringify({ kernel: { path: kernelPath } })))
+
+// Trusted-layer kernel.path injection: RANEX_CONFIG_CONTENT is read at
+// config-load time (unlike the RANEX_CONFIG flag, an import-time snapshot)
+// and merged as user-initiated, so it survives the project-config sanitize
+// pass (R1). Project-level ranex.json no longer carries kernel.path.
+const setTrustedKernelConfig = (kernelPath: string) =>
+  setEnv("RANEX_CONFIG_CONTENT", JSON.stringify({ kernel: { path: kernelPath } }))
 
 const fileExists = (file: string) => Effect.promise(() => Bun.file(file).exists())
 
@@ -200,8 +209,8 @@ async function writeSignedVerdict(input: {
   await writeFile(path.join(dir, `${fileSubject.slice("sha256:".length)}.json`), input.tamper?.(envelope) ?? envelope)
 }
 
-async function writeKeyring(kernelDir: string, signer?: ReturnType<typeof generateSigner>) {
-  const publicKey = signer?.public ?? "ed25519:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+async function writeKeyring(kernelDir: string, signer?: ReturnType<typeof generateSigner>, publicKeyOverride?: string) {
+  const publicKey = publicKeyOverride ?? signer?.public ?? "ed25519:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
   await writeFile(
     path.join(kernelDir, "governance/producers.yaml"),
     [
@@ -218,6 +227,36 @@ async function writeKeyring(kernelDir: string, signer?: ReturnType<typeof genera
 const clearVerdicts = (kernelDir: string) =>
   Effect.promise(() => rm(path.join(kernelDir, "governance/verdicts"), { recursive: true, force: true }))
 
+// Scans Linux /proc for processes whose cmdline carries `token` (the unique
+// sleep durations the liveness tests plant inside the kernel's process group).
+// Returns [] where /proc does not exist (non-Linux dev hosts; CI is Linux).
+function scanProc(token: string): string[] {
+  try {
+    return readdirSync("/proc").filter((pid) => /^\d+$/.test(pid)).filter((pid) => {
+      try {
+        return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(token)
+      } catch {
+        return false
+      }
+    })
+  } catch {
+    return []
+  }
+}
+
+// The token must disappear within the window: group SIGTERM removes plain
+// descendants immediately, and the 3 s SIGKILL escalation removes TERM-immune
+// ones — a survivor that never dies means the group kill (or its escalation)
+// never fired.
+async function waitForGroupDeath(token: string, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (scanProc(token).length === 0) return true
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+  return scanProc(token).length === 0
+}
+
 // --- G-1 happy paths -------------------------------------------------------
 
 it.instance(
@@ -225,8 +264,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const kernelDir = yield* kernelRepo
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, kernelDir)
+      yield* setTrustedKernelConfig(kernelDir)
       yield* setEnv("RANEX_KERNEL", undefined)
 
       const run = yield* initRun()
@@ -259,9 +297,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const kernelDir = yield* kernelRepo
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, kernelDir)
-      yield* setEnv("RANEX_KERNEL", undefined)
+      yield* setEnv("RANEX_KERNEL", kernelDir)
 
       const run = yield* initRun()
       const { ctx } = makeCtx()
@@ -283,9 +319,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const kernelDir = yield* kernelRepo
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, kernelDir)
-      yield* setEnv("RANEX_KERNEL", undefined)
+      yield* setEnv("RANEX_KERNEL", kernelDir)
       yield* setEnv("FIXTURE_KERNEL_MODE", "command-digest-mismatch")
 
       const run = yield* initRun()
@@ -329,9 +363,124 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const kernelDir = yield* kernelRepo
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, kernelDir)
+      // Trusted config layer (RANEX_CONFIG_CONTENT) vs env: config wins.
+      yield* setTrustedKernelConfig(kernelDir)
       yield* setEnv("RANEX_KERNEL", "/nonexistent-kernel-path")
+
+      const run = yield* initRun()
+      const { ctx } = makeCtx()
+      const result = yield* run.execute(
+        { claim: "fixture-tests-executed", producer: "fixture-producer", command: ["true"] },
+        ctx,
+      )
+      expect(result.metadata.recorded).toBe(true)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "records evidence ignoring project-level kernel.path (kernel is stripped from untrusted config)",
+  () =>
+    Effect.gen(function* () {
+      const kernelDir = yield* kernelRepo
+      const instance = yield* TestInstance
+      // Direct proof of the strip through the sanitize path itself (R1):
+      // `kernel` is permission-adjacent, so it joins provider credentials and
+      // experimental.policies on the stripped list, without touching
+      // unrelated keys.
+      const sanitized = Config.sanitizeProjectConfig({ model: "anthropic/claude", kernel: { path: "/project/kernel" } })
+      expect(sanitized.info.kernel).toBeUndefined()
+      expect(sanitized.info.model).toBe("anthropic/claude")
+      expect(sanitized.stripped).toEqual(["kernel"])
+
+      // End to end: a project-level ranex.json naming its own kernel is
+      // ignored, and discovery still resolves via the trusted env layer.
+      yield* writeConfig(instance.directory, "/nonexistent-project-kernel")
+      yield* setEnv("RANEX_KERNEL", kernelDir)
+
+      const run = yield* initRun()
+      const { ctx } = makeCtx()
+      const result = yield* run.execute(
+        { claim: "fixture-tests-executed", producer: "fixture-producer", command: ["true"] },
+        ctx,
+      )
+      expect(result.metadata.recorded).toBe(true)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "records evidence anchored on the kernel's last summary line, not poisoned early matches",
+  () =>
+    Effect.gen(function* () {
+      const kernelDir = yield* kernelRepo
+      yield* setEnv("RANEX_KERNEL", kernelDir)
+
+      const run = yield* initRun()
+      const { ctx } = makeCtx()
+      // The measured command emits kernel-shaped poison lines BEFORE the
+      // kernel prints its real summary after the command exits; anchoring on
+      // the FIRST match would record the poison fields.
+      const fake = "sha256:" + "a".repeat(64)
+      const result = yield* run.execute(
+        {
+          claim: "fixture-tests-executed",
+          producer: "fixture-producer",
+          command: [
+            "sh",
+            "-c",
+            `echo 'RECORDED  claim=poison  producer=poison  exit=99'; echo '          subject=${fake}'`,
+          ],
+        },
+        ctx,
+      )
+
+      const expectedSubject = yield* Effect.promise(() => deriveSubjectDigest(kernelDir))
+      expect(result.metadata.recorded).toBe(true)
+      expect(result.metadata.subjectDigest).toBe(expectedSubject)
+      expect(result.metadata.subjectDigest).not.toBe(fake)
+      expect(result.output).toContain("exit: 0")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "records evidence from output that floods past the capture cap",
+  () =>
+    Effect.gen(function* () {
+      const kernelDir = yield* kernelRepo
+      yield* setEnv("RANEX_KERNEL", kernelDir)
+
+      const run = yield* initRun()
+      const { ctx } = makeCtx()
+      // 60 KiB of measured-command output overruns the 50 KiB capture cap.
+      // The retained window is the TAIL — shell.ts's discipline — so the
+      // kernel's RECORDED summary (printed after the flood) still parses and
+      // the result is marked truncated, never unbounded memory.
+      const result = yield* run.execute(
+        { claim: "fixture-tests-executed", producer: "fixture-producer", command: ["sh", "-c", "yes xxxx | head -c 61440"] },
+        ctx,
+      )
+
+      const expectedSubject = yield* Effect.promise(() => deriveSubjectDigest(kernelDir))
+      expect(result.metadata.recorded).toBe(true)
+      expect(result.metadata.subjectDigest).toBe(expectedSubject)
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.output).toContain("earliest output was dropped")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "records evidence via RANEX_KERNEL when trusted config kernel.path is blank",
+  () =>
+    Effect.gen(function* () {
+      const kernelDir = yield* kernelRepo
+      // A blank (empty or whitespace) kernel.path counts as unset instead of
+      // blocking, so an operator can blank the trusted config and let the
+      // env var take over. Only empty config AND empty env refuses (SP-1).
+      yield* setTrustedKernelConfig("   ")
+      yield* setEnv("RANEX_KERNEL", kernelDir)
 
       const run = yield* initRun()
       const { ctx } = makeCtx()
@@ -349,8 +498,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const kernelDir = yield* kernelRepo
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, kernelDir)
+      yield* setTrustedKernelConfig(kernelDir)
       yield* setEnv("RANEX_KERNEL", undefined)
       // Signed over the fixture repo's actually-derived subject digest, via
       // the same tool-side derivation the reader uses — so the valid-read
@@ -370,6 +518,13 @@ it.instance(
       expect(result.output).toContain("verdict: \"PASS\"")
       expect(result.output).toContain("gate_id: \"landing\"")
       expect(result.output).toContain("not that it is current")
+      // R3: the freshness-unproven header surfaces the verdict's gate context
+      // up front so "signature verified" cannot be mistaken for "this gate's
+      // verdict" — with the limit stated in plain words.
+      expect(result.output).toContain("gate: landing")
+      expect(result.output).toContain(`catalog: sha256:${"b".repeat(64)}`)
+      expect(result.output).toContain("approver: owner")
+      expect(result.output).toContain("this session has NOT confirmed")
     }),
   { git: true },
 )
@@ -402,8 +557,7 @@ it.instance(
   "refuses relative kernel.path",
   () =>
     Effect.gen(function* () {
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, "some/relative/kernel")
+      yield* setTrustedKernelConfig("some/relative/kernel")
       yield* setEnv("RANEX_KERNEL", undefined)
 
       const run = yield* initRun()
@@ -420,8 +574,7 @@ it.instance(
   "refuses nonexistent kernel.path",
   () =>
     Effect.gen(function* () {
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, path.join(os.tmpdir(), "ranex-kernel-does-not-exist"))
+      yield* setEnv("RANEX_KERNEL", path.join(os.tmpdir(), "ranex-kernel-does-not-exist"))
 
       const run = yield* initRun()
       const { ctx } = makeCtx()
@@ -444,8 +597,7 @@ it.instance(
       yield* Effect.promise(() =>
         cp(source, kernelDir, { recursive: true }).then(() => rm(source, { recursive: true, force: true })),
       )
-      yield* writeConfig(instance.directory, kernelDir)
-      yield* setEnv("RANEX_KERNEL", undefined)
+      yield* setEnv("RANEX_KERNEL", kernelDir)
 
       const run = yield* initRun()
       const { ctx } = makeCtx()
@@ -464,9 +616,8 @@ it.instance(
   "refuses kernel.path inside the harness repo",
   () =>
     Effect.gen(function* () {
-      const instance = yield* TestInstance
       // The committed fixture itself lives inside the harness repo.
-      yield* writeConfig(instance.directory, FIXTURE)
+      yield* setTrustedKernelConfig(FIXTURE)
 
       const run = yield* initRun()
       const { ctx } = makeCtx()
@@ -484,8 +635,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const kernelDir = yield* kernelRepo
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, kernelDir)
+      yield* setEnv("RANEX_KERNEL", kernelDir)
 
       const run = yield* initRun()
       const { ctx } = makeCtx()
@@ -505,8 +655,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const kernelDir = yield* kernelRepo
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, kernelDir)
+      yield* setEnv("RANEX_KERNEL", kernelDir)
       const run = yield* initRun()
       const { ctx } = makeCtx()
 
@@ -538,8 +687,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const kernelDir = yield* kernelRepo
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, kernelDir)
+      yield* setEnv("RANEX_KERNEL", kernelDir)
       const signer = generateSigner()
       const subject = yield* Effect.promise(() => deriveSubjectDigest(kernelDir))
       // Correctly signed, but about a different subject; filed under the
@@ -564,8 +712,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const kernelDir = yield* kernelRepo
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, kernelDir)
+      yield* setEnv("RANEX_KERNEL", kernelDir)
       // No verdict file exists at all.
 
       const verdict = yield* initVerdict()
@@ -586,8 +733,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const kernelDir = yield* kernelRepo
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, kernelDir)
+      yield* setEnv("RANEX_KERNEL", kernelDir)
       const signer = generateSigner()
       const subject = yield* Effect.promise(() => deriveSubjectDigest(kernelDir))
       yield* Effect.promise(() => writeKeyring(kernelDir, signer))
@@ -628,8 +774,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const kernelDir = yield* kernelRepo
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, kernelDir)
+      yield* setEnv("RANEX_KERNEL", kernelDir)
       const signer = generateSigner()
       const subject = yield* Effect.promise(() => deriveSubjectDigest(kernelDir))
       yield* Effect.promise(() => writeKeyring(kernelDir, signer))
@@ -691,8 +836,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const kernelDir = yield* kernelRepo
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, kernelDir)
+      yield* setEnv("RANEX_KERNEL", kernelDir)
       const signer = generateSigner()
       const subject = yield* Effect.promise(() => deriveSubjectDigest(kernelDir))
       yield* Effect.promise(() =>
@@ -715,8 +859,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const kernelDir = yield* kernelRepo
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, kernelDir)
+      yield* setEnv("RANEX_KERNEL", kernelDir)
       const signer = generateSigner()
       const subject = yield* Effect.promise(() => deriveSubjectDigest(kernelDir))
       yield* Effect.promise(() =>
@@ -740,8 +883,7 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const kernelDir = yield* kernelRepo
-      const instance = yield* TestInstance
-      yield* writeConfig(instance.directory, kernelDir)
+      yield* setEnv("RANEX_KERNEL", kernelDir)
       const signer = generateSigner()
       const subject = yield* Effect.promise(() => deriveSubjectDigest(kernelDir))
       yield* Effect.promise(() =>
@@ -759,6 +901,135 @@ it.instance(
       expect(result.metadata.state).toBe("unclassified")
       expect(result.output).toContain("kernel verdict: unclassified — BLOCKED")
       expect(result.output).not.toContain("verdict: \"PASS\"")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "refuses to hang: typed KERNEL_TIMEOUT with the kernel process group killed",
+  () =>
+    Effect.gen(function* () {
+      const kernelDir = yield* kernelRepo
+      yield* setEnv("RANEX_KERNEL", kernelDir)
+      yield* setEnv("RANEX_KERNEL_TIMEOUT_MS", "400")
+
+      const run = yield* initRun()
+      const { ctx } = makeCtx()
+      // The measured command leaves a descendant (backgrounded sleep, unique
+      // duration doubles as the /proc scan token) that only a GROUP kill
+      // reaches — a direct-child kill would orphan it.
+      const message = yield* failure(
+        run.execute(
+          { claim: "fixture-tests-executed", producer: "fixture-producer", command: ["sh", "-c", "sleep 811.5 & wait"] },
+          ctx,
+        ),
+      )
+      expect(message).toContain("KERNEL_TIMEOUT")
+      expect(message).toContain("RANEX_KERNEL_TIMEOUT_MS")
+      expect(yield* Effect.promise(() => waitForGroupDeath("811.5", 2000))).toBe(true)
+
+      // A TERM-immune group member survives the group SIGTERM; only the 3 s
+      // SIGKILL escalation removes it, and the refusal still never hangs.
+      const stubborn = yield* failure(
+        run.execute(
+          {
+            claim: "fixture-tests-executed",
+            producer: "fixture-producer",
+            command: ["sh", "-c", "trap '' TERM; while :; do sleep 811.6; done"],
+          },
+          ctx,
+        ),
+      )
+      expect(stubborn).toContain("KERNEL_TIMEOUT")
+      expect(yield* Effect.promise(() => waitForGroupDeath("811.6", 8000))).toBe(true)
+
+      // A descendant holding the output pipe after the kernel itself exited:
+      // settlement must not wait for the pipe (the drain grace releases it) —
+      // the run stays a recorded success, marked truncated, never a hang.
+      const held = yield* run.execute(
+        { claim: "fixture-tests-executed", producer: "fixture-producer", command: ["sh", "-c", "sleep 8 & exec true"] },
+        ctx,
+      )
+      expect(held.metadata.recorded).toBe(true)
+      expect(held.metadata.truncated).toBe(true)
+      expect(held.output).toContain("truncated")
+    }),
+  { git: true },
+  // Two drain-grace windows plus the SIGKILL-escalation poll legitimately
+  // exceed the 5 s default.
+  30000,
+)
+
+it.instance(
+  "refuses with missing-key when the keyring's key string is malformed",
+  () =>
+    Effect.gen(function* () {
+      const kernelDir = yield* kernelRepo
+      yield* setEnv("RANEX_KERNEL", kernelDir)
+      const signer = generateSigner()
+      const subject = yield* Effect.promise(() => deriveSubjectDigest(kernelDir))
+      // The verdict itself is validly signed, but the committed keyring
+      // publishes a garbage key string for the right signer id: the key is
+      // unavailable (missing-key), not a signature attack (bad-signature).
+      yield* Effect.promise(() =>
+        writeKeyring(kernelDir, signer, "not-an-ed25519-key").then(() => writeSignedVerdict({ kernelDir, signer, subject })),
+      )
+
+      const verdict = yield* initVerdict()
+      const { ctx } = makeCtx()
+      const result = yield* verdict.execute({}, ctx)
+
+      expect(result.metadata.state).toBe("unverified")
+      expect(result.output).toContain("kernel verdict: unverified (missing-key)")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "refuses with a typed SUBJECT_DERIVE_FAILED when the digest cannot be derived",
+  () =>
+    Effect.gen(function* () {
+      // A directory that passes discovery (absolute, exists, outside the
+      // worktree and harness) but is not a git repo: HEAD^{tree} cannot
+      // resolve, and the refusal carries a stable code, not a bare error.
+      const dir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "ranex-kernel-nogit-")))
+      yield* Effect.addFinalizer(() => Effect.promise(() => rm(dir, { recursive: true, force: true })))
+      yield* setEnv("RANEX_KERNEL", dir)
+
+      const verdict = yield* initVerdict()
+      const { ctx } = makeCtx()
+      const message = yield* failure(verdict.execute({}, ctx))
+      expect(message).toContain("SUBJECT_DERIVE_FAILED")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "labels aborted kernel runs instead of presenting them as clean evidence",
+  () =>
+    Effect.gen(function* () {
+      const kernelDir = yield* kernelRepo
+      yield* setEnv("RANEX_KERNEL", kernelDir)
+
+      const run = yield* initRun()
+      const controller = new AbortController()
+      const { ctx } = makeCtx(controller.signal)
+      // Abort mid-run: the group kill takes the same path as the timeout and
+      // the result is marked aborted — never presented as a clean record.
+      const fiber = yield* run
+        .execute(
+          { claim: "fixture-tests-executed", producer: "fixture-producer", command: ["sh", "-c", "sleep 811.4 & wait"] },
+          ctx,
+        )
+        .pipe(Effect.forkScoped)
+      yield* Effect.sleep("300 millis")
+      yield* Effect.sync(() => controller.abort())
+      const result = yield* Fiber.join(fiber)
+
+      expect(result.metadata.aborted).toBe(true)
+      expect(result.metadata.recorded).toBe(false)
+      expect(result.output).toContain("session aborted")
+      expect(yield* Effect.promise(() => waitForGroupDeath("811.4", 2000))).toBe(true)
     }),
   { git: true },
 )
