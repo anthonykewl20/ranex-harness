@@ -31,6 +31,7 @@ import { WebSearchTool } from "./websearch"
 import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
+import { KernelRunTool, KernelVerdictTool } from "./kernel"
 import { Glob } from "@ranex/core/util/glob"
 import path from "path"
 import { pathToFileURL } from "url"
@@ -104,6 +105,12 @@ const layer = Layer.effect(
     const githubIssue = yield* GitHubIssueTool
     const githubMilestone = yield* GitHubMilestoneTool
     const githubProject = yield* GitHubProjectTool
+    // Kernel bridge tools (issue #91): ids "kernel_run" and "kernel_verdict",
+    // permission actions of the same names, default effect ask for any session
+    // without a matching permission row (prototype's allow rows are owned by
+    // issue #88). Registered unconditionally; safety is the ask default.
+    const kernelRun = yield* KernelRunTool
+    const kernelVerdict = yield* KernelVerdictTool
     const lsptool = yield* LspTool
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
@@ -221,6 +228,8 @@ const layer = Layer.effect(
           githubIssue: Tool.init(githubIssue),
           githubMilestone: Tool.init(githubMilestone),
           githubProject: Tool.init(githubProject),
+          kernelRun: Tool.init(kernelRun),
+          kernelVerdict: Tool.init(kernelVerdict),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
         })
@@ -245,6 +254,8 @@ const layer = Layer.effect(
             tool.githubIssue,
             tool.githubMilestone,
             tool.githubProject,
+            tool.kernelRun,
+            tool.kernelVerdict,
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
           ],
           task: tool.task,

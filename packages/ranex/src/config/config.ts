@@ -27,6 +27,7 @@ import { ConfigPermissionV1 } from "@ranex/core/v1/config/permission"
 import { ConfigPluginV1 } from "@ranex/core/v1/config/plugin"
 import { ConfigAgent } from "./agent"
 import { ConfigCommand } from "./command"
+import { ConfigKernel } from "./kernel"
 import { ConfigManaged } from "./managed"
 import { ConfigParse } from "./parse"
 import { ConfigPaths } from "./paths"
@@ -98,6 +99,17 @@ export function sanitizeProjectConfig(info: Info): { info: Info; stripped: strin
   if (info.mcp !== undefined) next = { ...next, mcp: sanitizeProjectMcp(info.mcp, stripped) }
   if (info.experimental !== undefined)
     next = { ...next, experimental: sanitizeProjectExperimental(info.experimental, stripped) }
+  // `kernel.path` selects which repository judges the session's evidence —
+  // permission-adjacent, like experimental.policies. A project source must
+  // not choose its own judge: kernel discovery stays honored only from
+  // trusted layers (global config, RANEX_CONFIG/RANEX_CONFIG_CONTENT, and
+  // the RANEX_KERNEL env var).
+  if (info.kernel !== undefined) {
+    const copy = { ...next }
+    stripped.push("kernel")
+    delete copy.kernel
+    next = copy
+  }
   return { info: next, stripped }
 }
 
@@ -278,7 +290,7 @@ async function substituteWellKnownRemoteConfig(input: {
   return { url, headers }
 }
 
-type Info = ConfigV1.Info
+type Info = ConfigV1.Info & { kernel?: ConfigKernel.Info }
 
 type ProviderInfo = NonNullable<Info["provider"]>[string]
 
@@ -314,6 +326,16 @@ function globalConfigFile() {
     if (existsSync(file)) return file
   }
   return candidates[0]
+}
+
+// Ranex-local config extension: the `kernel` section (kernel bridge tools,
+// issue #91) is parsed with its own schema and reattached, because the core
+// ConfigV1.Info parse rejects unknown top-level keys by design. Keeping the
+// extension in one helper means every load and round-trip site agrees.
+function parseConfig(parsed: unknown, source: string): Info {
+  const kernel = ConfigKernel.parse(parsed, source)
+  const data = ConfigParse.schema(ConfigV1.Info, ConfigKernel.strip(parsed), source)
+  return kernel === undefined ? data : { ...data, kernel }
 }
 
 function patchJsonc(input: string, patch: unknown, path: string[] = []): string {
@@ -394,7 +416,7 @@ const layer = Layer.effect(
         ),
       )
       const parsed = ConfigParse.jsonc(expanded, source)
-      const data = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(parsed), source)
+      const data = parseConfig(normalizeLoadedConfig(parsed), source)
       ConfigPluginV1.assertDisabled(data.plugin, source, "plugin")
       if (!("path" in options)) return data
 
@@ -509,7 +531,7 @@ const layer = Layer.effect(
           }
           const sanitized = sanitizeProjectConfig(next)
           if (sanitized.stripped.length) {
-            yield* Effect.logWarning("stripped credential-bearing provider options from untrusted project config", {
+            yield* Effect.logWarning("stripped untrusted fields from project config", {
               source,
               stripped: sanitized.stripped,
             })
@@ -826,7 +848,7 @@ const layer = Layer.effect(
       let next: Info
       let changed: boolean
       if (!file.endsWith(".jsonc")) {
-        const existing = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(before, file), file)
+        const existing = parseConfig(ConfigParse.jsonc(before, file), file)
         const merged = mergeDeep(writable(existing), patch)
         const serialized = JSON.stringify(merged, null, 2)
         changed = serialized !== before
@@ -834,7 +856,7 @@ const layer = Layer.effect(
         next = merged
       } else {
         const updated = patchJsonc(before, patch)
-        next = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(updated, file), file)
+        next = parseConfig(ConfigParse.jsonc(updated, file), file)
         changed = updated !== before
         if (changed) yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
       }

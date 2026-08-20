@@ -1,0 +1,88 @@
+#!/bin/sh
+# Fake kernel CLI for the kernel bridge tools (PM-5, issue #91 fixture).
+#
+# Stands in for `PYTHONPATH=src uv run --frozen python -m ranex.cli.main`:
+# POSIX shell only — this fixture never invokes Python or uv, needs no
+# network, and is the only kernel stand-in used by CI. It mirrors the real
+# kernel `run` subcommand's observable contract (src/ranex/cli/main.py
+# cmd_run): it executes the measured command, records canned evidence in
+# governance/evidence.json, prints
+#
+#   RECORDED  claim=<claim>  producer=<producer>  exit=<exit>
+#             subject=sha256:<hex>
+#
+# and exits with the measured command's exit code. Refusal modes are driven
+# by FIXTURE_KERNEL_MODE for sad-path coverage:
+#   command-digest-mismatch  kernel-side digest refusal (C-2 passthrough)
+#   fail                     generic kernel refusal
+#   malformed                unusable evidence output (SP-7)
+set -u
+
+claim=
+producer=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --claim)
+      claim="$2"
+      shift 2
+      ;;
+    --producer)
+      producer="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+# "$@" is now exactly the measured command argv, as the kernel receives it.
+if [ $# -eq 0 ]; then
+  echo "ERROR  a command is required after --" >&2
+  exit 2
+fi
+
+# Marker proving a subprocess actually spawned (SP-3 asserts its absence).
+: > .fixture-kernel-invoked
+
+case "${FIXTURE_KERNEL_MODE:-}" in
+  command-digest-mismatch)
+    echo "ERROR  command digest does not match the claim's catalog binding (SLICE-003)" >&2
+    exit 2
+    ;;
+  fail)
+    echo "ERROR  fixture kernel refusal" >&2
+    exit 2
+    ;;
+  malformed)
+    printf 'not-json{{{'
+    exit 1
+    ;;
+esac
+
+"$@"
+status=$?
+
+# Subject digest exactly as the bridge derives it: the HEAD tree hash hashed
+# over the canonical JSON of {"tree": "<hex>"}. printf emits those canonical
+# bytes directly; sha256sum prints the lowercase hex digest.
+tree=$(git rev-parse 'HEAD^{tree}') || exit 2
+digest=$(printf '{"tree":"%s"}' "$tree" | sha256sum | cut -d' ' -f1)
+
+# Canned evidence record, mirroring the kernel's evidence.json append shape.
+mkdir -p governance
+if [ -f governance/evidence.json ]; then
+  printf ',' >> governance/evidence.json
+else
+  printf '[' > governance/evidence.json
+fi
+printf '\n  {"claim_id": "%s", "subject_digest": "sha256:%s", "producer_id": "%s", "exit_code": %d}' \
+  "$claim" "$digest" "$producer" "$status" >> governance/evidence.json
+
+printf 'RECORDED  claim=%s  producer=%s  exit=%d\n' "$claim" "$producer" "$status"
+printf '          subject=sha256:%s\n' "$digest"
+exit "$status"
