@@ -2,7 +2,7 @@ import { $ } from "bun"
 import { describe, expect } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
-import { ConfigProvider, Deferred, Duration, Effect, Fiber, Layer, Option, Stream } from "effect"
+import { ConfigProvider, Deferred, Duration, Effect, Fiber, Layer, Logger, Option, Stream } from "effect"
 import { Config } from "@ranex/core/config"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
 import { LayerNode } from "@ranex/core/effect/layer-node"
@@ -15,6 +15,8 @@ import { Location } from "@ranex/core/location"
 import { Project } from "@ranex/core/project"
 import { ProjectResolution } from "@ranex/core/project-resolution"
 import { AbsolutePath } from "@ranex/core/schema"
+import { SkillV2 } from "@ranex/core/skill"
+import { SkillWatch } from "@ranex/core/skill/watch"
 import { Snapshot } from "@ranex/core/snapshot"
 import { location, projectResolutionLayer } from "../fixture/location"
 import { tmpdir } from "../fixture/tmpdir"
@@ -157,6 +159,26 @@ function ready(directory: string) {
     ).pipe(Effect.ensuring(fs.remove(file, { force: true }).pipe(Effect.ignore)), Effect.asVoid)
   })
 }
+
+function withScratch<A, E, R>(f: (root: string) => Effect.Effect<A, E, R>) {
+  return Effect.acquireRelease(
+    Effect.promise(() => tmpdir()),
+    (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+  ).pipe(Effect.flatMap((tmp) => f(tmp.path)))
+}
+
+type RecordedLog = { level: string; message: unknown }
+
+function recordingLogger(entries: RecordedLog[]) {
+  return Logger.make((options) => {
+    entries.push({ level: options.logLevel, message: options.message })
+  })
+}
+
+const errorAndWarnEntries = (entries: RecordedLog[]) =>
+  entries.filter((entry) => entry.level === "Error" || entry.level === "Warn")
+
+const logText = (entries: RecordedLog[]) => JSON.stringify(entries.map((entry) => entry.message))
 
 describeWatcher("Watcher", () => {
   it.live("starts the root subscription while project resolution is loading", () =>
@@ -347,6 +369,114 @@ describeWatcher("Watcher", () => {
       ),
     ),
   )
+
+  describe("subscribe failure classification", () => {
+    it.live("missing directory subscribe failure emits no ERROR or WARN and is returned as failed", () =>
+      withScratch((root) => {
+        const entries: RecordedLog[] = []
+        const directory = path.join(root, "skill-does-not-exist")
+        return Effect.gen(function* () {
+          const watchSet = yield* Watcher.makeWatchSet(() => {})
+          const result = yield* watchSet.reconcile([directory]).pipe(
+            Effect.provide(Logger.layer([recordingLogger(entries)])),
+          )
+          expect(result.failed).toEqual([directory])
+          expect(result.subscribed).toEqual([])
+          expect(result.removed).toEqual([])
+          expect(errorAndWarnEntries(entries)).toEqual([])
+          yield* watchSet.release
+        })
+      }),
+    )
+
+    it.live("existing non-directory target still logs ERROR through the real subscribe path", () =>
+      withScratch((root) => {
+        const entries: RecordedLog[] = []
+        const target = path.join(root, "not-a-directory")
+        return Effect.gen(function* () {
+          yield* Effect.promise(() => fs.writeFile(target, "regular file"))
+          const watchSet = yield* Watcher.makeWatchSet(() => {})
+          const result = yield* watchSet.reconcile([target]).pipe(
+            Effect.provide(Logger.layer([recordingLogger(entries)])),
+          )
+          expect(result.failed).toEqual([target])
+          const errors = entries.filter((entry) => entry.level === "Error")
+          expect(errors).not.toHaveLength(0)
+          expect(logText(errors)).toContain("failed to subscribe")
+          expect(logText(errors)).toMatch(/ENOTDIR|Not a directory/i)
+          yield* watchSet.release
+        })
+      }),
+    )
+
+    it.live("watcher disabled warn-once degradation is unchanged", () =>
+      withScratch((root) => {
+        const entries: RecordedLog[] = []
+        const directory = path.join(root, "skills")
+        let refreshes = 0
+        const skillLayer = Layer.succeed(
+          SkillV2.Service,
+          SkillV2.Service.of({
+            transform: () => Effect.succeed({ dispose: Effect.void }),
+            reload: () => Effect.void,
+            sources: () => Effect.succeed([{ type: "directory" as const, path: AbsolutePath.make(directory) }]),
+            list: () => Effect.succeed([]),
+            refresh: () =>
+              Effect.sync(() => {
+                refreshes++
+              }),
+          }),
+        )
+        return Effect.gen(function* () {
+          const logs = Logger.layer([recordingLogger(entries)])
+          const previous = process.env.RANEX_EXPERIMENTAL_DISABLE_FILEWATCHER
+          process.env.RANEX_EXPERIMENTAL_DISABLE_FILEWATCHER = "1"
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              if (previous === undefined) delete process.env.RANEX_EXPERIMENTAL_DISABLE_FILEWATCHER
+              else process.env.RANEX_EXPERIMENTAL_DISABLE_FILEWATCHER = previous
+            }),
+          )
+          const skills = yield* SkillWatch.Service.pipe(
+            Effect.provide(AppNodeBuilder.build(SkillWatch.node, [[SkillV2.node, skillLayer]])),
+            Effect.provide(logs),
+            Effect.scoped,
+          )
+          // sync() re-runs in the caller's context, so the recorder must be
+          // provided here as well — not only around the layer build.
+          yield* skills.sync().pipe(Effect.provide(logs))
+          yield* skills.sync().pipe(Effect.provide(logs))
+          const warnings = entries.filter((entry) => entry.level === "Warn")
+          expect(warnings.filter((entry) => logText([entry]).includes("cannot watch skill directory"))).toHaveLength(1)
+          expect(refreshes).toBeGreaterThanOrEqual(2)
+          expect(errorAndWarnEntries(entries).filter((entry) => logText([entry]).includes("failed to subscribe"))).toEqual([])
+        })
+      }),
+    )
+
+    it.live("directory created after failed attempts subscribes on the next reconcile", () =>
+      withScratch((root) => {
+        const directory = path.join(root, "later-skills")
+        const events: string[] = []
+        return Effect.gen(function* () {
+          const watchSet = yield* Watcher.makeWatchSet((file) => events.push(file))
+          const first = yield* watchSet.reconcile([directory])
+          expect(first.failed).toEqual([directory])
+          yield* Effect.promise(() => fs.mkdir(directory))
+          const second = yield* watchSet.reconcile([directory])
+          expect(second.subscribed).toEqual([directory])
+          expect(second.failed).toEqual([])
+          const file = path.join(directory, "SKILL.md")
+          yield* Effect.promise(() => fs.writeFile(file, "---\n"))
+          for (let attempt = 0; !events.includes(file) && attempt < 100; attempt++) {
+            yield* Effect.sleep("50 millis")
+          }
+          expect(events).toContain(file)
+          yield* watchSet.release
+        })
+      }),
+    )
+  })
 
   const describeSymlink = process.platform !== "win32" ? describe : describe.skip
   describeSymlink("symlinked .git", () => {

@@ -6,6 +6,7 @@ import type ParcelWatcher from "@parcel/watcher"
 import { makeLocationNode } from "../effect/app-node"
 import { Cause, Context, Effect, Exit, Fiber, Layer, Scope } from "effect"
 import { FileSystemWatcher } from "@ranex/schema/filesystem-watcher"
+import { statSync } from "node:fs"
 import path from "path"
 import { Config } from "../config"
 import { EventV2 } from "../event"
@@ -56,12 +57,38 @@ interface TrackedSubscription {
   readonly deactivate: () => void
 }
 
+// Wanted-but-missing directories are an expected state, not a failure: every
+// config directory entry registers both `skill` and `skills` subdirectories
+// as wanted sources, so fresh machines routinely want paths that do not exist
+// yet, and @parcel/watcher rejects subscribing to a nonexistent path with
+// EBADF. Only a path that cannot exist as a directory (ENOENT, or ENOTDIR
+// from a non-directory parent component) counts as missing; an existing
+// non-directory target or any other stat failure (EACCES-class) falls
+// through to the real subscribe and keeps its ERROR logging.
+function missingDirectory(directory: string) {
+  try {
+    statSync(directory)
+    return false
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return code === "ENOENT" || code === "ENOTDIR"
+  }
+}
+
 // Failures resolve to undefined after logging so callers keep working without
 // the subscription; retries happen naturally next time it is requested.
 const subscribeParcel = (directory: string, ignore: string[], callback: ParcelWatcher.SubscribeCallback) => {
   const w = watcher()
   const backend = getBackend()
   if (!w || !backend || truthy("RANEX_EXPERIMENTAL_DISABLE_FILEWATCHER")) return Effect.succeed(undefined)
+  // Resolve like the unavailable case above so callers keep the directory in
+  // their retry set — the skill watch re-attempts every resync interval. A
+  // directory created after this check is subscribed by the next reconcile;
+  // one that disappears between the check and the subscribe loses the race
+  // once (a single ERROR) before the retry goes quiet again.
+  if (missingDirectory(directory)) {
+    return Effect.logDebug("skipping subscribe for missing directory", { directory }).pipe(Effect.as(undefined))
+  }
   let active = true
   const pending = w.subscribe(
     directory,
