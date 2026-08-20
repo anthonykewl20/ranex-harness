@@ -17,8 +17,22 @@ export function fromSchema(schema: Schema.Top): JSONSchema7 {
   })
   const inlined = dropDefinitionsIfResolved(inlineLocalReferences(result))
   if (!isJsonSchema(inlined)) throw new Error("tool JSON Schema helper produced a non-schema value")
-  cache.set(schema, inlined)
-  return inlined
+  const rooted = withObjectTypeRoot(inlined)
+  cache.set(schema, rooted)
+  return rooted
+}
+
+// OpenAI-compatible function calling rejects parameter schemas whose root has
+// no `type`, and a root union of structs serializes as a bare `anyOf`. When
+// every member is provably an object schema, typing the root `object` (a
+// value must be an object AND match one member) keeps the union and every
+// other key intact. Applied to the final root only — never inside `normalize`,
+// which recurses into property-level unions that must stay untouched.
+function withObjectTypeRoot(schema: JSONSchema7): JSONSchema7 {
+  if (!isRecord(schema) || schema.type !== undefined) return schema
+  if (!Array.isArray(schema.anyOf) || schema.anyOf.length === 0) return schema
+  if (!schema.anyOf.every((member) => isRecord(member) && member.type === "object")) return schema
+  return { type: "object", ...schema }
 }
 
 export function fromTool(tool: Tool.Def): JSONSchema7 {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Result, Schema } from "effect"
+import { Parameters as IssueParameters } from "../../src/tool/github/issue"
 import { Parameters as MilestoneParameters } from "../../src/tool/github/milestone"
 import { Parameters as ProjectParameters } from "../../src/tool/github/project"
 import { ToolJsonSchema } from "../../src/tool/json-schema"
@@ -92,5 +93,38 @@ describe("github_project parameters", () => {
     expect(json).toContain('"action"')
     expect(json).toContain('"type":"integer"')
     expect(json).toContain('"type":"string"')
+  })
+})
+
+describe("github tool JSON Schema roots", () => {
+  test("all three tools serialize with an object-typed root", () => {
+    for (const parameters of [IssueParameters, MilestoneParameters, ProjectParameters]) {
+      const schema = ToolJsonSchema.fromSchema(parameters)
+      expect(schema.type).toBe("object")
+      expect(Array.isArray(schema.anyOf)).toBe(true)
+    }
+  })
+
+  test("root typing keeps the union and its member constraints intact", () => {
+    expect(ToolJsonSchema.fromSchema(IssueParameters)).toMatchObject({
+      type: "object",
+      anyOf: [
+        { type: "object", properties: { action: { enum: ["list"] } } },
+        { type: "object", properties: { action: { enum: ["get"] }, number: { anyOf: [{ type: "integer" }, { type: "string" }] } } },
+        { type: "object", properties: { action: { enum: ["create"] } } },
+        { type: "object", properties: { action: { enum: ["update"] } } },
+        { type: "object", properties: { action: { enum: ["close"] } } },
+        { type: "object", properties: { action: { enum: ["comment"] } } },
+      ],
+    })
+  })
+
+  test("does not type provably non-object roots as object", () => {
+    for (const schema of [Schema.Union([Schema.String, Schema.Number]), Schema.Union([Schema.Struct({ a: Schema.String }), Schema.String])]) {
+      const union = ToolJsonSchema.fromSchema(schema)
+      expect(union.type).toBeUndefined()
+      expect(Array.isArray(union.anyOf)).toBe(true)
+    }
+    expect(ToolJsonSchema.fromSchema(Schema.String).type).toBe("string")
   })
 })
