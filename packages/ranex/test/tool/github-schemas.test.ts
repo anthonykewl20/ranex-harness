@@ -120,9 +120,11 @@ describe("github tool JSON Schema roots", () => {
   })
 
   test("does not type provably non-object roots as object", () => {
-    const union = ToolJsonSchema.fromSchema(Schema.Union([Schema.String, Schema.Number]))
-    expect(union.type).toBeUndefined()
-    expect(Array.isArray(union.anyOf)).toBe(true)
+    for (const schema of [Schema.Union([Schema.String, Schema.Number]), Schema.Union([Schema.Struct({ a: Schema.String }), Schema.String])]) {
+      const union = ToolJsonSchema.fromSchema(schema)
+      expect(union.type).toBeUndefined()
+      expect(Array.isArray(union.anyOf)).toBe(true)
+    }
     expect(ToolJsonSchema.fromSchema(Schema.String).type).toBe("string")
   })
 })
