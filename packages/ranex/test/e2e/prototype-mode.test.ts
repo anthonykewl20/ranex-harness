@@ -195,6 +195,10 @@ const kernelRepo = Effect.gen(function* () {
     await $`git init`.cwd(dir).quiet()
     await $`git config user.email test@opencode.test`.cwd(dir).quiet()
     await $`git config user.name Test`.cwd(dir).quiet()
+    // Local override so a global signed-commit configuration (which has no
+    // key here) cannot break the fixture commit — same convention as
+    // test/fixture/fixture.ts's git scaffolding.
+    await $`git config commit.gpgsign false`.cwd(dir).quiet()
     await $`git add -A`.cwd(dir).quiet()
     await $`git commit -m "fixture kernel"`.cwd(dir).quiet()
     return dir
