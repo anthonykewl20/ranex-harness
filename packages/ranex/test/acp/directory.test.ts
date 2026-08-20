@@ -75,7 +75,7 @@ const snapshot = (directory: string) => {
     providers,
     modes: [
       { id: "build", name: `build-${directory}` },
-      { id: "plan", name: `plan-${directory}`, description: "plan first" },
+      { id: "prototype", name: `prototype-${directory}`, description: "prototype first" },
     ],
     defaultModeID: "build",
     commands: [command(`init-${directory}`), command(`review-${directory}`)],
@@ -163,7 +163,7 @@ describe("ACP directory snapshot", () => {
       expect(alpha.availableCommands.map((item) => item.name)).toEqual(["init-alpha", "review-alpha"])
       expect(alpha.availableModes).toEqual([
         { id: "build", name: "build-alpha" },
-        { id: "plan", name: "plan-alpha", description: "plan first" },
+        { id: "prototype", name: "prototype-alpha", description: "prototype first" },
       ])
       expect(alpha.defaultModeID).toBe("build")
     }).pipe(Effect.provide(fakeLayer([]))),
@@ -177,7 +177,7 @@ describe("ACP directory snapshot", () => {
           providers: {},
           modes: [
             { id: "build", name: "Build" },
-            { id: "plan", name: "Plan" },
+            { id: "prototype", name: "Prototype" },
           ],
           defaultModeID: "hidden",
           commands: [],

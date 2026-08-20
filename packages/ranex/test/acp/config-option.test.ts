@@ -120,7 +120,7 @@ describe("acp config options", () => {
         currentModeId: "build",
         modes: [
           { id: "build", name: "Build", description: "Make code changes" },
-          { id: "plan", name: "Plan" },
+          { id: "prototype", name: "Prototype" },
         ],
       }),
     ).toEqual({
@@ -131,7 +131,7 @@ describe("acp config options", () => {
       currentValue: "build",
       options: [
         { value: "build", name: "Build", description: "Make code changes" },
-        { value: "plan", name: "Plan" },
+        { value: "prototype", name: "Prototype" },
       ],
     })
   })
@@ -143,9 +143,9 @@ describe("acp config options", () => {
       currentVariant: "very-high",
       modes: [
         { id: "build", name: "Build" },
-        { id: "plan", name: "Plan" },
+        { id: "prototype", name: "Prototype" },
       ],
-      currentModeId: "plan",
+      currentModeId: "prototype",
     })
 
     expect(options.map((option) => option.id)).toEqual(["model", "effort", "mode"])

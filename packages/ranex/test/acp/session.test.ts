@@ -107,13 +107,13 @@ describe("acp session state", () => {
           cwd: "/workspace",
           model: model("anthropic", "claude-sonnet"),
           variant: "low",
-          modeId: "plan",
+          modeId: "prototype",
         }),
       )
 
       yield* ACPSession.Service.use((session) => session.setVariant("ses_config", "high"))
       expect(yield* ACPSession.Service.use((session) => session.getVariant("ses_config"))).toBe("high")
-      expect(yield* ACPSession.Service.use((session) => session.getMode("ses_config"))).toBe("plan")
+      expect(yield* ACPSession.Service.use((session) => session.getMode("ses_config"))).toBe("prototype")
 
       yield* ACPSession.Service.use((session) => session.setMode("ses_config", "build"))
       expect(yield* ACPSession.Service.use((session) => session.getVariant("ses_config"))).toBe("high")

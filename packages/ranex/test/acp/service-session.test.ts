@@ -173,7 +173,7 @@ describe("ACP service sessions", () => {
           Promise.resolve({
             data: [
               { name: "build", mode: "primary", permission: [], options: {} },
-              { name: "plan", mode: "primary", description: "Plan first", permission: [], options: {} },
+              { name: "prototype", mode: "primary", description: "Prototype first", permission: [], options: {} },
               { name: "hidden", mode: "primary", hidden: true, permission: [], options: {} },
             ],
           }),
@@ -308,7 +308,7 @@ describe("ACP service sessions", () => {
           providerID: "test",
           modelID: "test-model",
           variant: "high",
-          mode: "plan",
+          mode: "prototype",
         },
         parts: [],
       },
@@ -318,7 +318,7 @@ describe("ACP service sessions", () => {
     )
 
     expect(result.configOptions?.find((option) => option.id === "effort")?.currentValue).toBe("high")
-    expect(result.configOptions?.find((option) => option.id === "mode")?.currentValue).toBe("plan")
+    expect(result.configOptions?.find((option) => option.id === "mode")?.currentValue).toBe("prototype")
   })
 
   it("replays loaded session transcript chunks", async () => {
@@ -402,7 +402,7 @@ describe("ACP service sessions", () => {
           sessionID: "ses_resume",
           role: "user",
           model: { providerID: "test", modelID: "test-model", variant: "high" },
-          agent: "plan",
+          agent: "prototype",
         },
         parts: [{ id: "part_user", sessionID: "ses_resume", messageID: "msg_user", type: "text", text: "hello" }],
       },
@@ -483,7 +483,7 @@ describe("ACP service sessions", () => {
           providerID: "test",
           modelID: "second-model",
           variant: "medium",
-          mode: "plan",
+          mode: "prototype",
         },
         parts: [],
       },
@@ -516,7 +516,7 @@ describe("ACP service sessions", () => {
         info: {
           role: "user",
           model: { providerID: "test", modelID: "test-model", variant: "high" },
-          agent: "plan",
+          agent: "prototype",
         },
         parts: [],
       },
@@ -526,7 +526,7 @@ describe("ACP service sessions", () => {
     )
 
     expect(result.configOptions?.find((option) => option.id === "effort")?.currentValue).toBe("high")
-    expect(result.configOptions?.find((option) => option.id === "mode")?.currentValue).toBe("plan")
+    expect(result.configOptions?.find((option) => option.id === "mode")?.currentValue).toBe("prototype")
   })
 
   it("maps provider auth failures to auth-required request errors", async () => {
@@ -751,11 +751,11 @@ describe("ACP service sessions", () => {
       service.setSessionConfigOption({
         sessionId: session.sessionId,
         configId: "mode",
-        value: "plan",
+        value: "prototype",
       }),
     )
 
-    expect(select(updated, "mode")?.currentValue).toBe("plan")
+    expect(select(updated, "mode")?.currentValue).toBe("prototype")
   })
 
   it("maps invalid model effort mode and config id to invalid params", async () => {
@@ -980,7 +980,7 @@ describe("ACP service sessions", () => {
       service.setSessionConfigOption({
         sessionId: session.sessionId,
         configId: "mode",
-        value: "plan",
+        value: "prototype",
       }),
     )
 
@@ -998,7 +998,7 @@ describe("ACP service sessions", () => {
         model: { providerID, modelID },
         variant: "high",
         parts: [{ type: "text", text: "hello" }],
-        agent: "plan",
+        agent: "prototype",
         directory: "/workspace",
       },
     ])

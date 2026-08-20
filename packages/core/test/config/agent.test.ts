@@ -262,7 +262,7 @@ permissions:
 Use native v2 fields.`,
             )
             await fs.writeFile(path.join(tmp.path, "agents", "disabled.md"), "---\ndisabled: true\n---\nDisabled")
-            await fs.writeFile(path.join(tmp.path, "modes", "plan.md"), "Make a plan.")
+            await fs.writeFile(path.join(tmp.path, "modes", "prototype.md"), "Make a prototype.")
           })
           const agents = yield* AgentV2.Service
           const config = Config.Service.of({
@@ -294,7 +294,7 @@ Use native v2 fields.`,
             permissions: [{ action: "edit", resource: "*", effect: "deny" }],
           })
           expect(yield* agents.get(AgentV2.ID.make("disabled"))).toBeUndefined()
-          expect(yield* agents.get(AgentV2.ID.make("plan"))).toMatchObject({ system: "Make a plan.", mode: "primary" })
+          expect(yield* agents.get(AgentV2.ID.make("prototype"))).toMatchObject({ system: "Make a prototype.", mode: "primary" })
         }),
       ),
     ),

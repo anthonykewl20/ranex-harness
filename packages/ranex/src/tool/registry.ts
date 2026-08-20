@@ -1,7 +1,6 @@
 import { LayerNode } from "@ranex/core/effect/layer-node"
 import { httpClient } from "@ranex/core/effect/app-node-platform"
 import { Ripgrep } from "@ranex/core/ripgrep"
-import { PlanExitTool } from "./plan"
 import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
 import { ShellTool } from "./shell"
@@ -106,7 +105,6 @@ const layer = Layer.effect(
     const githubMilestone = yield* GitHubMilestoneTool
     const githubProject = yield* GitHubProjectTool
     const lsptool = yield* LspTool
-    const plan = yield* PlanExitTool
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
     const shell = yield* ShellTool
@@ -225,7 +223,6 @@ const layer = Layer.effect(
           githubProject: Tool.init(githubProject),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
-          plan: Tool.init(plan),
         })
 
         return {
@@ -249,7 +246,6 @@ const layer = Layer.effect(
             tool.githubMilestone,
             tool.githubProject,
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
-            ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],
           task: tool.task,
           read: tool.read,
