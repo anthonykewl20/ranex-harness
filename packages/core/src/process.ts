@@ -26,6 +26,10 @@ export interface RunOptions {
   readonly signal?: AbortSignal
   readonly timeout?: Duration.Input
   readonly stdin?: string | Uint8Array | Stream.Stream<Uint8Array, PlatformError>
+  /** Observes raw byte chunks of the combined stdout+stderr stream as they arrive, during
+   *  execution. Requires combineOutput. Called synchronously on the stream's chunk order and
+   *  must not throw — an observer error is a defect. */
+  readonly onOutputChunk?: (chunk: Uint8Array) => void
 }
 
 export interface RunStreamOptions {
@@ -147,8 +151,11 @@ const layer = Layer.effect(
         Effect.gen(function* () {
           const handle = yield* spawner.spawn(command)
           if (options?.combineOutput) {
+            const combined = options.onOutputChunk
+              ? handle.all.pipe(Stream.tap((chunk) => Effect.sync(() => options.onOutputChunk!(chunk))))
+              : handle.all
             const [output, exitCode] = yield* Effect.all(
-              [collectStream(handle.all, options.maxOutputBytes), handle.exitCode],
+              [collectStream(combined, options.maxOutputBytes), handle.exitCode],
               { concurrency: "unbounded" },
             )
             return {

@@ -1,4 +1,5 @@
 import { describe, expect } from "bun:test"
+import fs from "node:fs/promises"
 import path from "path"
 import { Cause, Effect, Exit, Fiber, Layer, Option } from "effect"
 import { AppNodeBuilder } from "@ranex/core/effect/app-node-builder"
@@ -267,6 +268,116 @@ describe("ToolOutputStore", () => {
         expect(yield* fs.exists(old)).toBe(false)
         expect(yield* fs.exists(recent)).toBe(true)
         expect(yield* fs.exists(unrelated)).toBe(true)
+      }),
+    ),
+  )
+})
+
+const withRetentionCap = <A, E, R>(bytes: number, body: Effect.Effect<A, E, R>) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const prior = process.env.RANEX_TOOL_OUTPUT_RETENTION_MAX_BYTES
+      process.env.RANEX_TOOL_OUTPUT_RETENTION_MAX_BYTES = String(bytes)
+      return prior
+    }),
+    () => body,
+    (prior) =>
+      Effect.sync(() => {
+        if (prior === undefined) delete process.env.RANEX_TOOL_OUTPUT_RETENTION_MAX_BYTES
+        else process.env.RANEX_TOOL_OUTPUT_RETENTION_MAX_BYTES = prior
+      }),
+  )
+
+const artifactOf = (root: string) =>
+  Effect.promise(async () => {
+    const managed = path.join(root, ToolOutputStore.MANAGED_DIRECTORY)
+    const entries = await fs.readdir(managed).catch(() => [] as string[])
+    const file = entries.find((entry) => entry.startsWith("tool_"))
+    if (!file) throw new Error("expected a sink artifact in the managed directory")
+    return path.join(managed, file)
+  })
+
+describe("ToolOutputStore managed retention sink", () => {
+  it.live("streams raw bytes byte-exactly including multibyte sequences split across chunks", () =>
+    withStore(({ store }) =>
+      Effect.gen(function* () {
+        const sink = yield* store.openSink({ toolCallID: "call-sink-split", command: "printf split" })
+        const multibyte = Buffer.from("🏁", "utf8")
+        sink.write(multibyte.subarray(0, 2))
+        sink.write(multibyte.subarray(2))
+        sink.write(new Uint8Array([0xff]))
+        expect(yield* sink.settle({ capturedBytes: 4, timedOut: false })).toEqual({ _tag: "Retained" })
+        const bound = yield* store.bound({
+          sessionID,
+          toolCallID: "call-sink-split",
+          output: { structured: {}, content: [{ type: "text", text: "preview" }] },
+        })
+        expect(bound.outputPaths).toHaveLength(1)
+        expect(bound.outputRefs?.[0]?.startsWith("out_")).toBe(true)
+        const read = yield* store.readManaged({ path: bound.outputPaths[0], createdAt: Date.now() })
+        if (read._tag !== "Read") throw new Error("expected readable artifact")
+        expect(Buffer.compare(Buffer.from(read.bytes), Buffer.concat([multibyte, Buffer.from([0xff])]))).toBe(0)
+      }),
+    ),
+  )
+
+  it.live("caps retained output at the configured cap with an explicit truncation marker", () =>
+    withStore(({ store }) =>
+      withRetentionCap(
+        16,
+        Effect.gen(function* () {
+          const sink = yield* store.openSink({ toolCallID: "call-sink-cap", command: "emit-capped" })
+          sink.write(Buffer.from("0123456789abcdefghij", "utf8"))
+          expect(yield* sink.settle({ capturedBytes: 20, timedOut: false })).toEqual({ _tag: "Retained" })
+          const bound = yield* store.bound({
+            sessionID,
+            toolCallID: "call-sink-cap",
+            output: { structured: {}, content: [{ type: "text", text: "preview" }] },
+          })
+          const read = yield* store.readManaged({ path: bound.outputPaths[0], createdAt: Date.now() })
+          if (read._tag !== "Read") throw new Error("expected readable artifact")
+          const artifact = Buffer.from(read.bytes)
+          expect(artifact.subarray(0, 16).toString("utf8")).toBe("0123456789abcdef")
+          expect(artifact.subarray(16).toString("utf8")).toContain("cap=16 actual=20 command=emit-capped")
+        }),
+      ),
+    ),
+  )
+
+  it.live("marks a failed retention sink incomplete without referencing the partial artifact", () =>
+    withStore(({ root, store }) =>
+      Effect.gen(function* () {
+        const sink = yield* store.openSink({ toolCallID: "call-sink-fail", command: "printf fail" })
+        const file = yield* artifactOf(root)
+        yield* Effect.promise(() => fs.chmod(file, 0o400))
+        sink.write(Buffer.from("partial"))
+        const settled = yield* sink.settle({ capturedBytes: 7, timedOut: false })
+        expect(settled._tag).toBe("Lossy")
+        const bound = yield* store.bound({
+          sessionID,
+          toolCallID: "call-sink-fail",
+          output: { structured: {}, content: [{ type: "text", text: "preview" }] },
+        })
+        expect(bound.outputPaths).toEqual([])
+        expect(bound.outputRefs).toBeUndefined()
+        expect(yield* Effect.promise(() => fs.exists(`${file}.incomplete`))).toBe(true)
+      }),
+    ),
+  )
+
+  it.live("removes a never-streamed sink artifact instead of referencing an incomplete one", () =>
+    withStore(({ root, store }) =>
+      Effect.gen(function* () {
+        const sink = yield* store.openSink({ toolCallID: "call-sink-unstreamed", command: "printf none" })
+        const file = yield* artifactOf(root)
+        expect(yield* sink.settle({ capturedBytes: 10, timedOut: false })).toEqual({ _tag: "Incomplete" })
+        expect(yield* Effect.promise(() => fs.exists(file))).toBe(false)
+        const bound = yield* store.bound({
+          sessionID,
+          toolCallID: "call-sink-unstreamed",
+          output: { structured: {}, content: [{ type: "text", text: "preview" }] },
+        })
+        expect(bound.outputPaths).toEqual([])
       }),
     ),
   )
