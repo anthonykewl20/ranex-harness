@@ -173,3 +173,36 @@ Configure durable allows in `opencode.json`:
 
 API calls that hit GitHub rate limits (HTTP 429 or 403 with "rate limit" in the
 message) are automatically retried once after a 60-second delay.
+
+## Kernel Tools
+
+The `kernel_run` and `kernel_verdict` bridge tools talk to the ranex-kernel —
+a separate repository that records governed evidence and publishes signed
+verdicts (kernel ADR-019). The bridge is subprocess-only: the harness never
+imports kernel code and never judges anything itself.
+
+### Kernel location
+
+Kernel discovery, in order:
+
+1. `kernel.path` in trusted config layers only (global config, `RANEX_CONFIG`,
+   `RANEX_CONFIG_CONTENT`). Project-level configs are sanitized — the `kernel`
+   section is stripped before parse, so a repository cannot name its own judge.
+2. The `RANEX_KERNEL` environment variable.
+
+The resolved path must be absolute, must exist, and must resolve OUTSIDE both
+the current session worktree and the harness repository — a kernel the observed
+session can edit would judge its own editor. An unset, relative, missing, or
+inside-worktree/harness location is a typed refusal (`KERNEL_PATH_UNSET`,
+`KERNEL_PATH_RELATIVE`, `KERNEL_PATH_MISSING`, `KERNEL_PATH_INSIDE_WORKTREE`,
+`KERNEL_PATH_INSIDE_HARNESS`), never a skip. A blank value counts as unset.
+
+### Verdict production is operator-only
+
+`kernel_verdict` only READS signed verdict files under
+`governance/verdicts/<subject-digest>.json`. Producing a verdict — running the
+kernel's `gate evaluate` — is the operator's act: no harness code path invokes
+it or parses its output. A read yields one of a total set of states (absent,
+unverified, unknown-producer, wrong-type, subject-mismatch, freshness-unproven,
+unclassified); absence is its own blocking state and is never rendered as a
+pass.
