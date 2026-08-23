@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { admitSpecification, type SpecificationAdmissionEnvelope, type SpecificationAdmissionFacts, type SpecificationCapabilities } from "../../src/tool/specification-admission"
+import { admitSpecification, type SpecificationAdmissionEnvelope, type SpecificationCapabilities } from "../../src/tool/specification-admission"
 
 type FrozenRequest = {
   version: string
@@ -33,7 +33,13 @@ type FrozenVectors = {
 
 const vectorPath = process.env.RANEX_FROZEN_VECTOR_FILE
 if (!vectorPath) throw new Error("RANEX_FROZEN_VECTOR_FILE is required for specification-admission tests")
-const vectors = await Bun.file(vectorPath).json() as FrozenVectors
+const rawVectors: unknown = await Bun.file(vectorPath).json()
+if (!isFrozenVectors(rawVectors)) throw new Error("Invalid frozen specification admission vectors")
+const vectors = rawVectors
+
+function isFrozenVectors(value: unknown): value is FrozenVectors {
+  return typeof value === "object" && value !== null && "rows" in value && Array.isArray(value.rows)
+}
 
 function baseFacts() {
   return {
@@ -112,12 +118,14 @@ describe("core specification admission", () => {
     const row = vectors.rows.find((item) => item.name === "allow")
     if (!row) throw new Error("allow vector is required")
     const input = caseInput(row)
-    const extraRequest = { ...input.request, extra: true } as unknown as FrozenRequest
+    const extraRequest = { ...input.request, extra: true }
     expect(admitSpecification(extraRequest, input.facts).record.code).toBe("E-APPROVAL-GRANT-UNISSUED")
-    const extraCapabilities = { ...input.request.capabilities, raw_syscall: true } as unknown as SpecificationCapabilities
+    const extraCapabilities = { ...input.request.capabilities, raw_syscall: true }
     expect(admitSpecification({ ...input.request, capabilities: extraCapabilities }, input.facts).record.code).toBe("E-APPROVAL-GRANT-UNISSUED")
     for (const child_capabilities of [null, 42, { ...input.request.capabilities, argv: undefined }]) {
-      expect(admitSpecification(input.request, { ...input.facts, child_capabilities } as unknown as SpecificationAdmissionFacts).record.code).toBe("E-APPROVAL-GRANT-UNISSUED")
+      const malformedFacts = { ...input.facts }
+      Reflect.set(malformedFacts, "child_capabilities", child_capabilities)
+      expect(admitSpecification(input.request, malformedFacts).record.code).toBe("E-APPROVAL-GRANT-UNISSUED")
     }
   })
 })

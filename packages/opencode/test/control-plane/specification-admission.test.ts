@@ -34,7 +34,13 @@ type FrozenVectors = {
 
 const vectorPath = process.env.RANEX_FROZEN_VECTOR_FILE
 if (!vectorPath) throw new Error("RANEX_FROZEN_VECTOR_FILE is required for specification-admission tests")
-const vectors = await Bun.file(vectorPath).json() as FrozenVectors
+const rawVectors: unknown = await Bun.file(vectorPath).json()
+if (!isFrozenVectors(rawVectors)) throw new Error("Invalid frozen specification admission vectors")
+const vectors = rawVectors
+
+function isFrozenVectors(value: unknown): value is FrozenVectors {
+  return typeof value === "object" && value !== null && "rows" in value && Array.isArray(value.rows)
+}
 
 function input(row: FrozenRow) {
   const grant = {
