@@ -14,17 +14,30 @@ import {
   ToolRuntime,
   toDefinitions,
   type JsonSchema,
-  type LLMEvent,
+  LLMEvent,
 } from "@opencode-ai/llm"
 import type { LLMClientShape } from "@opencode-ai/llm/route"
 import { LLMNative } from "./native-request"
+import { DelegatedProviderClient } from "./delegated-provider"
 
 export type RuntimeStatus =
   | { readonly type: "supported"; readonly apiKey: string; readonly baseURL?: string }
+  | { readonly type: "delegated"; readonly client?: DelegatedProviderClient }
   | { readonly type: "unsupported"; readonly reason: string }
 export type StreamResult =
   | { readonly type: "supported"; readonly stream: Stream.Stream<LLMEvent, unknown> }
   | { readonly type: "unsupported"; readonly reason: string }
+
+type DelegatedProviderRuntimeHolder =
+  | { readonly kind: "client"; readonly client: DelegatedProviderClient }
+  | { readonly kind: "error"; readonly error: unknown }
+
+let delegatedHolder: DelegatedProviderRuntimeHolder | undefined
+
+/** Test support: clear the process-local delegated runtime holder between tests. */
+export function resetDelegatedProviderRuntimeForTests() {
+  delegatedHolder = undefined
+}
 
 type StreamInput = {
   readonly model: Provider.Model
@@ -51,6 +64,15 @@ function statusWithFetch(
   input: Pick<StreamInput, "model" | "provider" | "auth">,
   fetch: typeof globalThis.fetch | undefined,
 ): RuntimeStatus {
+  const delegated = input.provider.options.delegatedProvider
+  if (delegated === true || delegated instanceof DelegatedProviderClient) {
+    if ("apiKey" in input.provider.options || "baseURL" in input.provider.options)
+      return { type: "unsupported", reason: "delegated mode refuses direct credential or endpoint input" }
+    if (delegated instanceof DelegatedProviderClient) delegatedHolder = { kind: "client", client: delegated }
+    return { type: "delegated", client: delegated instanceof DelegatedProviderClient ? delegated : delegatedHolder?.kind === "client" ? delegatedHolder.client : undefined }
+  }
+  if (delegated !== undefined)
+    return { type: "unsupported", reason: "delegatedProvider must be true or a DelegatedProviderClient" }
   const providerID = input.model.providerID
   if (providerID !== "openai" && providerID !== "anthropic" && !providerID.startsWith("opencode"))
     return { type: "unsupported", reason: "provider is not openai, opencode, or anthropic" }
@@ -75,6 +97,11 @@ export function stream(input: StreamInput): StreamResult {
   const fetch = providerFetch(input)
   const current = statusWithFetch(input, fetch)
   if (current.type === "unsupported") return current
+  if (current.type === "delegated")
+    return {
+      type: "supported",
+       stream: delegatedStream(current.client, input),
+    }
 
   // Integration point with @opencode-ai/llm: native-request lowers session data
   // into an LLMRequest, then LLMClient handles route selection and transport.
@@ -143,6 +170,38 @@ export function stream(input: StreamInput): StreamResult {
     ...current,
     stream: fetch ? stream.pipe(Stream.provideService(FetchHttpClient.Fetch, fetch)) : stream,
   }
+}
+
+function delegatedStream(client: DelegatedProviderClient | undefined, input: Pick<StreamInput, "messages" | "abort">) {
+  return Stream.unwrap(
+    Effect.tryPromise({
+      try: async () => {
+        if (client) delegatedHolder = { kind: "client", client }
+        if (!delegatedHolder) {
+          try {
+            delegatedHolder = { kind: "client", client: DelegatedProviderClient.fromFd3(3) }
+          } catch (error) {
+            delegatedHolder = { kind: "error", error }
+            throw error
+          }
+        }
+        if (delegatedHolder.kind === "error") throw delegatedHolder.error
+        const delegated = delegatedHolder.client
+        const response = await delegated.chat({
+          protocolFingerprint: delegated.protocolFingerprint,
+          messages: input.messages,
+          signal: input.abort,
+        })
+        return Stream.fromIterable([
+          LLMEvent.textStart({ id: "delegated-text" }),
+          LLMEvent.textDelta({ id: "delegated-text", text: response }),
+          LLMEvent.textEnd({ id: "delegated-text" }),
+          LLMEvent.finish({ reason: "stop", usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }),
+        ])
+      },
+      catch: (error) => error,
+    }),
+  )
 }
 
 function providerFetch(input: Pick<StreamInput, "provider" | "auth">): typeof globalThis.fetch | undefined {

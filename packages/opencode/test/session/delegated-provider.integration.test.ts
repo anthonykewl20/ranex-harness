@@ -1,12 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { DelegatedProviderClient } from "@/session/llm/delegated-provider"
+import { spawnFakeBroker } from "./fixtures/delegated-fake-broker"
 
 describe("delegated provider loopback boundary", () => {
   test("completes canonical handshake and bounded SSE without a provider key", async () => {
-    const client = await DelegatedProviderClient.spawnBroker({
-      broker: new URL("./fixtures/delegated-fake-broker.ts", import.meta.url),
-      bootstrapFd: 3,
-    })
+    const client = await spawnFakeBroker()
     await using _client = client
 
     const response = await client.chat({
