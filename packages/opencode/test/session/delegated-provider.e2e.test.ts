@@ -39,6 +39,7 @@ describe("delegated provider sentinel E2E", () => {
         expect(scanProhibitedChannels({ scratch: needle }, client.prohibitedChannelValues())).toContain(needle)
       }
       expect(response.text).toContain("text-delta")
+      expect(response.content).toBe("ok")
       expect(response.usage).toEqual({ inputTokens: 1, outputTokens: 1, totalTokens: 2 })
     } finally {
       Object.defineProperty(Bun, "write", { value: originalWrite })

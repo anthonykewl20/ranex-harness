@@ -819,6 +819,6 @@ describe("session.llm-native.request", () => {
     expect(result.type).toBe("supported")
     if (result.type === "unsupported") throw new Error(result.reason)
     const events = Array.from(await Effect.runPromise(result.stream.pipe(Stream.runCollect)))
-    expect(events.some((event) => event.type === "text-delta" && event.text.includes('data: {"id":"chatcmpl-text-delta"'))).toBe(true)
+    expect(events.some((event) => event.type === "text-delta" && event.text === "ok")).toBe(true)
   })
 })

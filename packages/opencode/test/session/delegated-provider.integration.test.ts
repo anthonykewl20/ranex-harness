@@ -11,6 +11,7 @@ describe("delegated provider loopback boundary", () => {
       messages: [{ role: "user", content: "synthetic prompt" }],
     })
     expect(response.text).toContain("text-delta")
+    expect(response.content).toBe("ok")
     expect(response.usage).toEqual({ inputTokens: 1, outputTokens: 1, totalTokens: 2 })
     expect(client.prohibitedChannelBytes(response.text)).toEqual([])
   })

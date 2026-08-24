@@ -64,7 +64,7 @@ type ChatInput = {
   readonly signal?: AbortSignal
 }
 export type DelegatedProviderChild = { readonly process: ReturnType<typeof Bun.spawn>; readonly argv: string[]; readonly env: Record<string, string> }
-export type DelegatedProviderResponse = { readonly text: string; readonly usage?: Record<string, unknown> }
+export type DelegatedProviderResponse = { readonly text: string; readonly content: string; readonly usage?: Record<string, unknown> }
 export type DelegatedProviderCapture = {
   readonly argv: string[]
   readonly env: Record<string, string>
@@ -299,7 +299,8 @@ export class DelegatedProviderClient implements AsyncDisposable {
       let offset = 0
       for (const chunk of chunks) { output.set(chunk, offset); offset += chunk.byteLength }
       const text = new TextDecoder().decode(output)
-      return { text, usage: terminalUsage(text) }
+      const decoded = decodeSse(text)
+      return { text, content: decoded.content, usage: decoded.usage }
     } catch (error) {
       if (error instanceof DelegatedProviderError) throw error
       if (!handle) throw error
@@ -338,21 +339,36 @@ function assertNotAborted(signal?: AbortSignal) {
   if (signal?.aborted) throw new DelegatedProviderError("client_cancelled", "delegated request cancelled", 499)
 }
 
-function terminalUsage(text: string) {
-  for (const line of text.split("\n")) {
-    if (!line.startsWith("data:")) continue
-    const payload = line.slice("data:".length).trim()
-    if (payload === "[DONE]") continue
-    try {
-      const value: unknown = JSON.parse(payload)
-      if (!value || typeof value !== "object" || Array.isArray(value)) continue
-      const usage = (value as Record<string, unknown>).usage
-      if (usage && typeof usage === "object" && !Array.isArray(usage)) return usage as Record<string, unknown>
-    } catch {
-      // Non-JSON SSE frames remain opaque relay content.
+function decodeSse(text: string) {
+  let content = ""
+  let usage: Record<string, unknown> | undefined
+  for (const event of text.replaceAll("\r\n", "\n").split("\n\n")) {
+    for (const line of event.split("\n")) {
+      if (!line.startsWith("data:")) continue
+      const payload = line.slice("data:".length).trim()
+      if (payload === "[DONE]") return { content, usage }
+      try {
+        const value: unknown = JSON.parse(payload)
+        if (!value || typeof value !== "object" || Array.isArray(value)) continue
+        const item = value as Record<string, unknown>
+        const choices = item.choices
+        if (Array.isArray(choices)) {
+          for (const choice of choices) {
+            if (!choice || typeof choice !== "object" || Array.isArray(choice)) continue
+            const delta = (choice as Record<string, unknown>).delta
+            if (!delta || typeof delta !== "object" || Array.isArray(delta)) continue
+            const piece = (delta as Record<string, unknown>).content
+            if (typeof piece === "string") content += piece
+          }
+        }
+        const candidate = item.usage
+        if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) usage = candidate as Record<string, unknown>
+      } catch {
+        // Non-JSON SSE frames remain opaque relay content.
+      }
     }
   }
-  return undefined
+  return { content, usage }
 }
 
 type HandshakeResponse = { protocol: string; version: number; protocolFingerprint: string; session: string; expiresAt: string; remainingRequests: number }

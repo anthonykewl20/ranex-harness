@@ -18,7 +18,7 @@ import {
 } from "@opencode-ai/llm"
 import type { LLMClientShape } from "@opencode-ai/llm/route"
 import { LLMNative } from "./native-request"
-import { DelegatedProviderClient } from "./delegated-provider"
+import { DelegatedProviderClient, DelegatedProviderError } from "./delegated-provider"
 
 export type RuntimeStatus =
   | { readonly type: "supported"; readonly apiKey: string; readonly baseURL?: string }
@@ -194,12 +194,12 @@ function delegatedStream(client: DelegatedProviderClient | undefined, input: Pic
         })
         return Stream.fromIterable([
           LLMEvent.textStart({ id: "delegated-text" }),
-          LLMEvent.textDelta({ id: "delegated-text", text: response.text }),
+          LLMEvent.textDelta({ id: "delegated-text", text: response.content }),
           LLMEvent.textEnd({ id: "delegated-text" }),
           LLMEvent.finish({ reason: "stop", ...(response.usage === undefined ? {} : { usage: response.usage as Parameters<typeof LLMEvent.finish>[0]["usage"] }) }),
         ])
       },
-      catch: (error) => error,
+      catch: (error) => error instanceof DelegatedProviderError ? error : new DelegatedProviderError("internal", error instanceof Error ? error.message : "delegated provider failed", 502),
     }),
   )
 }
