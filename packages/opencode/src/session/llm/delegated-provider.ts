@@ -127,6 +127,7 @@ export class DelegatedProviderClient implements AsyncDisposable {
   #active = false
   #closed = false
   #lastPrompt = ""
+  #captureSink: DelegatedProviderCapture | undefined
 
   private constructor(bootstrap: DelegatedProviderBootstrap, child?: DelegatedProviderChild, capture?: DelegatedProviderCapture) {
     this.endpoint = bootstrap.endpointUrl
@@ -135,6 +136,7 @@ export class DelegatedProviderClient implements AsyncDisposable {
     this.#model = bootstrap.model
     this.#tools = bootstrap.allowedToolNames
     this.#child = child
+    this.#captureSink = capture
     this.capture = capture ?? emptyCapture()
     validateFingerprint(bootstrap.protocolFingerprint)
     validateExpiry(this.#expiresAt)
@@ -178,8 +180,10 @@ export class DelegatedProviderClient implements AsyncDisposable {
     this.assertUsable()
     this.assertFingerprint(input.protocolFingerprint)
     assertNotAborted(input.signal)
-    this.capture.argv.push(...process.argv)
-    Object.assign(this.capture.env, process.env)
+    if (this.#captureSink) {
+      this.#captureSink.argv.push(...process.argv)
+      Object.assign(this.#captureSink.env, process.env)
+    }
     this.#lastPrompt = JSON.stringify(input.messages)
     if (this.#active) throw new DelegatedProviderError("concurrency_limit", "concurrency limit exceeded", 429)
     if (this.#requests >= MAX_REQUESTS) throw new DelegatedProviderError("request_limit", "request limit exceeded", 429)
