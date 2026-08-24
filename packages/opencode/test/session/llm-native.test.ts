@@ -1,17 +1,19 @@
-import { describe, expect, test } from "bun:test"
+import { beforeEach, describe, expect, test } from "bun:test"
 import { LLMEvent, ToolFailure } from "@opencode-ai/llm"
 import { LLMClient, RequestExecutor, WebSocketExecutor, type LLMClientShape } from "@opencode-ai/llm/route"
 import { jsonSchema, tool, type ModelMessage, type Tool } from "ai"
 import { Effect, Fiber, Layer, Stream } from "effect"
 import { FetchHttpClient } from "effect/unstable/http"
+import { DelegatedProviderClient, parseDelegatedProviderBootstrap } from "@/session/llm/delegated-provider"
 import { LLMNative } from "@/session/llm/native-request"
-import { LLMNativeRuntime } from "@/session/llm/native-runtime"
+import { LLMNativeRuntime, resetDelegatedProviderRuntimeForTests } from "@/session/llm/native-runtime"
 import type { Provider } from "@/provider/provider"
 
 import { OAUTH_DUMMY_KEY } from "@/auth"
 import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { spawnFakeBroker } from "./fixtures/delegated-fake-broker"
 
 const baseModel: Provider.Model = {
   id: ModelV2.ID.make("gpt-5-mini"),
@@ -154,6 +156,7 @@ const expectOpenAIResponsesRequest = (input: {
   })
 
 describe("session.llm-native.request", () => {
+  beforeEach(() => resetDelegatedProviderRuntimeForTests())
   test("maps normalized stream inputs to a native LLM request", () => {
     const messages: ModelMessage[] = [
       {
@@ -758,4 +761,83 @@ describe("session.llm-native.request", () => {
       )
     }),
   )
+
+  test("refuses malformed delegated-provider option values", () => {
+    for (const delegatedProvider of ["false", 0, "", [], {}]) {
+      expect(
+        LLMNativeRuntime.status({
+          model: baseModel,
+          provider: { ...providerInfo, options: { delegatedProvider } },
+          auth: undefined,
+        }),
+      ).toEqual({ type: "unsupported", reason: "delegatedProvider must be true or a DelegatedProviderClient" })
+    }
+  })
+
+  test("refuses direct credentials and endpoints alongside delegated clients", () => {
+    const client = DelegatedProviderClient.fromBootstrap(parseDelegatedProviderBootstrap({
+      protocol: "ranex-delegated-provider",
+      version: 1,
+      taskId: "task-test",
+      endpoint: { scheme: "http", host: "127.0.0.1", port: 1 },
+      capability: Buffer.alloc(32).toString("base64url"),
+      protocolFingerprint: "115c60229299f4769d01e88f4c4c758a0be6a9bbfd6090bb6ace9c2562f27ca2",
+      provider: "openrouter",
+      model: "example/model",
+      allowedToolNames: [],
+      expiresAt: "2030-01-01T00:05:00Z",
+      limits: { maxBootstrapBytes: 65536, maxConcurrency: 1, maxRequestBytes: 4194304, maxRequests: 8, maxResponseBytes: 16777216, timeoutSeconds: 120, ttlSeconds: 300 },
+    }))
+    for (const option of [{ delegatedProvider: client, apiKey: "raw" }, { delegatedProvider: client, baseURL: "http://override" }]) {
+      expect(LLMNativeRuntime.status({ model: baseModel, provider: { ...providerInfo, options: option }, auth: undefined })).toEqual({
+        type: "unsupported",
+        reason: "delegated mode refuses direct credential or endpoint input",
+      })
+    }
+  })
+
+  test("uses injected delegated clients directly without caching them", async () => {
+    const firstClient = await spawnFakeBroker()
+    const secondClient = await spawnFakeBroker()
+    await using _firstClient = firstClient
+    await using _secondClient = secondClient
+    const firstProvider = { ...providerInfo, options: { delegatedProvider: firstClient } }
+    const secondProvider = { ...providerInfo, options: { delegatedProvider: secondClient } }
+    const firstStatus = LLMNativeRuntime.status({ model: baseModel, provider: firstProvider, auth: undefined })
+    const secondStatus = LLMNativeRuntime.status({ model: baseModel, provider: secondProvider, auth: undefined })
+    expect(firstStatus).toMatchObject({ type: "delegated", client: firstClient })
+    expect(secondStatus).toMatchObject({ type: "delegated", client: secondClient })
+
+    const firstResult = LLMNativeRuntime.stream({
+      model: baseModel,
+      provider: firstProvider,
+      auth: undefined,
+      llmClient: {} as LLMClientShape,
+      messages: [{ role: "user", content: "opaque" }],
+      tools: {},
+      headers: {},
+      abort: new AbortController().signal,
+    })
+    const secondResult = LLMNativeRuntime.stream({
+      model: baseModel,
+      provider: secondProvider,
+      auth: undefined,
+      llmClient: {} as LLMClientShape,
+      messages: [{ role: "user", content: "opaque" }],
+      tools: {},
+      headers: {},
+      abort: new AbortController().signal,
+    })
+    expect(firstResult.type).toBe("supported")
+    expect(secondResult.type).toBe("supported")
+    if (firstResult.type === "unsupported" || secondResult.type === "unsupported") throw new Error("injected delegated client was rejected")
+    const firstEvents = Array.from(await Effect.runPromise(firstResult.stream.pipe(Stream.runCollect)))
+    const secondEvents = Array.from(await Effect.runPromise(secondResult.stream.pipe(Stream.runCollect)))
+    expect(firstEvents.some((event) => event.type === "text-delta" && event.text === "ok")).toBe(true)
+    expect(secondEvents.some((event) => event.type === "text-delta" && event.text === "ok")).toBe(true)
+
+    const fd3Status = LLMNativeRuntime.status({ model: baseModel, provider: { ...providerInfo, options: { delegatedProvider: true } }, auth: undefined })
+    expect(fd3Status).toMatchObject({ type: "delegated" })
+    expect(fd3Status.type === "delegated" ? fd3Status.client : undefined).toBeUndefined()
+  })
 })
