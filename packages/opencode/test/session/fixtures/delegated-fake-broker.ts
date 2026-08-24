@@ -21,7 +21,7 @@ if (import.meta.main) {
     if (url.pathname === "/v1/chat/completions") {
       if (body.protocol !== "ranex-delegated-provider" || body.version !== 1 || body.session !== session)
         return Response.json({ error: "invalid_request", message: "invalid chat request" }, { status: 400 })
-      return new Response('data: {"id":"chatcmpl-text-delta","object":"chat.completion.chunk","choices":[{"delta":{"content":"ok"},"index":0}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } })
+      return new Response('data: {"id":"chatcmpl-text-delta","object":"chat.completion.chunk","choices":[{"delta":{"content":"ok"},"index":0}]}\n\ndata: {"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } })
     }
     return Response.json({ error: "invalid_protocol" }, { status: 400 })
     },

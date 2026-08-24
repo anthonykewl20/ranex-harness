@@ -10,7 +10,8 @@ describe("delegated provider loopback boundary", () => {
       protocolFingerprint: client.protocolFingerprint,
       messages: [{ role: "user", content: "synthetic prompt" }],
     })
-    expect(response).toContain("text-delta")
-    expect(client.prohibitedChannelBytes(response)).toEqual([])
+    expect(response.text).toContain("text-delta")
+    expect(response.usage).toEqual({ inputTokens: 1, outputTokens: 1, totalTokens: 2 })
+    expect(client.prohibitedChannelBytes(response.text)).toEqual([])
   })
 })

@@ -194,9 +194,9 @@ function delegatedStream(client: DelegatedProviderClient | undefined, input: Pic
         })
         return Stream.fromIterable([
           LLMEvent.textStart({ id: "delegated-text" }),
-          LLMEvent.textDelta({ id: "delegated-text", text: response }),
+          LLMEvent.textDelta({ id: "delegated-text", text: response.text }),
           LLMEvent.textEnd({ id: "delegated-text" }),
-          LLMEvent.finish({ reason: "stop", usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }),
+          LLMEvent.finish({ reason: "stop", ...(response.usage === undefined ? {} : { usage: response.usage as Parameters<typeof LLMEvent.finish>[0]["usage"] }) }),
         ])
       },
       catch: (error) => error,

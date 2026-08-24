@@ -64,6 +64,7 @@ type ChatInput = {
   readonly signal?: AbortSignal
 }
 export type DelegatedProviderChild = { readonly process: ReturnType<typeof Bun.spawn>; readonly argv: string[]; readonly env: Record<string, string> }
+export type DelegatedProviderResponse = { readonly text: string; readonly usage?: Record<string, unknown> }
 export type DelegatedProviderCapture = {
   readonly argv: string[]
   readonly env: Record<string, string>
@@ -261,16 +262,18 @@ export class DelegatedProviderClient implements AsyncDisposable {
   private rejectFingerprint(): never { throw new DelegatedProviderError("unsupported_version", "protocol fingerprint mismatch", 400) }
 
   private async postJson<T>(path: string, body: unknown, timeoutMs: number, signal?: AbortSignal): Promise<T> {
-    const handle = await this.request(path, body, signal, timeoutMs)
+    let handle: RequestHandle | undefined
     try {
+      handle = await this.request(path, body, signal, timeoutMs)
       if (!handle.response.ok) throw await brokerError(handle.response)
       try { return (await handle.response.json()) as T } catch { throw new DelegatedProviderError("invalid_protocol", "invalid broker JSON", 502) }
-    } finally { handle.finish() }
+    } finally { handle?.finish() }
   }
 
-  private async postSse(path: string, body: unknown, signal?: AbortSignal) {
-    const handle = await this.request(path, body, signal, Math.min(REQUEST_TIMEOUT_MS, Math.max(1, this.#expiresAt - Date.now())))
+  private async postSse(path: string, body: unknown, signal?: AbortSignal): Promise<DelegatedProviderResponse> {
+    let handle: RequestHandle | undefined
     try {
+      handle = await this.request(path, body, signal, Math.min(REQUEST_TIMEOUT_MS, Math.max(1, this.#expiresAt - Date.now())))
       if (!handle.response.ok) throw await brokerError(handle.response)
       if (!handle.response.headers.get("content-type")?.toLowerCase().startsWith("text/event-stream"))
         throw new DelegatedProviderError("upstream_protocol", "broker response is not SSE", 502)
@@ -291,13 +294,15 @@ export class DelegatedProviderClient implements AsyncDisposable {
       const output = new Uint8Array(total)
       let offset = 0
       for (const chunk of chunks) { output.set(chunk, offset); offset += chunk.byteLength }
-      return new TextDecoder().decode(output)
+      const text = new TextDecoder().decode(output)
+      return { text, usage: terminalUsage(text) }
     } catch (error) {
       if (error instanceof DelegatedProviderError) throw error
+      if (!handle) throw error
       if (signal?.aborted) throw new DelegatedProviderError("client_cancelled", "delegated request cancelled", 499)
-      if (handle.controller.signal.aborted) throw new DelegatedProviderError("upstream_timeout", "delegated request timed out", 504)
+      if (handle?.controller.signal.aborted) throw new DelegatedProviderError("upstream_timeout", "delegated request timed out", 504)
       throw new DelegatedProviderError("upstream_protocol", "broker SSE read failed", 502)
-    } finally { handle.finish() }
+    } finally { handle?.finish() }
   }
 
   private async request(path: string, body: unknown, signal: AbortSignal | undefined, timeoutMs: number) {
@@ -319,8 +324,31 @@ export class DelegatedProviderClient implements AsyncDisposable {
   }
 }
 
+type RequestHandle = {
+  readonly response: Response
+  readonly controller: AbortController
+  readonly finish: () => void
+}
+
 function assertNotAborted(signal?: AbortSignal) {
   if (signal?.aborted) throw new DelegatedProviderError("client_cancelled", "delegated request cancelled", 499)
+}
+
+function terminalUsage(text: string) {
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("data:")) continue
+    const payload = line.slice("data:".length).trim()
+    if (payload === "[DONE]") continue
+    try {
+      const value: unknown = JSON.parse(payload)
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue
+      const usage = (value as Record<string, unknown>).usage
+      if (usage && typeof usage === "object" && !Array.isArray(usage)) return usage as Record<string, unknown>
+    } catch {
+      // Non-JSON SSE frames remain opaque relay content.
+    }
+  }
+  return undefined
 }
 
 type HandshakeResponse = { protocol: string; version: number; protocolFingerprint: string; session: string; expiresAt: string; remainingRequests: number }
