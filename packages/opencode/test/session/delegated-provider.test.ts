@@ -3,11 +3,21 @@ import { describe, expect, test } from "bun:test"
 import {
   DelegatedProviderClient,
   loadDelegatedProviderBootstrap,
+  parseDelegatedProviderBootstrap,
   PROTOCOL_FINGERPRINT,
 } from "@/session/llm/delegated-provider"
 import { spawnFakeBroker } from "./fixtures/delegated-fake-broker"
 
 const fingerprint = "115c60229299f4769d01e88f4c4c758a0be6a9bbfd6090bb6ace9c2562f27ca2"
+
+function thrown(operation: () => unknown) {
+  try {
+    operation()
+  } catch (error) {
+    return error
+  }
+  throw new Error("expected operation to throw")
+}
 
 describe("session.llm-native.delegated-provider", () => {
   test("uses the pinned protocol fingerprint and consumes bootstrap metadata from FD3", async () => {
@@ -53,6 +63,68 @@ describe("session.llm-native.delegated-provider", () => {
     await expect(
       client.chat({ protocolFingerprint: "0".repeat(64), messages: [{ role: "user", content: "sentinel" }] }),
     ).rejects.toMatchObject({ code: "unsupported_version", status: 400 })
+  })
+
+  test("refuses every invalid delegated limit", () => {
+    const limits = { maxBootstrapBytes: 65536, maxConcurrency: 1, maxRequestBytes: 4194304, maxRequests: 8, maxResponseBytes: 16777216, timeoutSeconds: 120, ttlSeconds: 300 }
+    for (const key of Object.keys(limits) as Array<keyof typeof limits>) {
+      const invalid = { ...limits, [key]: 0 }
+      expect(thrown(() => parseDelegatedProviderBootstrap({
+        protocol: "ranex-delegated-provider",
+        version: 1,
+        taskId: "task-vector-01",
+        endpoint: { scheme: "http", host: "127.0.0.1", port: 43127 },
+        capability: Buffer.alloc(32, 7).toString("base64url"),
+        protocolFingerprint: fingerprint,
+        provider: "openrouter",
+        model: "example/model",
+        allowedToolNames: ["alpha", "weather"],
+        expiresAt: "2030-01-01T00:05:00Z",
+        limits: invalid,
+      }))).toMatchObject({ code: "invalid_protocol" })
+    }
+  })
+
+  test("observes broker terminal error envelopes verbatim", async () => {
+    for (const code of ["upstream_http", "upstream_timeout", "redirect_refused", "replay", "request_limit"]) {
+      const client = await spawnFakeBroker({ chatError: code })
+      await using _client = client
+      await expect(client.chat({ protocolFingerprint: fingerprint, messages: [] })).rejects.toMatchObject({ code })
+    }
+    const oversized = await spawnFakeBroker({ responseTooLarge: true })
+    await using _oversized = oversized
+    await expect(oversized.chat({ protocolFingerprint: fingerprint, messages: [] })).rejects.toMatchObject({ code: "response_too_large" })
+  })
+
+  test("observes lifecycle and concurrency terminal outcomes", async () => {
+    const shutdown = await spawnFakeBroker()
+    await shutdown.shutdown()
+    await expect(shutdown.chat({ protocolFingerprint: fingerprint, messages: [] })).rejects.toMatchObject({ code: "server_shutdown" })
+
+    const handshakeRequired = await spawnFakeBroker()
+    await using _handshakeRequired = handshakeRequired
+    expect(thrown(() => handshakeRequired.canonicalChatRequest({ protocolFingerprint: fingerprint, messages: [] }))).toMatchObject({ code: "handshake_required" })
+
+    expect(thrown(() => DelegatedProviderClient.fromBootstrap(parseDelegatedProviderBootstrap({
+      protocol: "ranex-delegated-provider",
+      version: 1,
+      taskId: "task-vector-01",
+      endpoint: { scheme: "http", host: "127.0.0.1", port: 43127 },
+      capability: Buffer.alloc(32, 7).toString("base64url"),
+      protocolFingerprint: fingerprint,
+      provider: "openrouter",
+      model: "example/model",
+      allowedToolNames: ["alpha", "weather"],
+      expiresAt: "2020-01-01T00:05:00Z",
+      limits: { maxBootstrapBytes: 65536, maxConcurrency: 1, maxRequestBytes: 4194304, maxRequests: 8, maxResponseBytes: 16777216, timeoutSeconds: 120, ttlSeconds: 300 },
+    })))).toMatchObject({ code: "expired" })
+
+    const concurrent = await spawnFakeBroker({ chatDelayMs: 100 })
+    await using _concurrent = concurrent
+    const pending = concurrent.chat({ protocolFingerprint: fingerprint, messages: [] })
+    await Promise.resolve()
+    await expect(concurrent.chat({ protocolFingerprint: fingerprint, messages: [] })).rejects.toMatchObject({ code: "concurrency_limit" })
+    await pending
   })
 
   test("cancels before transport when the signal is already aborted", async () => {

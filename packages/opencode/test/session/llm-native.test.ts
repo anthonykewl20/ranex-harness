@@ -794,6 +794,13 @@ describe("session.llm-native.request", () => {
         reason: "delegated mode refuses direct credential or endpoint input",
       })
     }
+    expect(LLMNativeRuntime.status({ model: baseModel, provider: { ...providerInfo, options: { delegatedProvider: true } }, auth: undefined })).toMatchObject({ type: "delegated" })
+    for (const option of [{ delegatedProvider: true, apiKey: "raw" }, { delegatedProvider: true, baseURL: "http://override" }]) {
+      expect(LLMNativeRuntime.status({ model: baseModel, provider: { ...providerInfo, options: option }, auth: undefined })).toEqual({
+        type: "unsupported",
+        reason: "delegated mode refuses direct credential or endpoint input",
+      })
+    }
   })
 
   test("uses injected delegated clients directly without caching them", async () => {
