@@ -55,6 +55,48 @@ describe("session.llm-native.delegated-provider", () => {
     ).rejects.toMatchObject({ code: "unsupported_version", status: 400 })
   })
 
+  test("cancels before transport when the signal is already aborted", async () => {
+    const client = await spawnFakeBroker()
+    await using _client = client
+    const originalFetch = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls += 1
+      throw new Error("unexpected transport")
+    }) as unknown as typeof globalThis.fetch
+    const abort = new AbortController()
+    abort.abort()
+    try {
+      await expect(client.chat({ protocolFingerprint: fingerprint, messages: [], signal: abort.signal })).rejects.toMatchObject({ code: "client_cancelled", status: 499 })
+      expect(calls).toBe(0)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test("cancels an in-flight lazy handshake and does not start SSE", async () => {
+    const client = await spawnFakeBroker()
+    await using _client = client
+    const originalFetch = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = ((_url: RequestInfo | URL, init?: RequestInit) => {
+      calls += 1
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true })
+      })
+    }) as unknown as typeof globalThis.fetch
+    const abort = new AbortController()
+    try {
+      const pending = client.chat({ protocolFingerprint: fingerprint, messages: [], signal: abort.signal })
+      await Promise.resolve()
+      abort.abort()
+      await expect(pending).rejects.toMatchObject({ code: "client_cancelled", status: 499 })
+      expect(calls).toBe(1)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   test("carries capability and session only in canonical handshake/chat fields", async () => {
     const client = await spawnFakeBroker()
     await using _client = client

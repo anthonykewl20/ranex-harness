@@ -54,7 +54,7 @@ export type DelegatedProviderBootstrap = {
 }
 
 type BootstrapEndpoint = { readonly scheme: "http"; readonly host: "127.0.0.1"; readonly port: number }
-type HandshakeInput = { readonly protocolFingerprint?: string }
+type HandshakeInput = { readonly protocolFingerprint?: string; readonly signal?: AbortSignal }
 type ChatInput = {
   readonly protocolFingerprint?: string
   readonly model?: string
@@ -154,10 +154,11 @@ export class DelegatedProviderClient implements AsyncDisposable {
   async handshake(input: HandshakeInput = {}) {
     this.assertUsable()
     this.assertFingerprint(input.protocolFingerprint)
+    assertNotAborted(input.signal)
     const body = this.handshakeRequest()
     let response: HandshakeResponse
     try {
-      response = await this.postJson<HandshakeResponse>("/v1/handshake", body, HANDSHAKE_TIMEOUT_MS)
+      response = await this.postJson<HandshakeResponse>("/v1/handshake", body, HANDSHAKE_TIMEOUT_MS, input.signal)
     } catch (error) {
       if (error instanceof DelegatedProviderError && error.code === "upstream_timeout")
         throw new DelegatedProviderError("invalid_protocol", "handshake deadline exceeded", 400)
@@ -175,6 +176,7 @@ export class DelegatedProviderClient implements AsyncDisposable {
   async chat(input: ChatInput) {
     this.assertUsable()
     this.assertFingerprint(input.protocolFingerprint)
+    assertNotAborted(input.signal)
     this.capture.argv.push(...process.argv)
     Object.assign(this.capture.env, process.env)
     this.#lastPrompt = JSON.stringify(input.messages)
@@ -183,7 +185,7 @@ export class DelegatedProviderClient implements AsyncDisposable {
     this.#active = true
     this.#requests += 1
     try {
-      if (!this.#session) await this.handshake({ protocolFingerprint: input.protocolFingerprint })
+      if (!this.#session) await this.handshake({ protocolFingerprint: input.protocolFingerprint, signal: input.signal })
       this.assertUsable()
       const request = this.wireChatRequest(input)
       const encoded = JSON.stringify(request)
@@ -258,8 +260,8 @@ export class DelegatedProviderClient implements AsyncDisposable {
   private assertFingerprint(value?: string) { if (value !== undefined && value !== PROTOCOL_FINGERPRINT) this.rejectFingerprint() }
   private rejectFingerprint(): never { throw new DelegatedProviderError("unsupported_version", "protocol fingerprint mismatch", 400) }
 
-  private async postJson<T>(path: string, body: unknown, timeoutMs: number): Promise<T> {
-    const handle = await this.request(path, body, undefined, timeoutMs)
+  private async postJson<T>(path: string, body: unknown, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+    const handle = await this.request(path, body, signal, timeoutMs)
     try {
       if (!handle.response.ok) throw await brokerError(handle.response)
       try { return (await handle.response.json()) as T } catch { throw new DelegatedProviderError("invalid_protocol", "invalid broker JSON", 502) }
@@ -299,6 +301,7 @@ export class DelegatedProviderClient implements AsyncDisposable {
   }
 
   private async request(path: string, body: unknown, signal: AbortSignal | undefined, timeoutMs: number) {
+    assertNotAborted(signal)
     const controller = new AbortController()
     const abort = () => controller.abort()
     signal?.addEventListener("abort", abort, { once: true })
@@ -314,6 +317,10 @@ export class DelegatedProviderClient implements AsyncDisposable {
       throw new DelegatedProviderError("upstream_connect", error instanceof Error ? error.message : "broker unavailable", 502)
     }
   }
+}
+
+function assertNotAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw new DelegatedProviderError("client_cancelled", "delegated request cancelled", 499)
 }
 
 type HandshakeResponse = { protocol: string; version: number; protocolFingerprint: string; session: string; expiresAt: string; remainingRequests: number }
