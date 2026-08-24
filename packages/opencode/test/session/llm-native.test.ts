@@ -796,19 +796,21 @@ describe("session.llm-native.request", () => {
     }
   })
 
-  test("reuses an injected delegated client and relays opaque bytes", async () => {
-    const client = await spawnFakeBroker()
-    await using _client = client
-    const provider = { ...providerInfo, options: { delegatedProvider: client } }
-    const first = LLMNativeRuntime.status({ model: baseModel, provider, auth: undefined })
-    const second = LLMNativeRuntime.status({ model: baseModel, provider, auth: undefined })
-    expect(first).toMatchObject({ type: "delegated", client })
-    expect(second).toMatchObject({ type: "delegated", client })
-    expect(first.type === "delegated" && second.type === "delegated" ? first.client : undefined).toBe(client)
+  test("uses injected delegated clients directly without caching them", async () => {
+    const firstClient = await spawnFakeBroker()
+    const secondClient = await spawnFakeBroker()
+    await using _firstClient = firstClient
+    await using _secondClient = secondClient
+    const firstProvider = { ...providerInfo, options: { delegatedProvider: firstClient } }
+    const secondProvider = { ...providerInfo, options: { delegatedProvider: secondClient } }
+    const firstStatus = LLMNativeRuntime.status({ model: baseModel, provider: firstProvider, auth: undefined })
+    const secondStatus = LLMNativeRuntime.status({ model: baseModel, provider: secondProvider, auth: undefined })
+    expect(firstStatus).toMatchObject({ type: "delegated", client: firstClient })
+    expect(secondStatus).toMatchObject({ type: "delegated", client: secondClient })
 
-    const result = LLMNativeRuntime.stream({
+    const firstResult = LLMNativeRuntime.stream({
       model: baseModel,
-      provider,
+      provider: firstProvider,
       auth: undefined,
       llmClient: {} as LLMClientShape,
       messages: [{ role: "user", content: "opaque" }],
@@ -816,9 +818,26 @@ describe("session.llm-native.request", () => {
       headers: {},
       abort: new AbortController().signal,
     })
-    expect(result.type).toBe("supported")
-    if (result.type === "unsupported") throw new Error(result.reason)
-    const events = Array.from(await Effect.runPromise(result.stream.pipe(Stream.runCollect)))
-    expect(events.some((event) => event.type === "text-delta" && event.text === "ok")).toBe(true)
+    const secondResult = LLMNativeRuntime.stream({
+      model: baseModel,
+      provider: secondProvider,
+      auth: undefined,
+      llmClient: {} as LLMClientShape,
+      messages: [{ role: "user", content: "opaque" }],
+      tools: {},
+      headers: {},
+      abort: new AbortController().signal,
+    })
+    expect(firstResult.type).toBe("supported")
+    expect(secondResult.type).toBe("supported")
+    if (firstResult.type === "unsupported" || secondResult.type === "unsupported") throw new Error("injected delegated client was rejected")
+    const firstEvents = Array.from(await Effect.runPromise(firstResult.stream.pipe(Stream.runCollect)))
+    const secondEvents = Array.from(await Effect.runPromise(secondResult.stream.pipe(Stream.runCollect)))
+    expect(firstEvents.some((event) => event.type === "text-delta" && event.text === "ok")).toBe(true)
+    expect(secondEvents.some((event) => event.type === "text-delta" && event.text === "ok")).toBe(true)
+
+    const fd3Status = LLMNativeRuntime.status({ model: baseModel, provider: { ...providerInfo, options: { delegatedProvider: true } }, auth: undefined })
+    expect(fd3Status).toMatchObject({ type: "delegated" })
+    expect(fd3Status.type === "delegated" ? fd3Status.client : undefined).toBeUndefined()
   })
 })

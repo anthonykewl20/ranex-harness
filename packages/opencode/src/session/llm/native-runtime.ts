@@ -68,7 +68,6 @@ function statusWithFetch(
   if (delegated === true || delegated instanceof DelegatedProviderClient) {
     if ("apiKey" in input.provider.options || "baseURL" in input.provider.options)
       return { type: "unsupported", reason: "delegated mode refuses direct credential or endpoint input" }
-    if (delegated instanceof DelegatedProviderClient) delegatedHolder = { kind: "client", client: delegated }
     return { type: "delegated", client: delegated instanceof DelegatedProviderClient ? delegated : delegatedHolder?.kind === "client" ? delegatedHolder.client : undefined }
   }
   if (delegated !== undefined)
@@ -176,17 +175,21 @@ function delegatedStream(client: DelegatedProviderClient | undefined, input: Pic
   return Stream.unwrap(
     Effect.tryPromise({
       try: async () => {
-        if (client) delegatedHolder = { kind: "client", client }
-        if (!delegatedHolder) {
+        let delegated: DelegatedProviderClient
+        if (client) {
+          delegated = client
+        } else if (!delegatedHolder) {
           try {
             delegatedHolder = { kind: "client", client: DelegatedProviderClient.fromFd3(3) }
           } catch (error) {
             delegatedHolder = { kind: "error", error }
             throw error
           }
+          delegated = delegatedHolder.client
+        } else {
+          if (delegatedHolder.kind === "error") throw delegatedHolder.error
+          delegated = delegatedHolder.client
         }
-        if (delegatedHolder.kind === "error") throw delegatedHolder.error
-        const delegated = delegatedHolder.client
         const response = await delegated.chat({
           protocolFingerprint: delegated.protocolFingerprint,
           messages: input.messages,
