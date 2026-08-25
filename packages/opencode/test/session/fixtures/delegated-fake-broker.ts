@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs"
 const fingerprint = "115c60229299f4769d01e88f4c4c758a0be6a9bbfd6090bb6ace9c2562f27ca2"
 const capability = "CAPABILITY_REAL_ISSUE106_000000000000000000"
 const session = "SESSION_REAL_ISSUE106"
-type FakeBrokerOptions = { handshakeError?: string; chatError?: string; chatDelayMs?: number; responseTooLarge?: boolean }
+type FakeBrokerOptions = { handshakeError?: string; chatError?: string; chatDelayMs?: number; responseTooLarge?: boolean; upstreamReportPath?: string }
 
 if (import.meta.main) {
   const server = Bun.serve({
@@ -22,6 +22,7 @@ if (import.meta.main) {
     }
     if (url.pathname === "/v1/chat/completions") {
       if (process.env.FAKE_CHAT_ERROR) {
+        if (process.env.FAKE_UPSTREAM_REPORT_PATH) await Bun.write(process.env.FAKE_UPSTREAM_REPORT_PATH, "0\n")
         const status = process.env.FAKE_CHAT_ERROR === "redirect_refused" ? 302 : 500
         return Response.json({ error: process.env.FAKE_CHAT_ERROR, message: process.env.FAKE_CHAT_ERROR }, { status })
       }
@@ -29,6 +30,7 @@ if (import.meta.main) {
       if (body.protocol !== "ranex-delegated-provider" || body.version !== 1 || body.session !== session)
         return Response.json({ error: "invalid_request", message: "invalid chat request" }, { status: 400 })
       if (process.env.FAKE_RESPONSE_TOO_LARGE) return new Response("x".repeat(16 * 1024 * 1024 + 1), { headers: { "content-type": "text/event-stream" } })
+      if (process.env.FAKE_UPSTREAM_REPORT_PATH) await Bun.write(process.env.FAKE_UPSTREAM_REPORT_PATH, "1\n")
       return new Response('data: {"id":"chatcmpl-text-delta","object":"chat.completion.chunk","choices":[{"delta":{"content":"ok"},"index":0}]}\n\ndata: {"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } })
     }
     return Response.json({ error: "invalid_protocol" }, { status: 400 })
@@ -46,6 +48,7 @@ export async function spawnFakeBroker(options: FakeBrokerOptions = {}) {
     ...(options.chatError ? { FAKE_CHAT_ERROR: options.chatError } : {}),
     ...(options.chatDelayMs === undefined ? {} : { FAKE_CHAT_DELAY_MS: String(options.chatDelayMs) }),
     ...(options.responseTooLarge ? { FAKE_RESPONSE_TOO_LARGE: "1" } : {}),
+    ...(options.upstreamReportPath ? { FAKE_UPSTREAM_REPORT_PATH: options.upstreamReportPath } : {}),
   }
   const child = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe", stdin: "ignore", env })
   const stdout: string[] = []

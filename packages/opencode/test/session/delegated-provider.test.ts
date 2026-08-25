@@ -2,6 +2,7 @@ import { chmodSync, closeSync, openSync, rmSync } from "node:fs"
 import { describe, expect, test } from "bun:test"
 import {
   DelegatedProviderClient,
+  ERROR_CODES,
   loadDelegatedProviderBootstrap,
   parseDelegatedProviderBootstrap,
   PROTOCOL_FINGERPRINT,
@@ -65,28 +66,30 @@ describe("session.llm-native.delegated-provider", () => {
     ).rejects.toMatchObject({ code: "unsupported_version", status: 400 })
   })
 
-  test("refuses every invalid delegated limit", () => {
+  test("refuses every invalid delegated limit below and above its frozen boundary", () => {
     const limits = { maxBootstrapBytes: 65536, maxConcurrency: 1, maxRequestBytes: 4194304, maxRequests: 8, maxResponseBytes: 16777216, timeoutSeconds: 120, ttlSeconds: 300 }
     for (const key of Object.keys(limits) as Array<keyof typeof limits>) {
-      const invalid = { ...limits, [key]: 0 }
-      expect(thrown(() => parseDelegatedProviderBootstrap({
-        protocol: "ranex-delegated-provider",
-        version: 1,
-        taskId: "task-vector-01",
-        endpoint: { scheme: "http", host: "127.0.0.1", port: 43127 },
-        capability: Buffer.alloc(32, 7).toString("base64url"),
-        protocolFingerprint: fingerprint,
-        provider: "openrouter",
-        model: "example/model",
-        allowedToolNames: ["alpha", "weather"],
-        expiresAt: "2030-01-01T00:05:00Z",
-        limits: invalid,
-      }))).toMatchObject({ code: "invalid_protocol" })
+      for (const value of [0, limits[key] + 1]) {
+        const invalid = { ...limits, [key]: value }
+        expect(thrown(() => parseDelegatedProviderBootstrap({
+          protocol: "ranex-delegated-provider",
+          version: 1,
+          taskId: "task-vector-01",
+          endpoint: { scheme: "http", host: "127.0.0.1", port: 43127 },
+          capability: Buffer.alloc(32, 7).toString("base64url"),
+          protocolFingerprint: fingerprint,
+          provider: "openrouter",
+          model: "example/model",
+          allowedToolNames: ["alpha", "weather"],
+          expiresAt: "2030-01-01T00:05:00Z",
+          limits: invalid,
+        }))).toMatchObject({ code: "invalid_protocol" })
+      }
     }
   })
 
-  test("observes broker terminal error envelopes verbatim", async () => {
-    for (const code of ["upstream_http", "upstream_timeout", "redirect_refused", "replay", "request_limit"]) {
+  test("observes every broker terminal error envelope verbatim", async () => {
+    for (const code of ERROR_CODES) {
       const client = await spawnFakeBroker({ chatError: code })
       await using _client = client
       await expect(client.chat({ protocolFingerprint: fingerprint, messages: [] })).rejects.toMatchObject({ code })
@@ -94,6 +97,20 @@ describe("session.llm-native.delegated-provider", () => {
     const oversized = await spawnFakeBroker({ responseTooLarge: true })
     await using _oversized = oversized
     await expect(oversized.chat({ protocolFingerprint: fingerprint, messages: [] })).rejects.toMatchObject({ code: "response_too_large" })
+  }, 30_000)
+
+  test("refuses malformed, replayed, expired, and disallowed sessions before upstream", async () => {
+    for (const code of ["tool_not_allowed", "invalid_request", "replay", "expired", "session_mismatch"] as const) {
+      const reportPath = `/tmp/opencode/issue-106-upstream-${process.pid}-${code}.txt`
+      const client = await spawnFakeBroker({ chatError: code, upstreamReportPath: reportPath })
+      await using _client = client
+      try {
+        await expect(client.chat({ protocolFingerprint: fingerprint, messages: [] })).rejects.toMatchObject({ code })
+        expect((await Bun.file(reportPath).text()).trim()).toBe("0")
+      } finally {
+        rmSync(reportPath, { force: true })
+      }
+    }
   })
 
   test("observes lifecycle and concurrency terminal outcomes", async () => {
